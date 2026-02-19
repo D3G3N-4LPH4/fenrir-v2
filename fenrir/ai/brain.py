@@ -22,7 +22,6 @@ Usage:
 
 import asyncio
 from datetime import datetime
-from typing import Dict, Optional, Tuple
 
 from fenrir.ai.decision_engine import (
     AIDecision,
@@ -47,12 +46,12 @@ class ClaudeBrain:
     def __init__(self, config, logger):
         self.config = config
         self.logger = logger
-        self.analyst: Optional[AITradingAnalyst] = None
+        self.analyst: AITradingAnalyst | None = None
         self.memory = AISessionMemory(max_size=config.ai_memory_size)
         self.enabled = config.ai_analysis_enabled and bool(config.ai_api_key)
 
         # Per-position exit evaluation timestamps
-        self._last_exit_eval: Dict[str, datetime] = {}
+        self._last_exit_eval: dict[str, datetime] = {}
 
         # Performance stats
         self.stats = {
@@ -96,9 +95,9 @@ class ClaudeBrain:
 
     async def evaluate_entry(
         self,
-        token_data: Dict,
-        positions: Dict,
-    ) -> Tuple[bool, Optional[TokenAnalysis], Optional[float]]:
+        token_data: dict,
+        positions: dict,
+    ) -> tuple[bool, TokenAnalysis | None, float | None]:
         """
         Evaluate whether to buy a newly detected token.
 
@@ -195,12 +194,10 @@ class ClaudeBrain:
                 self.stats["ai_entries_skipped"] += 1
                 return (False, analysis, None)
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.stats["ai_timeouts"] += 1
             symbol = token_data.get("symbol", "???")
-            self.logger.warning(
-                f"🧠 AI BRAIN: TIMEOUT ({entry_timeout}s) for ${symbol}"
-            )
+            self.logger.warning(f"🧠 AI BRAIN: TIMEOUT ({entry_timeout}s) for ${symbol}")
             if fallback:
                 self.stats["rule_fallbacks"] += 1
                 self.logger.info("   Falling back to rule-based auto-buy")
@@ -223,8 +220,8 @@ class ClaudeBrain:
         self,
         token_address: str,
         position,
-        mechanical_trigger: Optional[str] = None,
-    ) -> Tuple[str, Optional[str]]:
+        mechanical_trigger: str | None = None,
+    ) -> tuple[str, str | None]:
         """
         Evaluate whether to exit a position.
 
@@ -299,11 +296,7 @@ class ClaudeBrain:
             # Safety floor: never override stop-loss if drawdown is extreme
             stop_loss_pct = self.config.stop_loss_pct
             hard_floor = stop_loss_pct * 1.5
-            if (
-                mechanical_trigger
-                and action == "HOLD"
-                and pnl_pct <= -hard_floor
-            ):
+            if mechanical_trigger and action == "HOLD" and pnl_pct <= -hard_floor:
                 self.logger.warning(
                     f"🧠 AI wanted to OVERRIDE but hard floor hit "
                     f"(pnl={pnl_pct:.1f}% <= -{hard_floor:.0f}%). Forcing EXIT."
@@ -321,14 +314,12 @@ class ClaudeBrain:
                 return ("OVERRIDE_HOLD", f"AI override: {reasoning}")
 
             if action == "EXIT":
-                self.logger.info(
-                    f"🧠 AI EXIT: {addr_short} — {reasoning[:80]}"
-                )
+                self.logger.info(f"🧠 AI EXIT: {addr_short} — {reasoning[:80]}")
                 return ("EXIT", reasoning)
 
             return ("HOLD", None)
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.logger.warning(
                 f"🧠 AI exit eval TIMEOUT ({exit_timeout}s) for {token_address[:8]}..."
             )
@@ -355,17 +346,13 @@ class ClaudeBrain:
         pnl_sol: float = 0.0,
     ) -> None:
         """Record the actual outcome for a previously analyzed token."""
-        self.memory.update_outcome(
-            token_address, pnl_pct, exit_reason, hold_time_minutes, pnl_sol
-        )
+        self.memory.update_outcome(token_address, pnl_pct, exit_reason, hold_time_minutes, pnl_sol)
         if self.analyst:
-            self.analyst.track_prediction_outcome(
-                token_address, pnl_pct, hold_time_minutes
-            )
+            self.analyst.track_prediction_outcome(token_address, pnl_pct, hold_time_minutes)
         # Clean up per-position exit eval timestamp (position is closed)
         self._last_exit_eval.pop(token_address, None)
 
-    def get_performance_report(self) -> Dict:
+    def get_performance_report(self) -> dict:
         """Get combined performance report: brain stats + AI analyst accuracy."""
         report = {k: v for k, v in self.stats.items() if k != "_response_times"}
         if self.analyst:
@@ -390,17 +377,13 @@ class ClaudeBrain:
         value = value.replace("#", "").replace("```", "")
         return value.strip()
 
-    def _build_token_metadata(self, token_data: Dict) -> TokenMetadata:
+    def _build_token_metadata(self, token_data: dict) -> TokenMetadata:
         """Convert PumpFunMonitor token_data dict to TokenMetadata for AI analysis."""
         curve_state = token_data.get("bonding_curve_state")
         return TokenMetadata(
             token_mint=token_data["token_address"],
-            name=self._sanitize_metadata_field(
-                token_data.get("name", "Unknown"), max_length=100
-            ),
-            symbol=self._sanitize_metadata_field(
-                token_data.get("symbol", "???"), max_length=20
-            ),
+            name=self._sanitize_metadata_field(token_data.get("name", "Unknown"), max_length=100),
+            symbol=self._sanitize_metadata_field(token_data.get("symbol", "???"), max_length=20),
             description=self._sanitize_metadata_field(
                 token_data.get("description"), max_length=500
             ),

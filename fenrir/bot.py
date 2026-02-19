@@ -9,19 +9,18 @@ import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict
 
+from fenrir.ai.brain import ClaudeBrain
 from fenrir.config import BotConfig, TradingMode
-from fenrir.logger import FenrirLogger
-from fenrir.core.wallet import WalletManager
 from fenrir.core.client import SolanaClient
 from fenrir.core.jupiter import JupiterSwapEngine
-from fenrir.core.positions import PositionManager, Position
+from fenrir.core.positions import Position, PositionManager
+from fenrir.core.wallet import WalletManager
+from fenrir.data.price_feed import PriceFeedManager
+from fenrir.logger import FenrirLogger
+from fenrir.protocol.jito import JitoMEVProtection
 from fenrir.trading.engine import TradingEngine
 from fenrir.trading.monitor import PumpFunMonitor
-from fenrir.protocol.jito import JitoMEVProtection
-from fenrir.data.price_feed import PriceFeedManager
-from fenrir.ai.brain import ClaudeBrain
 
 
 class FenrirBot:
@@ -43,15 +42,14 @@ class FenrirBot:
 
         # Initialize core components
         self.wallet = WalletManager(
-            config.private_key,
-            simulation_mode=(config.mode == TradingMode.SIMULATION)
+            config.private_key, simulation_mode=(config.mode == TradingMode.SIMULATION)
         )
         self.solana_client = SolanaClient(config, self.logger)
         self.jupiter = JupiterSwapEngine(config, self.logger)
         self.positions = PositionManager(config, self.logger)
 
         # Initialize Jito MEV protection (optional)
-        self.jito: Optional[JitoMEVProtection] = None
+        self.jito: JitoMEVProtection | None = None
         if config.use_jito:
             self.jito = JitoMEVProtection(
                 region="mainnet",
@@ -98,9 +96,7 @@ class FenrirBot:
             await self.jito.initialize()
 
         # Start monitoring task
-        monitor_task = asyncio.create_task(
-            self.monitor.start_monitoring(self._on_token_launch)
-        )
+        monitor_task = asyncio.create_task(self.monitor.start_monitoring(self._on_token_launch))
 
         # Start position management loop
         management_task = asyncio.create_task(self._position_management_loop())
@@ -109,18 +105,16 @@ class FenrirBot:
         # in main(); catching it here would not work reliably inside gather)
         await asyncio.gather(monitor_task, management_task)
 
-    async def _on_token_launch(self, token_data: Dict):
+    async def _on_token_launch(self, token_data: dict):
         """
         Callback when new token is detected and passes criteria.
         If AI Brain is enabled, Claude evaluates before buying.
         """
         self.logger.launch_detected(
-            token_data["token_address"],
-            token_data["initial_liquidity_sol"]
+            token_data["token_address"], token_data["initial_liquidity_sol"]
         )
         self.logger.info(
-            f"   Token: {token_data.get('name', 'Unknown')} "
-            f"({token_data.get('symbol', '???')})"
+            f"   Token: {token_data.get('name', 'Unknown')} " f"({token_data.get('symbol', '???')})"
         )
 
         # AI evaluation gate
@@ -137,9 +131,7 @@ class FenrirBot:
         # Determine effective buy amount (pass explicitly instead of mutating config)
         effective_amount = self.config.buy_amount_sol
         if buy_amount_override is not None:
-            effective_amount = min(
-                buy_amount_override, self.config.buy_amount_sol * 2
-            )
+            effective_amount = min(buy_amount_override, self.config.buy_amount_sol * 2)
 
         await self.trading_engine.execute_buy(token_data, amount_sol=effective_amount)
 
@@ -161,11 +153,9 @@ class FenrirBot:
                         *[self.price_feed.get_price(addr) for addr in open_addrs],
                         return_exceptions=True,
                     )
-                    for addr, result in zip(open_addrs, results):
+                    for addr, result in zip(open_addrs, results, strict=False):
                         if isinstance(result, Exception):
-                            self.logger.debug(
-                                f"Price fetch failed for {addr[:8]}: {result}"
-                            )
+                            self.logger.debug(f"Price fetch failed for {addr[:8]}: {result}")
                         elif result:
                             pos = self.positions.positions.get(addr)
                             if pos:
@@ -189,9 +179,7 @@ class FenrirBot:
                     if action == "OVERRIDE_HOLD":
                         continue
 
-                    await self._execute_exit(
-                        token_address, position, ai_reason or reason
-                    )
+                    await self._execute_exit(token_address, position, ai_reason or reason)
 
                 # Phase 3: Proactive AI exit evaluation (cadence-based)
                 for token_address in list(self.positions.positions.keys()):
@@ -207,12 +195,9 @@ class FenrirBot:
 
                     if action == "EXIT":
                         self.logger.info(
-                            f"AI proactive exit: {token_address[:8]}... "
-                            f"- {ai_reason}"
+                            f"AI proactive exit: {token_address[:8]}... " f"- {ai_reason}"
                         )
-                        await self._execute_exit(
-                            token_address, position, f"AI: {ai_reason}"
-                        )
+                        await self._execute_exit(token_address, position, f"AI: {ai_reason}")
 
                 # Log portfolio status periodically
                 summary = self.positions.get_portfolio_summary()
@@ -237,15 +222,17 @@ class FenrirBot:
     ) -> None:
         """Execute an exit and record the outcome in AI memory."""
         pnl_pct = position.get_pnl_percent()
-        hold_minutes = int(
-            (datetime.now() - position.entry_time).total_seconds() / 60
-        )
+        hold_minutes = int((datetime.now() - position.entry_time).total_seconds() / 60)
         pnl_sol = position.get_pnl_sol()
 
         await self.trading_engine.execute_sell(token_address, reason)
 
         self.claude_brain.record_trade_outcome(
-            token_address, pnl_pct, reason, hold_minutes, pnl_sol,
+            token_address,
+            pnl_pct,
+            reason,
+            hold_minutes,
+            pnl_sol,
         )
 
     async def stop(self):
@@ -278,7 +265,7 @@ class FenrirBot:
             wallet=self.wallet.get_address()[:40] + "...",
             buy_sol=f"{self.config.buy_amount_sol} SOL",
             stop_loss=f"{self.config.stop_loss_pct}%",
-            take_profit=f"{self.config.take_profit_pct}%"
+            take_profit=f"{self.config.take_profit_pct}%",
         )
         print(banner)
 
@@ -308,7 +295,7 @@ Environment Variables (or use .env file):
   SOLANA_RPC_URL          - Your Solana RPC endpoint (QuickNode, Helius, etc.)
   WALLET_PRIVATE_KEY      - Your wallet's base58-encoded private key
   OPENROUTER_API_KEY      - Optional: for AI-powered trading decisions
-        """
+        """,
     )
 
     parser.add_argument(
@@ -316,42 +303,23 @@ Environment Variables (or use .env file):
         type=str,
         choices=["simulation", "conservative", "aggressive", "degen"],
         default="simulation",
-        help="Trading mode (default: simulation)"
+        help="Trading mode (default: simulation)",
     )
+    parser.add_argument("--buy-amount", type=float, help="SOL amount per buy (default: 0.1)")
+    parser.add_argument("--stop-loss", type=float, help="Stop loss percentage (default: 25)")
+    parser.add_argument("--take-profit", type=float, help="Take profit percentage (default: 100)")
+    parser.add_argument("--config", type=str, help="Path to config JSON file")
     parser.add_argument(
-        "--buy-amount",
-        type=float,
-        help="SOL amount per buy (default: 0.1)"
-    )
-    parser.add_argument(
-        "--stop-loss",
-        type=float,
-        help="Stop loss percentage (default: 25)"
-    )
-    parser.add_argument(
-        "--take-profit",
-        type=float,
-        help="Take profit percentage (default: 100)"
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        help="Path to config JSON file"
-    )
-    parser.add_argument(
-        "--dashboard",
-        action="store_true",
-        default=False,
-        help="Launch live terminal dashboard"
+        "--dashboard", action="store_true", default=False, help="Launch live terminal dashboard"
     )
 
     args = parser.parse_args()
 
     # Load config
     if args.config and Path(args.config).exists():
-        with open(args.config) as f:
-            config_data = json.load(f)
-            config = BotConfig(**config_data)
+        config_path = Path(args.config)
+        config_data = json.loads(config_path.read_text())
+        config = BotConfig(**config_data)
     else:
         config = BotConfig()
 
@@ -370,8 +338,8 @@ Environment Variables (or use .env file):
     # Optional: Launch terminal dashboard
     dashboard = None
     if args.dashboard:
-        from fenrir.ui.dashboard import Dashboard
         from fenrir.data.database import TradeDatabase
+        from fenrir.ui.dashboard import Dashboard
 
         db = TradeDatabase()
         dashboard = Dashboard(bot, db=db)
@@ -379,6 +347,7 @@ Environment Variables (or use .env file):
 
         # Suppress console log handler so it doesn't corrupt the Rich display
         import logging
+
         fenrir_logger = logging.getLogger("FENRIR")
         for handler in fenrir_logger.handlers[:]:
             if isinstance(handler, logging.StreamHandler) and not isinstance(

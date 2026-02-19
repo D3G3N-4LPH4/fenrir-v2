@@ -6,9 +6,10 @@ Run with: pytest tests/test_core.py -v
 Or: python tests/test_core.py
 """
 
-import asyncio
-import pytest
 from datetime import datetime
+
+import pytest
+
 from fenrir.config import BotConfig, TradingMode
 from fenrir.core.positions import Position, PositionManager
 from fenrir.core.wallet import WalletManager
@@ -54,7 +55,7 @@ class TestPosition:
             entry_price=0.000001,
             amount_tokens=1_000_000,
             amount_sol_invested=1.0,
-            peak_price=0.000001
+            peak_price=0.000001,
         )
 
         position.update_price(0.000002)  # Price doubles
@@ -70,7 +71,7 @@ class TestPosition:
             entry_price=0.000001,
             amount_tokens=1_000_000,
             amount_sol_invested=1.0,
-            peak_price=0.000001
+            peak_price=0.000001,
         )
 
         position.update_price(0.0000005)  # Price halves
@@ -86,13 +87,13 @@ class TestPosition:
             entry_price=0.000001,
             amount_tokens=1_000_000,
             amount_sol_invested=1.0,
-            peak_price=0.000001
+            peak_price=0.000001,
         )
 
         position.update_price(0.000003)  # +200%
 
-        assert position.should_take_profit(100.0) == True  # Target 100%
-        assert position.should_take_profit(300.0) == False  # Target 300%
+        assert position.should_take_profit(100.0) is True  # Target 100%
+        assert position.should_take_profit(300.0) is False  # Target 300%
 
     def test_stop_loss_trigger(self):
         """Test stop loss condition."""
@@ -102,13 +103,13 @@ class TestPosition:
             entry_price=0.000001,
             amount_tokens=1_000_000,
             amount_sol_invested=1.0,
-            peak_price=0.000001
+            peak_price=0.000001,
         )
 
         position.update_price(0.0000005)  # -50%
 
-        assert position.should_stop_loss(25.0) == True  # 25% stop
-        assert position.should_stop_loss(75.0) == False  # 75% stop
+        assert position.should_stop_loss(25.0) is True  # 25% stop
+        assert position.should_stop_loss(75.0) is False  # 75% stop
 
     def test_trailing_stop_trigger(self):
         """Test trailing stop from peak."""
@@ -118,7 +119,7 @@ class TestPosition:
             entry_price=0.000001,
             amount_tokens=1_000_000,
             amount_sol_invested=1.0,
-            peak_price=0.000001
+            peak_price=0.000001,
         )
 
         # Price goes up
@@ -128,8 +129,8 @@ class TestPosition:
         # Price drops 20% from peak
         position.update_price(0.0000024)
 
-        assert position.should_trailing_stop(15.0) == True  # 15% trail
-        assert position.should_trailing_stop(25.0) == False  # 25% trail
+        assert position.should_trailing_stop(15.0) is True  # 15% trail
+        assert position.should_trailing_stop(25.0) is False  # 25% trail
 
 
 class TestPositionManager:
@@ -144,10 +145,7 @@ class TestPositionManager:
     def test_open_position(self):
         """Test opening a position."""
         self.manager.open_position(
-            token_address="TOKEN1",
-            entry_price=0.000001,
-            amount_tokens=1_000_000,
-            amount_sol=1.0
+            token_address="TOKEN1", entry_price=0.000001, amount_tokens=1_000_000, amount_sol=1.0
         )
 
         assert len(self.manager.positions) == 1
@@ -156,10 +154,7 @@ class TestPositionManager:
     def test_close_position(self):
         """Test closing a position."""
         self.manager.open_position(
-            token_address="TOKEN1",
-            entry_price=0.000001,
-            amount_tokens=1_000_000,
-            amount_sol=1.0
+            token_address="TOKEN1", entry_price=0.000001, amount_tokens=1_000_000, amount_sol=1.0
         )
 
         position = self.manager.close_position("TOKEN1", "Test exit")
@@ -171,22 +166,18 @@ class TestPositionManager:
     def test_portfolio_summary(self):
         """Test portfolio summary calculation."""
         self.manager.open_position(
-            token_address="TOKEN1",
-            entry_price=0.000001,
-            amount_tokens=1_000_000,
-            amount_sol=1.0
+            token_address="TOKEN1", entry_price=0.000001, amount_tokens=1_000_000, amount_sol=1.0
         )
         self.manager.open_position(
-            token_address="TOKEN2",
-            entry_price=0.000002,
-            amount_tokens=500_000,
-            amount_sol=1.0
+            token_address="TOKEN2", entry_price=0.000002, amount_tokens=500_000, amount_sol=1.0
         )
 
-        self.manager.update_prices({
-            "TOKEN1": 0.000002,  # +100%
-            "TOKEN2": 0.000001   # -50%
-        })
+        self.manager.update_prices(
+            {
+                "TOKEN1": 0.000002,  # +100%
+                "TOKEN2": 0.000001,  # -50%
+            }
+        )
 
         summary = self.manager.get_portfolio_summary()
 
@@ -198,10 +189,7 @@ class TestPositionManager:
     def test_exit_conditions(self):
         """Test automatic exit signal detection."""
         self.manager.open_position(
-            token_address="TOKEN1",
-            entry_price=0.000001,
-            amount_tokens=1_000_000,
-            amount_sol=1.0
+            token_address="TOKEN1", entry_price=0.000001, amount_tokens=1_000_000, amount_sol=1.0
         )
 
         self.manager.update_prices({"TOKEN1": 0.000003})  # +200%
@@ -222,7 +210,7 @@ class TestWalletManager:
 
         address = wallet.get_address()
         assert len(address) > 0
-        assert wallet.simulation_mode == True
+        assert wallet.simulation_mode is True
 
     def test_invalid_private_key(self):
         """Test invalid private key handling."""
@@ -235,12 +223,7 @@ def run_tests():
     print("Running FENRIR Test Suite")
     print("=" * 70)
 
-    test_classes = [
-        TestBotConfig(),
-        TestPosition(),
-        TestPositionManager(),
-        TestWalletManager()
-    ]
+    test_classes = [TestBotConfig(), TestPosition(), TestPositionManager(), TestWalletManager()]
 
     total_tests = 0
     passed_tests = 0
@@ -254,7 +237,7 @@ def run_tests():
             if method_name.startswith("test_"):
                 total_tests += 1
                 try:
-                    if hasattr(test_class, 'setup_method'):
+                    if hasattr(test_class, "setup_method"):
                         test_class.setup_method()
 
                     method = getattr(test_class, method_name)
@@ -279,6 +262,7 @@ def run_tests():
 if __name__ == "__main__":
     try:
         import pytest
+
         pytest.main([__file__, "-v"])
     except ImportError:
         print("pytest not found, running simple test suite...")

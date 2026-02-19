@@ -11,10 +11,9 @@ Rich-based live terminal dashboard showing:
 Runs in a background thread alongside the async bot loop.
 """
 
-import logging
 import threading
 from datetime import datetime, timedelta
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from rich.align import Align
 from rich.console import Console
@@ -49,7 +48,7 @@ class Dashboard:
         self.console = Console()
         self.start_time = datetime.now()
         self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
 
     def start(self):
         """Launch the dashboard in a background daemon thread."""
@@ -77,7 +76,7 @@ class Dashboard:
             while not self._stop_event.is_set():
                 try:
                     live.update(self._build_layout())
-                except Exception:
+                except Exception:  # noqa: S110
                     pass  # never crash the dashboard thread
                 self._stop_event.wait(timeout=self.REFRESH_INTERVAL)
 
@@ -132,8 +131,11 @@ class Dashboard:
             summary = self.bot.positions.get_portfolio_summary()
         except Exception:
             summary = {
-                "num_positions": 0, "total_invested_sol": 0,
-                "current_value_sol": 0, "total_pnl_sol": 0, "total_pnl_pct": 0,
+                "num_positions": 0,
+                "total_invested_sol": 0,
+                "current_value_sol": 0,
+                "total_pnl_sol": 0,
+                "total_pnl_pct": 0,
             }
 
         num = summary["num_positions"]
@@ -195,7 +197,7 @@ class Dashboard:
                     Text(f"{pnl_sol:+.4f}", style=pnl_color),
                     age,
                 )
-            except Exception:
+            except Exception:  # noqa: S112
                 continue
 
         return Panel(table, title="Open Positions", border_style="cyan")
@@ -204,9 +206,7 @@ class Dashboard:
         """Recent trades from SQLite database."""
         if not self.db:
             return Panel(
-                Align.center(
-                    Text("Trade history unavailable (no database)", style="dim italic")
-                ),
+                Align.center(Text("Trade history unavailable (no database)", style="dim italic")),
                 title="Recent Trades",
                 border_style="yellow",
             )
@@ -250,7 +250,7 @@ class Dashboard:
                     f"{trade.price_per_token:.8f}",
                     (trade.notes or "")[:20],
                 )
-            except Exception:
+            except Exception:  # noqa: S112
                 continue
 
         return Panel(table, title="Recent Trades", border_style="yellow")
@@ -259,9 +259,7 @@ class Dashboard:
         """Performance metrics from database."""
         if not self.db:
             return Panel(
-                Align.center(
-                    Text("Performance data unavailable", style="dim italic")
-                ),
+                Align.center(Text("Performance data unavailable", style="dim italic")),
                 title="Performance",
                 border_style="magenta",
             )

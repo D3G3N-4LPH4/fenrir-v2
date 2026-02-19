@@ -6,8 +6,6 @@ Jupiter aggregator integration.
 Finding the best price is an art form.
 """
 
-from typing import Optional, Dict
-
 import aiohttp
 
 from fenrir.config import BotConfig
@@ -25,19 +23,15 @@ class JupiterSwapEngine:
     def __init__(self, config: BotConfig, logger: FenrirLogger):
         self.config = config
         self.logger = logger
-        self.session: Optional[aiohttp.ClientSession] = None
+        self.session: aiohttp.ClientSession | None = None
 
     async def initialize(self):
         """Start the HTTP session."""
         self.session = aiohttp.ClientSession()
 
     async def get_quote(
-        self,
-        input_mint: str,
-        output_mint: str,
-        amount: int,
-        slippage_bps: int
-    ) -> Optional[Dict]:
+        self, input_mint: str, output_mint: str, amount: int, slippage_bps: int
+    ) -> dict | None:
         """
         Request a quote from Jupiter.
         The first step in any great trade.
@@ -51,7 +45,7 @@ class JupiterSwapEngine:
                 "inputMint": input_mint,
                 "outputMint": output_mint,
                 "amount": amount,
-                "slippageBps": slippage_bps
+                "slippageBps": slippage_bps,
             }
 
             async with self.session.get(url, params=params) as response:
@@ -64,11 +58,7 @@ class JupiterSwapEngine:
             self.logger.error("Failed to get Jupiter quote", e)
             return None
 
-    async def get_swap_transaction(
-        self,
-        quote: Dict,
-        user_public_key: str
-    ) -> Optional[str]:
+    async def get_swap_transaction(self, quote: dict, user_public_key: str) -> str | None:
         """
         Build the swap transaction from a quote.
         Turning intention into executable bytes.
@@ -83,7 +73,7 @@ class JupiterSwapEngine:
                 "userPublicKey": user_public_key,
                 "wrapAndUnwrapSol": True,
                 "dynamicComputeUnitLimit": True,
-                "prioritizationFeeLamports": self.config.priority_fee_lamports
+                "prioritizationFeeLamports": self.config.priority_fee_lamports,
             }
 
             async with self.session.post(url, json=payload) as response:

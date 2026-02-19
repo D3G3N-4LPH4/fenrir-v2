@@ -27,21 +27,20 @@ class FenrirLogger:
         if not self.logger.handlers:
             # Console handler - beautiful terminal output
             console = logging.StreamHandler()
-            console.setFormatter(logging.Formatter(
-                '%(asctime)s | %(levelname)8s | %(message)s',
-                datefmt='%H:%M:%S'
-            ))
+            console.setFormatter(
+                logging.Formatter("%(asctime)s | %(levelname)8s | %(message)s", datefmt="%H:%M:%S")
+            )
             self.logger.addHandler(console)
 
             # File handler - persistent history
             file_handler = RotatingFileHandler(
                 config.log_file,
                 maxBytes=10_000_000,  # 10MB
-                backupCount=5
+                backupCount=5,
             )
-            file_handler.setFormatter(logging.Formatter(
-                '%(asctime)s | %(levelname)8s | %(name)s | %(message)s'
-            ))
+            file_handler.setFormatter(
+                logging.Formatter("%(asctime)s | %(levelname)8s | %(name)s | %(message)s")
+            )
             self.logger.addHandler(file_handler)
 
     def launch_detected(self, token_address: str, initial_liq: float):

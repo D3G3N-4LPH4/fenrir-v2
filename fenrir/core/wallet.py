@@ -7,7 +7,6 @@ Your keys, your crypto. Handle with the reverence they deserve.
 
 import base58
 from solders.keypair import Keypair
-from solders.pubkey import Pubkey
 from solders.transaction import Transaction
 
 
@@ -33,7 +32,7 @@ class WalletManager:
                 self.keypair = Keypair.from_bytes(private_key_bytes)
                 self.pubkey = self.keypair.pubkey()
             except Exception as e:
-                raise ValueError(f"Invalid private key format: {e}")
+                raise ValueError(f"Invalid private key format: {e}") from e
 
     def get_address(self) -> str:
         """Return the wallet's public address."""

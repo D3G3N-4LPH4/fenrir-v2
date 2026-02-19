@@ -7,18 +7,18 @@ Watches the blockchain for fresh token launches on pump.fun.
 """
 
 import asyncio
-import json
 import base64 as b64
+import json
 from collections import OrderedDict
+from collections.abc import Callable
 from datetime import datetime
-from typing import Optional, Dict, Callable
 
 import websockets
 from solders.pubkey import Pubkey
 
 from fenrir.config import BotConfig
-from fenrir.logger import FenrirLogger
 from fenrir.core.client import SolanaClient
+from fenrir.logger import FenrirLogger
 from fenrir.protocol.pumpfun import PumpFunProgram, TokenLaunchDetector
 
 
@@ -31,12 +31,7 @@ class PumpFunMonitor:
     MAX_WS_RECONNECT_ATTEMPTS = 5
     MAX_SEEN_TOKENS = 10_000  # Bound the set to prevent unbounded memory growth
 
-    def __init__(
-        self,
-        config: BotConfig,
-        solana_client: SolanaClient,
-        logger: FenrirLogger
-    ):
+    def __init__(self, config: BotConfig, solana_client: SolanaClient, logger: FenrirLogger):
         self.config = config
         self.client = solana_client
         self.logger = logger
@@ -96,15 +91,17 @@ class PumpFunMonitor:
                     backoff = 1.0
 
                     # Subscribe to pump.fun program logs
-                    subscribe_msg = json.dumps({
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "logsSubscribe",
-                        "params": [
-                            {"mentions": [str(self.client.pumpfun_program)]},
-                            {"commitment": "confirmed"}
-                        ]
-                    })
+                    subscribe_msg = json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "logsSubscribe",
+                            "params": [
+                                {"mentions": [str(self.client.pumpfun_program)]},
+                                {"commitment": "confirmed"},
+                            ],
+                        }
+                    )
                     await ws.send(subscribe_msg)
 
                     # Wait for subscription confirmation
@@ -146,8 +143,7 @@ class PumpFunMonitor:
 
                         # Quick check: does this look like a create instruction?
                         has_create_hint = any(
-                            "Program log: Instruction: Create" in log
-                            or "InitializeMint" in log
+                            "Program log: Instruction: Create" in log or "InitializeMint" in log
                             for log in logs
                         )
 
@@ -200,8 +196,7 @@ class PumpFunMonitor:
             try:
                 # Get recent transactions to pump.fun program
                 signatures = await self.client.get_recent_signatures(
-                    self.client.pumpfun_program,
-                    limit=20
+                    self.client.pumpfun_program, limit=20
                 )
 
                 for sig_info in signatures:
@@ -263,8 +258,12 @@ class PumpFunMonitor:
             if meta.inner_instructions:
                 for inner in meta.inner_instructions:
                     for ix in inner.instructions:
-                        if hasattr(ix, 'program_id') and str(ix.program_id) == pumpfun_id:
-                            ix_data = b64.b64decode(ix.data) if isinstance(ix.data, str) else bytes(ix.data)
+                        if hasattr(ix, "program_id") and str(ix.program_id) == pumpfun_id:
+                            ix_data = (
+                                b64.b64decode(ix.data)
+                                if isinstance(ix.data, str)
+                                else bytes(ix.data)
+                            )
                             if self.launch_detector.is_create_instruction(ix_data):
                                 return True
 
@@ -274,14 +273,13 @@ class PumpFunMonitor:
             self.logger.error("Error parsing transaction for launch detection", e)
             return False
 
-    async def _extract_token_data(self, tx) -> Optional[Dict]:
+    async def _extract_token_data(self, tx) -> dict | None:
         """
         Extract token details from a launch transaction.
         Uses TokenLaunchDetector to parse instruction data and accounts,
         then fetches bonding curve state for pricing info.
         """
         try:
-            meta = tx.transaction.meta
             message = tx.transaction.transaction.message
             pumpfun_id = str(self.client.pumpfun_program)
 
@@ -339,17 +337,16 @@ class PumpFunMonitor:
             self.logger.error("Error extracting token data", e)
             return None
 
-    def _meets_criteria(self, token_data: Dict) -> bool:
+    def _meets_criteria(self, token_data: dict) -> bool:
         """
         Quality filter. Not all launches are created equal.
         """
         liq = token_data.get("initial_liquidity_sol", 0)
-        mcap = token_data.get("market_cap_sol", float('inf'))
+        mcap = token_data.get("market_cap_sol", float("inf"))
 
         if liq < self.config.min_initial_liquidity_sol:
             self.logger.info(
-                f"Skipping {token_data.get('symbol', '???')}: "
-                f"liquidity too low ({liq:.2f} SOL)"
+                f"Skipping {token_data.get('symbol', '???')}: " f"liquidity too low ({liq:.2f} SOL)"
             )
             return False
 
@@ -369,12 +366,14 @@ class PumpFunMonitor:
         # Unsubscribe from WebSocket if active
         if self.ws_connection and self.ws_subscription_id is not None:
             try:
-                unsub_msg = json.dumps({
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "logsUnsubscribe",
-                    "params": [self.ws_subscription_id]
-                })
+                unsub_msg = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "logsUnsubscribe",
+                        "params": [self.ws_subscription_id],
+                    }
+                )
                 await self.ws_connection.send(unsub_msg)
                 await self.ws_connection.close()
             except Exception as e:

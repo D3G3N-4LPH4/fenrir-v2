@@ -7,25 +7,20 @@ Executes trades directly against pump.fun's bonding curve program.
 """
 
 import asyncio
-from typing import Optional, Dict
 
-from solders.pubkey import Pubkey
-from solders.transaction import Transaction
+from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 from solders.message import Message
-from solders.compute_budget import set_compute_unit_price, set_compute_unit_limit
+from solders.pubkey import Pubkey
 from solders.token.associated import get_associated_token_address
+from solders.transaction import Transaction
 
 from fenrir.config import BotConfig, TradingMode
-from fenrir.logger import FenrirLogger
-from fenrir.core.wallet import WalletManager
 from fenrir.core.client import SolanaClient
 from fenrir.core.jupiter import JupiterSwapEngine
 from fenrir.core.positions import PositionManager
-from fenrir.protocol.pumpfun import PumpFunProgram, BondingCurveState
-from fenrir.exceptions import (
-    ExecutionError, BondingCurveMigratedError, SlippageExceededError,
-)
-
+from fenrir.core.wallet import WalletManager
+from fenrir.logger import FenrirLogger
+from fenrir.protocol.pumpfun import BondingCurveState, PumpFunProgram
 
 LAMPORTS_PER_SOL = 1_000_000_000
 DEFAULT_COMPUTE_UNITS = 200_000
@@ -60,9 +55,7 @@ class TradingEngine:
         # Direct pump.fun program interface
         self.pumpfun = PumpFunProgram()
 
-    async def execute_buy(
-        self, token_data: Dict, amount_sol: Optional[float] = None
-    ) -> bool:
+    async def execute_buy(self, token_data: dict, amount_sol: float | None = None) -> bool:
         """
         Snipe a new token launch via direct pump.fun bonding curve buy.
 
@@ -83,7 +76,9 @@ class TradingEngine:
             curve_state = token_data.get("bonding_curve_state")
             if curve_state and isinstance(curve_state, BondingCurveState):
                 tokens_out, _ = curve_state.calculate_buy_price(amount_sol)
-                sim_price = (amount_sol * LAMPORTS_PER_SOL) / tokens_out if tokens_out > 0 else 0.000001
+                sim_price = (
+                    (amount_sol * LAMPORTS_PER_SOL) / tokens_out if tokens_out > 0 else 0.000001
+                )
             else:
                 tokens_out = int(amount_sol / 0.000001)
                 sim_price = 0.000001
@@ -92,7 +87,7 @@ class TradingEngine:
                 token_address=token_address,
                 entry_price=sim_price,
                 amount_tokens=tokens_out,
-                amount_sol=amount_sol
+                amount_sol=amount_sol,
             )
             return True
 
@@ -161,9 +156,7 @@ class TradingEngine:
             )
 
             # 7. Build compute budget instructions for priority
-            compute_price_ix = set_compute_unit_price(
-                self.config.priority_fee_lamports
-            )
+            compute_price_ix = set_compute_unit_price(self.config.priority_fee_lamports)
             compute_limit_ix = set_compute_unit_limit(DEFAULT_COMPUTE_UNITS)
 
             # 8. Get recent blockhash
@@ -221,7 +214,7 @@ class TradingEngine:
                 token_address=token_address,
                 entry_price=entry_price,
                 amount_tokens=tokens_out,
-                amount_sol=amount_sol
+                amount_sol=amount_sol,
             )
 
             self.logger.info(f"TX Signature: {signature}")
@@ -245,12 +238,9 @@ class TradingEngine:
         if self.config.mode == TradingMode.SIMULATION:
             self.logger.info("SIMULATION MODE - No real transaction sent")
             # Calculate simulated exit price from current position data
-            exit_price = position.current_price or position.entry_price
             pnl_pct = position.get_pnl_percent()
             pnl_sol = position.get_pnl_sol()
-            self.logger.info(
-                f"   Sim exit: PnL {pnl_pct:+.2f}% ({pnl_sol:+.4f} SOL)"
-            )
+            self.logger.info(f"   Sim exit: PnL {pnl_pct:+.2f}% ({pnl_sol:+.4f} SOL)")
             self.positions.close_position(token_address, reason)
             return True
 
@@ -273,9 +263,7 @@ class TradingEngine:
                 return False
 
             if curve_state.complete:
-                self.logger.info(
-                    "Token migrated to Raydium - attempting Jupiter DEX fallback"
-                )
+                self.logger.info("Token migrated to Raydium - attempting Jupiter DEX fallback")
                 return await self._execute_sell_via_jupiter(
                     token_address, token_mint, position, reason
                 )
@@ -301,9 +289,7 @@ class TradingEngine:
             sol_out_lamports, price_impact = curve_state.calculate_sell_price(sell_amount)
 
             # Apply slippage for minimum output protection
-            min_sol_output = int(
-                sol_out_lamports * (1 - self.config.max_slippage_bps / 10000)
-            )
+            min_sol_output = int(sol_out_lamports * (1 - self.config.max_slippage_bps / 10000))
 
             # 5. Get associated bonding curve token account
             assoc_bonding_curve = self.pumpfun.get_associated_bonding_curve_address(
@@ -322,9 +308,7 @@ class TradingEngine:
             )
 
             # 7. Build compute budget instructions
-            compute_price_ix = set_compute_unit_price(
-                self.config.priority_fee_lamports
-            )
+            compute_price_ix = set_compute_unit_price(self.config.priority_fee_lamports)
             compute_limit_ix = set_compute_unit_limit(DEFAULT_COMPUTE_UNITS)
 
             # 8. Get recent blockhash
@@ -414,16 +398,12 @@ class TradingEngine:
                 return False
 
             # Get swap transaction
-            swap_tx_b64 = await self.jupiter.get_swap_transaction(
-                quote, str(self.wallet.pubkey)
-            )
+            swap_tx_b64 = await self.jupiter.get_swap_transaction(quote, str(self.wallet.pubkey))
             if not swap_tx_b64:
                 self.logger.warning("Jupiter swap transaction build failed")
                 return False
 
-            self.logger.info(
-                f"Jupiter sell fallback: {token_address[:8]}... | Reason: {reason}"
-            )
+            self.logger.info(f"Jupiter sell fallback: {token_address[:8]}... | Reason: {reason}")
             self.positions.close_position(token_address, reason)
             return True
 
@@ -446,8 +426,10 @@ class TradingEngine:
                     cs = str(status.confirmation_status)
                     if cs in ("confirmed", "finalized"):
                         return True
-            await asyncio.sleep(min(interval * (1.3 ** attempt), 10))
-        self.logger.warning(f"Transaction {signature[:16]}... not confirmed after {max_attempts} attempts")
+            await asyncio.sleep(min(interval * (1.3**attempt), 10))
+        self.logger.warning(
+            f"Transaction {signature[:16]}... not confirmed after {max_attempts} attempts"
+        )
         return False
 
     async def manage_positions(self):

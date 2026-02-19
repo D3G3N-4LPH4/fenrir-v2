@@ -3,9 +3,10 @@ FENRIR Test Suite - Shared Fixtures
 """
 
 import pytest
+
 from fenrir.config import BotConfig
-from fenrir.logger import FenrirLogger
 from fenrir.core.positions import PositionManager
+from fenrir.logger import FenrirLogger
 
 
 @pytest.fixture

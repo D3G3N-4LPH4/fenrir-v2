@@ -7,7 +7,6 @@ Position management and portfolio tracking.
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Tuple
 
 from fenrir.config import BotConfig
 from fenrir.logger import FenrirLogger
@@ -19,6 +18,7 @@ class Position:
     A single token position.
     Every number tells a story of risk and reward.
     """
+
     token_address: str
     entry_time: datetime
     entry_price: float  # Price per token in SOL
@@ -73,14 +73,10 @@ class PositionManager:
     def __init__(self, config: BotConfig, logger: FenrirLogger):
         self.config = config
         self.logger = logger
-        self.positions: Dict[str, Position] = {}
+        self.positions: dict[str, Position] = {}
 
     def open_position(
-        self,
-        token_address: str,
-        entry_price: float,
-        amount_tokens: float,
-        amount_sol: float
+        self, token_address: str, entry_price: float, amount_tokens: float, amount_sol: float
     ):
         """Open a new position with ceremony."""
         position = Position(
@@ -90,12 +86,12 @@ class PositionManager:
             amount_tokens=amount_tokens,
             amount_sol_invested=amount_sol,
             peak_price=entry_price,
-            current_price=entry_price
+            current_price=entry_price,
         )
         self.positions[token_address] = position
         self.logger.info(f"Position opened: {token_address[:8]}... | {amount_tokens:.2f} tokens")
 
-    def close_position(self, token_address: str, reason: str) -> Optional[Position]:
+    def close_position(self, token_address: str, reason: str) -> Position | None:
         """Close and return the position."""
         if token_address in self.positions:
             position = self.positions.pop(token_address)
@@ -104,13 +100,13 @@ class PositionManager:
             return position
         return None
 
-    def update_prices(self, prices: Dict[str, float]):
+    def update_prices(self, prices: dict[str, float]):
         """Batch update all position prices."""
         for token_address, price in prices.items():
             if token_address in self.positions:
                 self.positions[token_address].update_price(price)
 
-    def check_exit_conditions(self) -> List[Tuple[str, str]]:
+    def check_exit_conditions(self) -> list[tuple[str, str]]:
         """
         Check all positions for exit signals.
         Returns list of (token_address, reason) tuples.
@@ -128,15 +124,20 @@ class PositionManager:
 
             # Trailing stop
             elif position.should_trailing_stop(self.config.trailing_stop_pct):
-                exits.append((token_address, f"Trailing Stop: down {self.config.trailing_stop_pct}% from peak"))
+                exits.append(
+                    (
+                        token_address,
+                        f"Trailing Stop: down {self.config.trailing_stop_pct}% from peak",
+                    )
+                )
 
             # Time-based exit
             elif position.is_expired(self.config.max_position_age_minutes):
-                exits.append((token_address, f"Max hold time reached"))
+                exits.append((token_address, "Max hold time reached"))
 
         return exits
 
-    def get_portfolio_summary(self) -> Dict:
+    def get_portfolio_summary(self) -> dict:
         """Beautiful portfolio snapshot."""
         total_invested = sum(p.amount_sol_invested for p in self.positions.values())
         total_current = sum(p.amount_tokens * p.current_price for p in self.positions.values())
@@ -147,5 +148,5 @@ class PositionManager:
             "total_invested_sol": total_invested,
             "current_value_sol": total_current,
             "total_pnl_sol": total_pnl,
-            "total_pnl_pct": (total_pnl / total_invested * 100) if total_invested > 0 else 0
+            "total_pnl_pct": (total_pnl / total_invested * 100) if total_invested > 0 else 0,
         }

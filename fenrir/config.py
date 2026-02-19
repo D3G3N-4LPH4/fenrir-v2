@@ -9,7 +9,6 @@ import os
 import sys
 from dataclasses import dataclass
 from enum import Enum
-from typing import List
 
 from dotenv import load_dotenv
 
@@ -17,7 +16,7 @@ from dotenv import load_dotenv
 try:
     from solana.rpc.async_api import AsyncClient  # noqa: F401
     from solders.keypair import Keypair  # noqa: F401
-except ImportError as e:
+except ImportError:
     print("Missing dependencies. Install with:")
     print("   pip install solana solders base58 aiohttp python-dotenv websockets")
     sys.exit(1)
@@ -36,6 +35,7 @@ def _ensure_dotenv() -> None:
 
 class TradingMode(Enum):
     """Trading modes reflecting different risk appetites."""
+
     SIMULATION = "simulation"  # Paper trading - no real txs
     CONSERVATIVE = "conservative"  # Small positions, strict stops
     AGGRESSIVE = "aggressive"  # Larger positions, wider stops
@@ -48,6 +48,7 @@ class BotConfig:
     The brain of FENRIR. Every parameter tuned for elegance and control.
     Think of this as the DNA of your trading strategy.
     """
+
     # Network & Connection
     rpc_url: str = ""
     ws_url: str = ""
@@ -124,7 +125,7 @@ class BotConfig:
             f"buy_amount_sol={self.buy_amount_sol})"
         )
 
-    def validate(self) -> List[str]:
+    def validate(self) -> list[str]:
         """Validation that feels like a caring mentor checking your homework."""
         errors = []
 
@@ -132,7 +133,9 @@ class BotConfig:
             errors.append("RPC URL required - get one from QuickNode or Helius")
 
         if self.rpc_url and not self.rpc_url.startswith("https://"):
-            if not self.rpc_url.startswith("http://127.0.0.1") and not self.rpc_url.startswith("http://localhost"):
+            if not self.rpc_url.startswith("http://127.0.0.1") and not self.rpc_url.startswith(
+                "http://localhost"
+            ):
                 errors.append("RPC URL must use HTTPS (plaintext HTTP leaks wallet data)")
 
         if self.mode != TradingMode.SIMULATION and not self.private_key:
@@ -155,7 +158,9 @@ class BotConfig:
 
         # AI configuration validation
         if self.ai_analysis_enabled and not self.ai_api_key:
-            errors.append("AI API key required when ai_analysis_enabled=True (set OPENROUTER_API_KEY)")
+            errors.append(
+                "AI API key required when ai_analysis_enabled=True (set OPENROUTER_API_KEY)"
+            )
 
         if not (0.0 <= self.ai_temperature <= 2.0):
             errors.append("AI temperature must be between 0.0 and 2.0")

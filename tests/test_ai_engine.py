@@ -9,23 +9,21 @@ Tests for:
 Run with: pytest tests/test_ai_engine.py -v
 """
 
-import asyncio
 import json
-import pytest
-import pytest_asyncio
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from fenrir.ai.brain import ClaudeBrain
 from fenrir.ai.decision_engine import (
     AIDecision,
     AITradingAnalyst,
     TokenAnalysis,
     TokenMetadata,
 )
-from fenrir.ai.brain import ClaudeBrain
 from fenrir.config import BotConfig
 from fenrir.logger import FenrirLogger
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  FIXTURES
@@ -55,21 +53,23 @@ def sample_token_metadata():
 @pytest.fixture
 def valid_llm_json_response():
     """A valid JSON response as the LLM would return it."""
-    return json.dumps({
-        "decision": "BUY",
-        "confidence": 0.78,
-        "risk_score": 5.5,
-        "reasoning": "Strong social presence and reasonable liquidity.",
-        "red_flags": ["New creator"],
-        "green_flags": ["Active community", "Good liquidity"],
-        "suggested_buy_amount_sol": 0.15,
-        "suggested_stop_loss_pct": 30,
-        "suggested_take_profit_pct": 150,
-        "social_score": 7.5,
-        "liquidity_score": 8.0,
-        "holder_score": 6.0,
-        "timing_score": 7.0,
-    })
+    return json.dumps(
+        {
+            "decision": "BUY",
+            "confidence": 0.78,
+            "risk_score": 5.5,
+            "reasoning": "Strong social presence and reasonable liquidity.",
+            "red_flags": ["New creator"],
+            "green_flags": ["Active community", "Good liquidity"],
+            "suggested_buy_amount_sol": 0.15,
+            "suggested_stop_loss_pct": 30,
+            "suggested_take_profit_pct": 150,
+            "social_score": 7.5,
+            "liquidity_score": 8.0,
+            "holder_score": 6.0,
+            "timing_score": 7.0,
+        }
+    )
 
 
 @pytest.fixture
@@ -178,14 +178,16 @@ class TestAITradingAnalystParseResponse:
 
     def test_json_wrapped_in_markdown_code_block(self, analyst, sample_token_metadata):
         """JSON wrapped in ```json ... ``` should still parse correctly."""
-        raw = json.dumps({
-            "decision": "STRONG_BUY",
-            "confidence": 0.92,
-            "risk_score": 3.0,
-            "reasoning": "Extremely bullish setup.",
-            "red_flags": [],
-            "green_flags": ["Low risk"],
-        })
+        raw = json.dumps(
+            {
+                "decision": "STRONG_BUY",
+                "confidence": 0.92,
+                "risk_score": 3.0,
+                "reasoning": "Extremely bullish setup.",
+                "red_flags": [],
+                "green_flags": ["Low risk"],
+            }
+        )
         wrapped = f"Here is my analysis:\n```json\n{raw}\n```\n"
 
         analysis = analyst._parse_llm_response(wrapped, sample_token_metadata)
@@ -217,45 +219,53 @@ class TestAITradingAnalystParseResponse:
 
     def test_decision_mapping_avoid(self, analyst, sample_token_metadata):
         """AVOID decision string should map to AIDecision.AVOID."""
-        raw = json.dumps({
-            "decision": "AVOID",
-            "confidence": 0.9,
-            "risk_score": 9.0,
-            "reasoning": "Likely rug pull.",
-        })
+        raw = json.dumps(
+            {
+                "decision": "AVOID",
+                "confidence": 0.9,
+                "risk_score": 9.0,
+                "reasoning": "Likely rug pull.",
+            }
+        )
         analysis = analyst._parse_llm_response(raw, sample_token_metadata)
         assert analysis.decision == AIDecision.AVOID
 
     def test_decision_mapping_skip(self, analyst, sample_token_metadata):
         """SKIP decision string should map to AIDecision.SKIP."""
-        raw = json.dumps({
-            "decision": "SKIP",
-            "confidence": 0.4,
-            "risk_score": 7.0,
-            "reasoning": "Not enough data.",
-        })
+        raw = json.dumps(
+            {
+                "decision": "SKIP",
+                "confidence": 0.4,
+                "risk_score": 7.0,
+                "reasoning": "Not enough data.",
+            }
+        )
         analysis = analyst._parse_llm_response(raw, sample_token_metadata)
         assert analysis.decision == AIDecision.SKIP
 
     def test_unknown_decision_defaults_to_skip(self, analyst, sample_token_metadata):
         """Unknown decision string should default to SKIP."""
-        raw = json.dumps({
-            "decision": "YOLO",
-            "confidence": 0.5,
-            "risk_score": 5.0,
-            "reasoning": "Unknown intent.",
-        })
+        raw = json.dumps(
+            {
+                "decision": "YOLO",
+                "confidence": 0.5,
+                "risk_score": 5.0,
+                "reasoning": "Unknown intent.",
+            }
+        )
         analysis = analyst._parse_llm_response(raw, sample_token_metadata)
         assert analysis.decision == AIDecision.SKIP
 
     def test_missing_optional_fields_use_defaults(self, analyst, sample_token_metadata):
         """Response missing optional fields should use sensible defaults."""
-        raw = json.dumps({
-            "decision": "BUY",
-            "confidence": 0.65,
-            "risk_score": 4.0,
-            "reasoning": "Looks good.",
-        })
+        raw = json.dumps(
+            {
+                "decision": "BUY",
+                "confidence": 0.65,
+                "risk_score": 4.0,
+                "reasoning": "Looks good.",
+            }
+        )
         analysis = analyst._parse_llm_response(raw, sample_token_metadata)
 
         assert analysis.decision == AIDecision.BUY
@@ -342,16 +352,18 @@ class TestAITradingAnalystTrackPrediction:
     def test_updates_prediction_with_actual_pnl(self, analyst):
         """track_prediction_outcome should backfill actual_performance for the matching token."""
         # Manually add a prediction entry (simulating what analyze_token_launch would do)
-        analyst.predictions.append({
-            "token_mint": "TOKEN_A",
-            "analysis": TokenAnalysis(
-                decision=AIDecision.BUY,
-                confidence=0.8,
-                reasoning="Test",
-                risk_score=4.0,
-            ),
-            "actual_performance": None,
-        })
+        analyst.predictions.append(
+            {
+                "token_mint": "TOKEN_A",
+                "analysis": TokenAnalysis(
+                    decision=AIDecision.BUY,
+                    confidence=0.8,
+                    reasoning="Test",
+                    risk_score=4.0,
+                ),
+                "actual_performance": None,
+            }
+        )
 
         analyst.track_prediction_outcome("TOKEN_A", actual_pnl_pct=55.0, hold_time_minutes=15)
 
@@ -363,11 +375,13 @@ class TestAITradingAnalystTrackPrediction:
 
     def test_no_match_leaves_predictions_unchanged(self, analyst):
         """If the token mint doesn't match any prediction, nothing should change."""
-        analyst.predictions.append({
-            "token_mint": "TOKEN_A",
-            "analysis": MagicMock(),
-            "actual_performance": None,
-        })
+        analyst.predictions.append(
+            {
+                "token_mint": "TOKEN_A",
+                "analysis": MagicMock(),
+                "actual_performance": None,
+            }
+        )
 
         analyst.track_prediction_outcome("TOKEN_Z", actual_pnl_pct=-20.0, hold_time_minutes=5)
 
@@ -406,9 +420,7 @@ class TestClaudeBrainEvaluateEntry:
         brain.analyst = MagicMock(spec=AITradingAnalyst)
 
         # Make analyze_token_launch_with_context raise TimeoutError
-        brain.analyst.analyze_token_launch_with_context = AsyncMock(
-            side_effect=asyncio.TimeoutError()
-        )
+        brain.analyst.analyze_token_launch_with_context = AsyncMock(side_effect=TimeoutError())
         brain.enabled = True
 
         should_buy, analysis, amount = await brain.evaluate_entry(sample_token_data, {})
@@ -427,9 +439,7 @@ class TestClaudeBrainEvaluateEntry:
         ai_enabled_config.ai_fallback_to_rules = False
         brain = ClaudeBrain(ai_enabled_config, mock_logger)
         brain.analyst = MagicMock(spec=AITradingAnalyst)
-        brain.analyst.analyze_token_launch_with_context = AsyncMock(
-            side_effect=asyncio.TimeoutError()
-        )
+        brain.analyst.analyze_token_launch_with_context = AsyncMock(side_effect=TimeoutError())
         brain.enabled = True
 
         should_buy, analysis, amount = await brain.evaluate_entry(sample_token_data, {})
@@ -454,9 +464,7 @@ class TestClaudeBrainEvaluateEntry:
             red_flags=[],
             green_flags=["Good liquidity"],
         )
-        brain.analyst.analyze_token_launch_with_context = AsyncMock(
-            return_value=mock_analysis
-        )
+        brain.analyst.analyze_token_launch_with_context = AsyncMock(return_value=mock_analysis)
 
         should_buy, analysis, amount = await brain.evaluate_entry(sample_token_data, {})
 
@@ -465,9 +473,7 @@ class TestClaudeBrainEvaluateEntry:
         assert brain.stats["ai_entries_bought"] == 1
 
     @pytest.mark.asyncio
-    async def test_ai_skip_decision(
-        self, ai_enabled_config, mock_logger, sample_token_data
-    ):
+    async def test_ai_skip_decision(self, ai_enabled_config, mock_logger, sample_token_data):
         """AI returning SKIP should result in should_buy=False."""
         brain = ClaudeBrain(ai_enabled_config, mock_logger)
         brain.analyst = MagicMock(spec=AITradingAnalyst)
@@ -479,9 +485,7 @@ class TestClaudeBrainEvaluateEntry:
             reasoning="Too risky",
             risk_score=8.0,
         )
-        brain.analyst.analyze_token_launch_with_context = AsyncMock(
-            return_value=mock_analysis
-        )
+        brain.analyst.analyze_token_launch_with_context = AsyncMock(return_value=mock_analysis)
 
         should_buy, analysis, amount = await brain.evaluate_entry(sample_token_data, {})
 
@@ -505,9 +509,7 @@ class TestClaudeBrainEvaluateEntry:
             reasoning="Uncertain",
             risk_score=6.0,
         )
-        brain.analyst.analyze_token_launch_with_context = AsyncMock(
-            return_value=mock_analysis
-        )
+        brain.analyst.analyze_token_launch_with_context = AsyncMock(return_value=mock_analysis)
 
         should_buy, analysis, _ = await brain.evaluate_entry(sample_token_data, {})
 
@@ -556,9 +558,7 @@ class TestClaudeBrainEvaluateExit:
         # Set last eval to "just now" — within the 60s cadence interval
         brain._last_exit_eval["TOKEN1"] = datetime.now()
 
-        action, reason = await brain.evaluate_exit(
-            "TOKEN1", mock_position, mechanical_trigger=None
-        )
+        action, reason = await brain.evaluate_exit("TOKEN1", mock_position, mechanical_trigger=None)
 
         assert action == "HOLD"
         assert reason is None
@@ -591,9 +591,7 @@ class TestClaudeBrainEvaluateExit:
         brain.analyst.evaluate_exit_strategy_with_context.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_ai_override_hold_on_trigger(
-        self, ai_enabled_config, mock_logger, mock_position
-    ):
+    async def test_ai_override_hold_on_trigger(self, ai_enabled_config, mock_logger, mock_position):
         """AI returning HOLD when a trigger fired should produce OVERRIDE_HOLD."""
         brain = ClaudeBrain(ai_enabled_config, mock_logger)
         brain.analyst = MagicMock(spec=AITradingAnalyst)
@@ -623,9 +621,7 @@ class TestClaudeBrainEvaluateExit:
         brain.analyst = MagicMock(spec=AITradingAnalyst)
         brain.enabled = True
 
-        brain.analyst.evaluate_exit_strategy_with_context = AsyncMock(
-            side_effect=asyncio.TimeoutError()
-        )
+        brain.analyst.evaluate_exit_strategy_with_context = AsyncMock(side_effect=TimeoutError())
 
         action, reason = await brain.evaluate_exit(
             "TOKEN1", mock_position, mechanical_trigger="Stop Loss: -25%"
@@ -643,13 +639,9 @@ class TestClaudeBrainEvaluateExit:
         brain.analyst = MagicMock(spec=AITradingAnalyst)
         brain.enabled = True
 
-        brain.analyst.evaluate_exit_strategy_with_context = AsyncMock(
-            side_effect=asyncio.TimeoutError()
-        )
+        brain.analyst.evaluate_exit_strategy_with_context = AsyncMock(side_effect=TimeoutError())
 
-        action, reason = await brain.evaluate_exit(
-            "TOKEN1", mock_position, mechanical_trigger=None
-        )
+        action, reason = await brain.evaluate_exit("TOKEN1", mock_position, mechanical_trigger=None)
 
         assert action == "HOLD"
         assert reason is None
@@ -769,9 +761,7 @@ class TestClaudeBrainRecordTradeOutcome:
             hold_time_minutes=5,
         )
 
-        brain.analyst.track_prediction_outcome.assert_called_once_with(
-            "TOKEN_A", -15.0, 5
-        )
+        brain.analyst.track_prediction_outcome.assert_called_once_with("TOKEN_A", -15.0, 5)
 
     def test_no_analyst_does_not_raise(self, ai_disabled_config, mock_logger):
         """When analyst is None, record_trade_outcome should not raise."""
@@ -801,9 +791,7 @@ class TestClaudeBrainRecordTradeOutcome:
             pnl_sol=0.02,
         )
 
-        brain.memory.update_outcome.assert_called_once_with(
-            "TOKEN_A", 20.0, "Take Profit", 8, 0.02
-        )
+        brain.memory.update_outcome.assert_called_once_with("TOKEN_A", 20.0, "Take Profit", 8, 0.02)
 
 
 class TestClaudeBrainHardFloor:

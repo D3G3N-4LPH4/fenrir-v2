@@ -4,28 +4,35 @@ Fenrir Trading Bot - FastAPI Backend
 RESTful API for controlling the Fenrir pump.fun trading bot from the AI Terminal Agent
 """
 
+import asyncio
+import logging
 import os
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
+from datetime import datetime
+from enum import Enum
 from logging.handlers import RotatingFileHandler
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
+from typing import Any
+
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, List, Any
-import asyncio
-import json
-import logging
-from datetime import datetime
-from enum import Enum
 
 # Import Fenrir bot components
 try:
-    from fenrir import (
-        FenrirBot, BotConfig, TradingMode, FenrirLogger,
-        WalletManager, SolanaClient, JupiterSwapEngine,
-        PositionManager, TradingEngine, PumpFunMonitor
+    from fenrir import (  # noqa: F401
+        BotConfig,
+        FenrirBot,
+        FenrirLogger,
+        JupiterSwapEngine,
+        PositionManager,
+        PumpFunMonitor,
+        SolanaClient,
+        TradingEngine,
+        TradingMode,
+        WalletManager,
     )
 except ImportError:
     print("Warning: fenrir package not found.")
@@ -45,15 +52,16 @@ if not any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
         backupCount=5,
         encoding="utf-8",
     )
-    _file_handler.setFormatter(logging.Formatter(
-        "%(asctime)s | %(levelname)8s | %(name)s | %(message)s"
-    ))
+    _file_handler.setFormatter(
+        logging.Formatter("%(asctime)s | %(levelname)8s | %(name)s | %(message)s")
+    )
     logger.addHandler(_file_handler)
 
 
 # ===================================================================
 #                          RATE LIMITER
 # ===================================================================
+
 
 class RateLimiter:
     """
@@ -65,7 +73,7 @@ class RateLimiter:
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         # IP -> list of request timestamps
-        self._requests: Dict[str, List[float]] = defaultdict(list)
+        self._requests: dict[str, list[float]] = defaultdict(list)
 
     def is_allowed(self, client_ip: str) -> bool:
         """Return True if the request is within the rate limit."""
@@ -100,24 +108,20 @@ FENRIR_API_KEY = os.getenv("FENRIR_API_KEY", "")
 FENRIR_DEV_MODE = os.getenv("FENRIR_DEV_MODE", "false").lower() == "true"
 
 # Global bot instance and state
-bot_instance: Optional[FenrirBot] = None
-bot_task: Optional[asyncio.Task] = None
-bot_state = {
-    "status": "stopped",
-    "start_time": None,
-    "config": None,
-    "error": None
-}
+bot_instance: FenrirBot | None = None
+bot_task: asyncio.Task | None = None
+bot_state = {"status": "stopped", "start_time": None, "config": None, "error": None}
 # Lock protecting bot_state and bot_instance mutations from concurrent requests
 bot_state_lock = asyncio.Lock()
 
 # WebSocket connections for real-time updates
-active_websockets: List[WebSocket] = []
+active_websockets: list[WebSocket] = []
 
 
 # ===================================================================
 #                          LIFESPAN (replaces deprecated on_event)
 # ===================================================================
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -173,6 +177,7 @@ app.add_middleware(
 #                        AUTHENTICATION MIDDLEWARE
 # ===================================================================
 
+
 @app.middleware("http")
 async def verify_api_key(request: Request, call_next):
     """Require X-API-Key header on all endpoints except health checks."""
@@ -187,7 +192,9 @@ async def verify_api_key(request: Request, call_next):
             return await call_next(request)
         return JSONResponse(
             status_code=500,
-            content={"detail": "FENRIR_API_KEY not configured. Set it or enable FENRIR_DEV_MODE=true."}
+            content={
+                "detail": "FENRIR_API_KEY not configured. Set it or enable FENRIR_DEV_MODE=true."
+            },
         )
 
     # Skip auth for WebSocket upgrade (handled in WS endpoint)
@@ -223,8 +230,10 @@ async def rate_limit_middleware(request: Request, call_next):
 #                            PYDANTIC MODELS
 # ===================================================================
 
+
 class TradingModeEnum(str, Enum):
     """Trading mode options"""
+
     SIMULATION = "simulation"
     CONSERVATIVE = "conservative"
     AGGRESSIVE = "aggressive"
@@ -237,6 +246,7 @@ class StartBotRequest(BaseModel):
     NOTE: Private keys must NEVER be sent via API. They are loaded
     exclusively from the WALLET_PRIVATE_KEY environment variable.
     """
+
     mode: TradingModeEnum = Field(default=TradingModeEnum.SIMULATION)
     buy_amount_sol: float = Field(default=0.1, gt=0, description="SOL per trade")
     stop_loss_pct: float = Field(default=25.0, gt=0, lt=100, description="Stop loss %")
@@ -245,31 +255,34 @@ class StartBotRequest(BaseModel):
     max_position_age_minutes: int = Field(default=60, gt=0, description="Max hold time")
     min_initial_liquidity_sol: float = Field(default=5.0, gt=0, description="Min liquidity")
     max_initial_market_cap_sol: float = Field(default=100.0, gt=0, description="Max market cap")
-    rpc_url: Optional[str] = Field(default=None, description="Custom RPC URL")
+    rpc_url: str | None = Field(default=None, description="Custom RPC URL")
 
 
 class ManualTradeRequest(BaseModel):
     """Manual trade execution"""
+
     action: str = Field(..., description="'buy' or 'sell'")
     token_address: str = Field(..., description="Token mint address")
-    amount: Optional[float] = Field(default=None, description="Amount (SOL for buy, tokens for sell)")
+    amount: float | None = Field(default=None, description="Amount (SOL for buy, tokens for sell)")
 
 
 class BotStatusResponse(BaseModel):
     """Bot status response"""
+
     status: str
-    mode: Optional[str] = None
-    uptime_seconds: Optional[float] = None
+    mode: str | None = None
+    uptime_seconds: float | None = None
     positions_count: int = 0
-    portfolio: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
+    portfolio: dict[str, Any] | None = None
+    error: str | None = None
 
 
 # ===================================================================
 #                            HELPER FUNCTIONS
 # ===================================================================
 
-async def broadcast_update(message: Dict):
+
+async def broadcast_update(message: dict):
     """Broadcast update to all connected WebSocket clients"""
     disconnected = []
     for websocket in active_websockets:
@@ -283,7 +296,7 @@ async def broadcast_update(message: Dict):
             active_websockets.remove(ws)
 
 
-def get_uptime() -> Optional[float]:
+def get_uptime() -> float | None:
     """Calculate bot uptime in seconds"""
     if bot_state["start_time"]:
         return (datetime.now() - bot_state["start_time"]).total_seconds()
@@ -294,14 +307,11 @@ def get_uptime() -> Optional[float]:
 #                            API ENDPOINTS
 # ===================================================================
 
+
 @app.get("/")
 async def root():
     """API health check"""
-    return {
-        "service": "Fenrir Trading Bot API",
-        "version": "1.0.0",
-        "status": "operational"
-    }
+    return {"service": "Fenrir Trading Bot API", "version": "1.0.0", "status": "operational"}
 
 
 @app.get("/health")
@@ -311,7 +321,7 @@ async def health_check():
         "status": "healthy",
         "bot_status": bot_state["status"],
         "uptime_seconds": get_uptime(),
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
     }
 
 
@@ -346,7 +356,9 @@ async def start_bot(request: StartBotRequest):
 
             errors = config.validate()
             if errors:
-                raise HTTPException(status_code=400, detail=f"Invalid configuration: {', '.join(errors)}")
+                raise HTTPException(
+                    status_code=400, detail=f"Invalid configuration: {', '.join(errors)}"
+                )
 
             bot_instance = FenrirBot(config)
             bot_task = asyncio.create_task(bot_instance.start())
@@ -362,20 +374,22 @@ async def start_bot(request: StartBotRequest):
             bot_state["status"] = "error"
             bot_state["error"] = str(e)
             logger.error(f"Failed to start bot: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to start bot: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to start bot: {str(e)}") from e
 
-    await broadcast_update({
-        "event": "bot_started",
-        "mode": request.mode.value,
-        "timestamp": datetime.now().isoformat()
-    })
+    await broadcast_update(
+        {
+            "event": "bot_started",
+            "mode": request.mode.value,
+            "timestamp": datetime.now().isoformat(),
+        }
+    )
 
     logger.info(f"Fenrir bot started in {request.mode.value} mode")
 
     return {
         "status": "success",
         "message": f"Fenrir bot started in {request.mode.value} mode",
-        "config": request.model_dump()
+        "config": request.model_dump(),
     }
 
 
@@ -404,12 +418,9 @@ async def stop_bot():
 
         except Exception as e:
             logger.error(f"Error stopping bot: {e}")
-            raise HTTPException(status_code=500, detail=f"Error stopping bot: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Error stopping bot: {str(e)}") from e
 
-    await broadcast_update({
-        "event": "bot_stopped",
-        "timestamp": datetime.now().isoformat()
-    })
+    await broadcast_update({"event": "bot_stopped", "timestamp": datetime.now().isoformat()})
 
     logger.info("Fenrir bot stopped")
     return {"status": "success", "message": "Fenrir bot stopped successfully"}
@@ -432,12 +443,12 @@ async def get_bot_status():
             uptime_seconds=get_uptime(),
             positions_count=positions_count,
             portfolio=portfolio,
-            error=bot_state["error"]
+            error=bot_state["error"],
         )
 
     except Exception as e:
         logger.error(f"Error getting bot status: {e}")
-        raise HTTPException(status_code=500, detail=f"Error getting status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error getting status: {str(e)}") from e
 
 
 @app.get("/bot/positions")
@@ -449,23 +460,25 @@ async def get_positions():
     try:
         positions = []
         for token_address, position in bot_instance.positions.positions.items():
-            positions.append({
-                "token_address": token_address,
-                "entry_time": position.entry_time.isoformat(),
-                "entry_price": position.entry_price,
-                "current_price": position.current_price,
-                "amount_tokens": position.amount_tokens,
-                "amount_sol_invested": position.amount_sol_invested,
-                "pnl_percent": position.get_pnl_percent(),
-                "pnl_sol": position.get_pnl_sol(),
-                "peak_price": position.peak_price,
-            })
+            positions.append(
+                {
+                    "token_address": token_address,
+                    "entry_time": position.entry_time.isoformat(),
+                    "entry_price": position.entry_price,
+                    "current_price": position.current_price,
+                    "amount_tokens": position.amount_tokens,
+                    "amount_sol_invested": position.amount_sol_invested,
+                    "pnl_percent": position.get_pnl_percent(),
+                    "pnl_sol": position.get_pnl_sol(),
+                    "peak_price": position.peak_price,
+                }
+            )
 
         return {"positions": positions}
 
     except Exception as e:
         logger.error(f"Error getting positions: {e}")
-        raise HTTPException(status_code=500, detail=f"Error getting positions: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error getting positions: {str(e)}") from e
 
 
 @app.post("/bot/trade")
@@ -480,33 +493,39 @@ async def execute_manual_trade(request: ManualTradeRequest):
                 "token_address": request.token_address,
                 "initial_liquidity_sol": 10.0,
                 "market_cap_sol": 50.0,
-                "launch_time": datetime.now()
+                "launch_time": datetime.now(),
             }
             success = await bot_instance.trading_engine.execute_buy(token_data)
 
             if success:
-                await broadcast_update({
-                    "event": "manual_buy",
-                    "token": request.token_address,
-                    "timestamp": datetime.now().isoformat()
-                })
+                await broadcast_update(
+                    {
+                        "event": "manual_buy",
+                        "token": request.token_address,
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                )
                 return {"status": "success", "message": f"Buy executed for {request.token_address}"}
             else:
                 raise HTTPException(status_code=500, detail="Buy execution failed")
 
         elif request.action.lower() == "sell":
             success = await bot_instance.trading_engine.execute_sell(
-                request.token_address,
-                "Manual sell via API"
+                request.token_address, "Manual sell via API"
             )
 
             if success:
-                await broadcast_update({
-                    "event": "manual_sell",
-                    "token": request.token_address,
-                    "timestamp": datetime.now().isoformat()
-                })
-                return {"status": "success", "message": f"Sell executed for {request.token_address}"}
+                await broadcast_update(
+                    {
+                        "event": "manual_sell",
+                        "token": request.token_address,
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                )
+                return {
+                    "status": "success",
+                    "message": f"Sell executed for {request.token_address}",
+                }
             else:
                 raise HTTPException(status_code=500, detail="Sell execution failed")
 
@@ -517,7 +536,7 @@ async def execute_manual_trade(request: ManualTradeRequest):
         raise
     except Exception as e:
         logger.error(f"Error executing trade: {e}")
-        raise HTTPException(status_code=500, detail=f"Trade execution error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Trade execution error: {str(e)}") from e
 
 
 @app.get("/bot/config")
@@ -545,7 +564,7 @@ async def websocket_updates(websocket: WebSocket):
         for proto in protocols.split(","):
             proto = proto.strip()
             if proto.startswith("authorization."):
-                api_key = proto[len("authorization."):]
+                api_key = proto[len("authorization.") :]
                 break
         # Fallback: check X-API-Key header (works in non-browser clients)
         if not api_key:
@@ -558,11 +577,13 @@ async def websocket_updates(websocket: WebSocket):
     active_websockets.append(websocket)
 
     try:
-        await websocket.send_json({
-            "event": "connected",
-            "bot_status": bot_state["status"],
-            "timestamp": datetime.now().isoformat()
-        })
+        await websocket.send_json(
+            {
+                "event": "connected",
+                "bot_status": bot_state["status"],
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
 
         while True:
             try:
@@ -583,7 +604,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         app,
-        host="0.0.0.0",
+        host="0.0.0.0",  # noqa: S104
         port=8000,
-        log_level="info"
+        log_level="info",
     )

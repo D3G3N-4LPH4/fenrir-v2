@@ -20,29 +20,29 @@ Outputs:
 """
 
 import json
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
-from collections import defaultdict
 import statistics
+from collections import defaultdict
+from dataclasses import asdict, dataclass
+from datetime import datetime
 
-from fenrir.data.database import TradeDatabase, PositionRecord
+from fenrir.data.database import PositionRecord, TradeDatabase
 
 
 @dataclass
 class PerformanceMetrics:
     """Comprehensive performance metrics."""
+
     # Time period
     start_date: datetime
     end_date: datetime
     days_traded: int
-    
+
     # Trade statistics
     total_trades: int
     winning_trades: int
     losing_trades: int
     win_rate: float
-    
+
     # Returns
     total_pnl_sol: float
     total_pnl_pct: float
@@ -52,24 +52,24 @@ class PerformanceMetrics:
     avg_loss_pct: float
     largest_win_pct: float
     largest_loss_pct: float
-    
+
     # Risk metrics
     sharpe_ratio: float
     sortino_ratio: float
     max_drawdown_pct: float
     profit_factor: float
-    
+
     # Time analysis
     avg_hold_time_minutes: float
     best_time_of_day: str
     worst_time_of_day: str
-    
+
     # Efficiency
     total_volume_sol: float
     total_gas_fees_sol: float
     gas_as_pct_of_volume: float
-    
-    def to_dict(self) -> Dict:
+
+    def to_dict(self) -> dict:
         """Convert to dictionary."""
         return asdict(self)
 
@@ -78,65 +78,63 @@ class PerformanceAnalyzer:
     """
     Analyze trading performance with professional-grade metrics.
     """
-    
+
     def __init__(self, db: TradeDatabase):
         self.db = db
-    
+
     def calculate_comprehensive_metrics(
-        self,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None
+        self, start_date: datetime | None = None, end_date: datetime | None = None
     ) -> PerformanceMetrics:
         """
         Calculate all performance metrics for a time period.
         """
         # Get closed positions
         positions = self.db.get_closed_positions(start_date, end_date)
-        
+
         if not positions:
             return self._empty_metrics(start_date, end_date)
-        
+
         # Determine date range
         actual_start = min(p.open_time for p in positions)
         actual_end = max(p.close_time for p in positions if p.close_time)
         days_traded = (actual_end - actual_start).days + 1
-        
+
         # Basic statistics
         total_trades = len(positions)
         winners = [p for p in positions if p.pnl_sol > 0]
         losers = [p for p in positions if p.pnl_sol <= 0]
-        
+
         win_rate = len(winners) / total_trades * 100
-        
+
         # P&L statistics
         total_pnl_sol = sum(p.pnl_sol for p in positions)
         total_pnl_pct = sum(p.pnl_pct for p in positions)
-        
+
         avg_win_sol = sum(p.pnl_sol for p in winners) / len(winners) if winners else 0
         avg_loss_sol = sum(p.pnl_sol for p in losers) / len(losers) if losers else 0
-        
+
         avg_win_pct = sum(p.pnl_pct for p in winners) / len(winners) if winners else 0
         avg_loss_pct = sum(p.pnl_pct for p in losers) / len(losers) if losers else 0
-        
+
         largest_win = max((p.pnl_pct for p in positions), default=0)
         largest_loss = min((p.pnl_pct for p in positions), default=0)
-        
+
         # Risk metrics
         sharpe = self._calculate_sharpe_ratio(positions)
         sortino = self._calculate_sortino_ratio(positions)
         max_dd = self._calculate_max_drawdown(positions)
         profit_factor = abs(avg_win_sol / avg_loss_sol) if avg_loss_sol != 0 else 0
-        
+
         # Time analysis
         avg_hold_time = sum(p.hold_time_minutes for p in positions) / total_trades
         best_hour, worst_hour = self._analyze_time_patterns(positions)
-        
+
         # Volume and fees
         total_volume = sum(p.entry_amount_sol for p in positions)
         # Note: Gas fees would need to be tracked in trades table
         total_gas = 0.0
         gas_pct = (total_gas / total_volume * 100) if total_volume > 0 else 0
-        
+
         return PerformanceMetrics(
             start_date=actual_start,
             end_date=actual_end,
@@ -162,13 +160,13 @@ class PerformanceAnalyzer:
             worst_time_of_day=worst_hour,
             total_volume_sol=total_volume,
             total_gas_fees_sol=total_gas,
-            gas_as_pct_of_volume=gas_pct
+            gas_as_pct_of_volume=gas_pct,
         )
-    
+
     def _calculate_sharpe_ratio(
         self,
-        positions: List[PositionRecord],
-        risk_free_rate: float = 0.05  # 5% annual
+        positions: list[PositionRecord],
+        risk_free_rate: float = 0.05,  # 5% annual
     ) -> float:
         """
         Calculate Sharpe ratio: (return - risk_free) / std_dev
@@ -176,29 +174,27 @@ class PerformanceAnalyzer:
         """
         if not positions:
             return 0.0
-        
+
         returns = [p.pnl_pct / 100 for p in positions]  # Convert to decimal
-        
+
         if len(returns) < 2:
             return 0.0
-        
+
         avg_return = statistics.mean(returns)
         std_dev = statistics.stdev(returns)
-        
+
         if std_dev == 0:
             return 0.0
-        
+
         # Annualize assuming daily trades
         annualized_return = avg_return * 252  # 252 trading days
-        annualized_std = std_dev * (252 ** 0.5)
-        
+        annualized_std = std_dev * (252**0.5)
+
         sharpe = (annualized_return - risk_free_rate) / annualized_std
         return sharpe
-    
+
     def _calculate_sortino_ratio(
-        self,
-        positions: List[PositionRecord],
-        risk_free_rate: float = 0.05
+        self, positions: list[PositionRecord], risk_free_rate: float = 0.05
     ) -> float:
         """
         Calculate Sortino ratio: (return - risk_free) / downside_deviation
@@ -206,99 +202,91 @@ class PerformanceAnalyzer:
         """
         if not positions:
             return 0.0
-        
+
         returns = [p.pnl_pct / 100 for p in positions]
-        
+
         if len(returns) < 2:
             return 0.0
-        
+
         avg_return = statistics.mean(returns)
-        
+
         # Only consider negative returns for downside deviation
         negative_returns = [r for r in returns if r < 0]
-        
+
         if not negative_returns:
-            return float('inf')  # No downside = infinite Sortino
-        
+            return float("inf")  # No downside = infinite Sortino
+
         downside_dev = statistics.stdev(negative_returns) if len(negative_returns) > 1 else 0
-        
+
         if downside_dev == 0:
-            return float('inf')
-        
+            return float("inf")
+
         # Annualize
         annualized_return = avg_return * 252
-        annualized_downside = downside_dev * (252 ** 0.5)
-        
+        annualized_downside = downside_dev * (252**0.5)
+
         sortino = (annualized_return - risk_free_rate) / annualized_downside
         return sortino
-    
-    def _calculate_max_drawdown(self, positions: List[PositionRecord]) -> float:
+
+    def _calculate_max_drawdown(self, positions: list[PositionRecord]) -> float:
         """
         Calculate maximum drawdown: largest peak-to-trough decline.
         """
         if not positions:
             return 0.0
-        
+
         # Sort by close time
         sorted_positions = sorted(positions, key=lambda p: p.close_time)
-        
+
         # Calculate cumulative P&L
         cumulative_pnl = []
         total = 0.0
-        
+
         for p in sorted_positions:
             total += p.pnl_sol
             cumulative_pnl.append(total)
-        
+
         # Find max drawdown
         max_drawdown = 0.0
         peak = cumulative_pnl[0]
-        
+
         for value in cumulative_pnl:
             if value > peak:
                 peak = value
-            
+
             drawdown = (peak - value) / abs(peak) * 100 if peak != 0 else 0
             max_drawdown = max(max_drawdown, drawdown)
-        
+
         return max_drawdown
-    
-    def _analyze_time_patterns(
-        self,
-        positions: List[PositionRecord]
-    ) -> Tuple[str, str]:
+
+    def _analyze_time_patterns(self, positions: list[PositionRecord]) -> tuple[str, str]:
         """
         Analyze performance by time of day.
         Returns (best_hour, worst_hour).
         """
         # Group by hour of day
         hourly_pnl = defaultdict(list)
-        
+
         for p in positions:
             hour = p.open_time.hour
             hourly_pnl[hour].append(p.pnl_pct)
-        
+
         if not hourly_pnl:
             return ("N/A", "N/A")
-        
+
         # Calculate average P&L per hour
-        hourly_avg = {
-            hour: statistics.mean(pnls)
-            for hour, pnls in hourly_pnl.items()
-        }
-        
+        hourly_avg = {hour: statistics.mean(pnls) for hour, pnls in hourly_pnl.items()}
+
         best_hour = max(hourly_avg, key=hourly_avg.get)
         worst_hour = min(hourly_avg, key=hourly_avg.get)
-        
+
         return (
             f"{best_hour:02d}:00-{best_hour+1:02d}:00",
-            f"{worst_hour:02d}:00-{worst_hour+1:02d}:00"
+            f"{worst_hour:02d}:00-{worst_hour+1:02d}:00",
         )
-    
+
     def _empty_metrics(
-        self,
-        start_date: Optional[datetime],
-        end_date: Optional[datetime]
+        self, start_date: datetime | None, end_date: datetime | None
     ) -> PerformanceMetrics:
         """Return empty metrics when no data."""
         now = datetime.now()
@@ -327,13 +315,10 @@ class PerformanceAnalyzer:
             worst_time_of_day="N/A",
             total_volume_sol=0.0,
             total_gas_fees_sol=0.0,
-            gas_as_pct_of_volume=0.0
+            gas_as_pct_of_volume=0.0,
         )
-    
-    def generate_console_report(
-        self,
-        metrics: PerformanceMetrics
-    ) -> str:
+
+    def generate_console_report(self, metrics: PerformanceMetrics) -> str:
         """
         Generate beautiful console report.
         """
@@ -397,55 +382,52 @@ Worst Trading Time:  {metrics.worst_time_of_day}
             report += "   ✅ Win rate above 50% - strategy is working\n"
         else:
             report += "   ⚠️  Win rate below 50% - consider adjusting strategy\n"
-        
+
         if metrics.profit_factor > 2:
             report += "   ✅ Profit factor > 2x - excellent risk/reward\n"
         elif metrics.profit_factor > 1:
             report += "   ⚠️  Profit factor > 1x - profitable but could improve\n"
         else:
             report += "   ❌ Profit factor < 1x - losing money on average\n"
-        
+
         if metrics.sharpe_ratio > 1:
             report += "   ✅ Sharpe ratio > 1 - good risk-adjusted returns\n"
         else:
             report += "   ⚠️  Sharpe ratio < 1 - returns don't justify risk\n"
-        
+
         if metrics.max_drawdown_pct < 20:
             report += "   ✅ Low drawdown - good risk management\n"
         else:
             report += "   ⚠️  High drawdown - consider tighter stops\n"
-        
+
         report += "\n"
         report += "═" * 75
-        
+
         return report
-    
+
     def export_to_json(self, metrics: PerformanceMetrics) -> str:
         """Export metrics as JSON."""
         return json.dumps(metrics.to_dict(), indent=2, default=str)
-    
-    def analyze_token_performance(self) -> List[Dict]:
+
+    def analyze_token_performance(self) -> list[dict]:
         """
         Analyze performance by token.
         Which tokens were most profitable?
         """
         return self.db.get_best_performing_tokens(limit=20)
-    
-    def analyze_strategy_comparison(
-        self,
-        strategies: List[str]
-    ) -> Dict[str, PerformanceMetrics]:
+
+    def analyze_strategy_comparison(self, strategies: list[str]) -> dict[str, PerformanceMetrics]:
         """
         Compare performance across different strategies.
         Requires strategies to be tagged in position records.
         """
         results = {}
-        
+
         for strategy in strategies:
             # Would need to filter positions by strategy
             # For now, return placeholder
             results[strategy] = self._empty_metrics(None, None)
-        
+
         return results
 
 
@@ -456,23 +438,23 @@ Worst Trading Time:  {metrics.worst_time_of_day}
 if __name__ == "__main__":
     print("🐺 FENRIR - Performance Analytics")
     print("=" * 70)
-    
+
     # Example: Generate performance report
     db = TradeDatabase("fenrir_trades_example.db")
     analyzer = PerformanceAnalyzer(db)
-    
+
     # Calculate metrics
     metrics = analyzer.calculate_comprehensive_metrics()
-    
+
     # Generate report
     report = analyzer.generate_console_report(metrics)
     print(report)
-    
+
     # Export as JSON
     json_export = analyzer.export_to_json(metrics)
     with open("performance_report.json", "w") as f:
         f.write(json_export)
-    
+
     print("\n✅ Report generated and exported to performance_report.json")
-    
+
     db.close()

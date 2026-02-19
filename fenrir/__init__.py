@@ -15,50 +15,49 @@ Usage:
 __version__ = "1.0.0"
 
 # Core configuration
+# AI
+from fenrir.ai.brain import ClaudeBrain
+from fenrir.ai.decision_engine import AIDecision, AITradingAnalyst, TokenAnalysis, TokenMetadata
+from fenrir.ai.memory import AISessionMemory, DecisionRecord
+
+# Bot
+from fenrir.bot import FenrirBot
 from fenrir.config import BotConfig, TradingMode
+from fenrir.core.client import SolanaClient
+from fenrir.core.jupiter import JupiterSwapEngine
+from fenrir.core.positions import Position, PositionManager
+
+# Core components
+from fenrir.core.wallet import WalletManager
+from fenrir.data.analytics import PerformanceAnalyzer
+from fenrir.data.database import PositionRecord, TradeDatabase
+
+# Data
+from fenrir.data.price_feed import PriceFeedManager
 
 # Exceptions
 from fenrir.exceptions import (
-    FenrirError,
-    ConfigError,
-    ExecutionError,
-    InsufficientLiquidityError,
-    BondingCurveMigratedError,
-    SlippageExceededError,
     AIError,
     AITimeoutError,
+    BondingCurveMigratedError,
+    ConfigError,
+    ExecutionError,
+    FenrirError,
+    InsufficientLiquidityError,
+    SlippageExceededError,
     WalletError,
 )
 
 # Logger
 from fenrir.logger import FenrirLogger
+from fenrir.protocol.jito import JitoMEVProtection
 
-# Core components
-from fenrir.core.wallet import WalletManager
-from fenrir.core.client import SolanaClient
-from fenrir.core.positions import Position, PositionManager
-from fenrir.core.jupiter import JupiterSwapEngine
+# Protocol
+from fenrir.protocol.pumpfun import BondingCurveState, PumpFunProgram, TokenLaunchDetector
 
 # Trading
 from fenrir.trading.engine import TradingEngine
 from fenrir.trading.monitor import PumpFunMonitor
-
-# Protocol
-from fenrir.protocol.pumpfun import PumpFunProgram, TokenLaunchDetector, BondingCurveState
-from fenrir.protocol.jito import JitoMEVProtection
-
-# AI
-from fenrir.ai.brain import ClaudeBrain
-from fenrir.ai.decision_engine import AITradingAnalyst, TokenAnalysis, TokenMetadata, AIDecision
-from fenrir.ai.memory import AISessionMemory, DecisionRecord
-
-# Data
-from fenrir.data.price_feed import PriceFeedManager
-from fenrir.data.database import TradeDatabase, PositionRecord
-from fenrir.data.analytics import PerformanceAnalyzer
-
-# Bot
-from fenrir.bot import FenrirBot
 
 __all__ = [
     # Config

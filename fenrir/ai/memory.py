@@ -9,12 +9,12 @@ recent patterns within a session (e.g., "last 3 buys were rugs").
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional
 
 
 @dataclass
 class DecisionRecord:
     """A single AI decision and its eventual outcome."""
+
     timestamp: datetime
     token_mint: str
     token_symbol: str
@@ -23,14 +23,14 @@ class DecisionRecord:
     confidence: float
     risk_score: float
     reasoning_summary: str  # Truncated to ~100 chars
-    red_flags: List[str] = field(default_factory=list)
-    green_flags: List[str] = field(default_factory=list)
+    red_flags: list[str] = field(default_factory=list)
+    green_flags: list[str] = field(default_factory=list)
 
     # Outcome tracking (filled in after trade closes)
     was_bought: bool = False
-    outcome_pnl_pct: Optional[float] = None
-    outcome_exit_reason: Optional[str] = None
-    outcome_hold_time_minutes: Optional[int] = None
+    outcome_pnl_pct: float | None = None
+    outcome_exit_reason: str | None = None
+    outcome_hold_time_minutes: int | None = None
 
 
 class AISessionMemory:
@@ -43,7 +43,7 @@ class AISessionMemory:
     """
 
     def __init__(self, max_size: int = 15):
-        self.decisions: List[DecisionRecord] = []
+        self.decisions: list[DecisionRecord] = []
         self.max_size = max_size
         self.session_start: datetime = datetime.now()
 
@@ -104,7 +104,9 @@ class AISessionMemory:
             outcome_str = ""
             if d.was_bought and d.outcome_pnl_pct is not None:
                 emoji = "+" if d.outcome_pnl_pct > 0 else ""
-                hold = f" in {d.outcome_hold_time_minutes}min" if d.outcome_hold_time_minutes else ""
+                hold = (
+                    f" in {d.outcome_hold_time_minutes}min" if d.outcome_hold_time_minutes else ""
+                )
                 outcome_str = f" -> RESULT: {emoji}{d.outcome_pnl_pct:.1f}%{hold}"
             elif d.was_bought:
                 outcome_str = " -> OPEN (no result yet)"
@@ -133,7 +135,7 @@ class AISessionMemory:
 
         return "\n".join(lines)
 
-    def build_portfolio_context(self, positions: Dict) -> str:
+    def build_portfolio_context(self, positions: dict) -> str:
         """
         Build a text block describing current open positions.
 
@@ -226,21 +228,17 @@ class AISessionMemory:
 
         return ""
 
-    def get_session_stats(self) -> Dict:
+    def get_session_stats(self) -> dict:
         """Return aggregate stats for the session."""
         return {
-            "session_age_minutes": int(
-                (datetime.now() - self.session_start).total_seconds() / 60
-            ),
+            "session_age_minutes": int((datetime.now() - self.session_start).total_seconds() / 60),
             "total_decisions": len(self.decisions),
             "total_buys": self._total_buys,
             "total_skips": self._total_skips,
             "closed_trades": self._closed_trades,
             "profitable_trades": self._profitable_trades,
             "win_rate": (
-                self._profitable_trades / self._closed_trades
-                if self._closed_trades > 0
-                else 0.0
+                self._profitable_trades / self._closed_trades if self._closed_trades > 0 else 0.0
             ),
             "total_pnl_sol": self._total_pnl_sol,
         }

@@ -10,7 +10,6 @@ Run with: pytest tests/test_api.py -v
 """
 
 import asyncio
-import json
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,10 +20,10 @@ from httpx import ASGITransport, AsyncClient
 import api.server as server_module
 from api.server import app
 
-
 # ---------------------------------------------------------------------------
 #  Helpers
 # ---------------------------------------------------------------------------
+
 
 def _reset_bot_state():
     """Reset the global bot_state dict to its default stopped state."""
@@ -39,6 +38,7 @@ def _reset_bot_state():
 # ---------------------------------------------------------------------------
 #  Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_state():
@@ -83,6 +83,7 @@ async def client_with_key():
 #  Public / health endpoints
 # ---------------------------------------------------------------------------
 
+
 class TestPublicEndpoints:
     """Tests for unauthenticated, publicly-accessible endpoints."""
 
@@ -126,6 +127,7 @@ class TestPublicEndpoints:
 # ---------------------------------------------------------------------------
 #  Authentication middleware
 # ---------------------------------------------------------------------------
+
 
 class TestAuthMiddleware:
     """Tests for the verify_api_key middleware."""
@@ -209,6 +211,7 @@ class TestAuthMiddleware:
 # ---------------------------------------------------------------------------
 #  Bot status / positions / config (GET endpoints)
 # ---------------------------------------------------------------------------
+
 
 class TestBotStatusEndpoint:
     """Tests for GET /bot/status."""
@@ -327,6 +330,7 @@ class TestBotConfigEndpoint:
 #  POST /bot/start
 # ---------------------------------------------------------------------------
 
+
 class TestStartBot:
     """Tests for POST /bot/start."""
 
@@ -339,13 +343,18 @@ class TestStartBot:
         mock_bot = MagicMock()
         mock_bot.start = AsyncMock()
 
-        with patch("api.server.BotConfig", return_value=mock_config), \
-             patch("api.server.TradingMode") as mock_tm, \
-             patch("api.server.FenrirBot", return_value=mock_bot):
-            resp = await client_no_auth.post("/bot/start", json={
-                "mode": "simulation",
-                "buy_amount_sol": 0.1,
-            })
+        with (
+            patch("api.server.BotConfig", return_value=mock_config),
+            patch("api.server.TradingMode"),
+            patch("api.server.FenrirBot", return_value=mock_bot),
+        ):
+            resp = await client_no_auth.post(
+                "/bot/start",
+                json={
+                    "mode": "simulation",
+                    "buy_amount_sol": 0.1,
+                },
+            )
 
         assert resp.status_code == 200
         body = resp.json()
@@ -369,8 +378,10 @@ class TestStartBot:
         mock_config = MagicMock()
         mock_config.validate.return_value = ["Stop loss must be < 100%"]
 
-        with patch("api.server.BotConfig", return_value=mock_config), \
-             patch("api.server.TradingMode"):
+        with (
+            patch("api.server.BotConfig", return_value=mock_config),
+            patch("api.server.TradingMode"),
+        ):
             resp = await client_no_auth.post("/bot/start", json={"mode": "simulation"})
 
         assert resp.status_code == 400
@@ -380,8 +391,10 @@ class TestStartBot:
     @pytest.mark.asyncio
     async def test_start_bot_exception_sets_error_state(self, client_no_auth: AsyncClient):
         """An unexpected exception during start should set error state and return 500."""
-        with patch("api.server.BotConfig", side_effect=RuntimeError("RPC down")), \
-             patch("api.server.TradingMode"):
+        with (
+            patch("api.server.BotConfig", side_effect=RuntimeError("RPC down")),
+            patch("api.server.TradingMode"),
+        ):
             resp = await client_no_auth.post("/bot/start", json={"mode": "simulation"})
 
         assert resp.status_code == 500
@@ -398,19 +411,25 @@ class TestStartBot:
     @pytest.mark.asyncio
     async def test_start_bot_invalid_buy_amount(self, client_no_auth: AsyncClient):
         """buy_amount_sol <= 0 should be rejected by Pydantic (422)."""
-        resp = await client_no_auth.post("/bot/start", json={
-            "mode": "simulation",
-            "buy_amount_sol": -1.0,
-        })
+        resp = await client_no_auth.post(
+            "/bot/start",
+            json={
+                "mode": "simulation",
+                "buy_amount_sol": -1.0,
+            },
+        )
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
     async def test_start_bot_invalid_stop_loss_pct(self, client_no_auth: AsyncClient):
         """stop_loss_pct >= 100 should be rejected by Pydantic (422)."""
-        resp = await client_no_auth.post("/bot/start", json={
-            "mode": "simulation",
-            "stop_loss_pct": 100.0,
-        })
+        resp = await client_no_auth.post(
+            "/bot/start",
+            json={
+                "mode": "simulation",
+                "stop_loss_pct": 100.0,
+            },
+        )
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
@@ -422,13 +441,18 @@ class TestStartBot:
         mock_bot = MagicMock()
         mock_bot.start = AsyncMock()
 
-        with patch("api.server.BotConfig", return_value=mock_config) as mock_cfg_cls, \
-             patch("api.server.TradingMode"), \
-             patch("api.server.FenrirBot", return_value=mock_bot):
-            resp = await client_no_auth.post("/bot/start", json={
-                "mode": "simulation",
-                "rpc_url": "https://custom-rpc.example.com",
-            })
+        with (
+            patch("api.server.BotConfig", return_value=mock_config),
+            patch("api.server.TradingMode"),
+            patch("api.server.FenrirBot", return_value=mock_bot),
+        ):
+            resp = await client_no_auth.post(
+                "/bot/start",
+                json={
+                    "mode": "simulation",
+                    "rpc_url": "https://custom-rpc.example.com",
+                },
+            )
 
         assert resp.status_code == 200
         # The config object should have had rpc_url set
@@ -438,6 +462,7 @@ class TestStartBot:
 # ---------------------------------------------------------------------------
 #  POST /bot/stop
 # ---------------------------------------------------------------------------
+
 
 class TestStopBot:
     """Tests for POST /bot/stop."""
@@ -490,16 +515,20 @@ class TestStopBot:
 #  POST /bot/trade
 # ---------------------------------------------------------------------------
 
+
 class TestManualTrade:
     """Tests for POST /bot/trade."""
 
     @pytest.mark.asyncio
     async def test_trade_bot_not_running(self, client_no_auth: AsyncClient):
         """Trade should return 400 when bot is not running."""
-        resp = await client_no_auth.post("/bot/trade", json={
-            "action": "buy",
-            "token_address": "So11111111111111111111111111111111111111112",
-        })
+        resp = await client_no_auth.post(
+            "/bot/trade",
+            json={
+                "action": "buy",
+                "token_address": "So11111111111111111111111111111111111111112",
+            },
+        )
         assert resp.status_code == 400
         assert "not running" in resp.json()["detail"]
 
@@ -510,10 +539,13 @@ class TestManualTrade:
         server_module.bot_instance = mock_bot
         server_module.bot_state["status"] = "running"
 
-        resp = await client_no_auth.post("/bot/trade", json={
-            "action": "hold",
-            "token_address": "TOKEN1",
-        })
+        resp = await client_no_auth.post(
+            "/bot/trade",
+            json={
+                "action": "hold",
+                "token_address": "TOKEN1",
+            },
+        )
         assert resp.status_code == 400
         assert "must be 'buy' or 'sell'" in resp.json()["detail"]
 
@@ -525,10 +557,13 @@ class TestManualTrade:
         server_module.bot_instance = mock_bot
         server_module.bot_state["status"] = "running"
 
-        resp = await client_no_auth.post("/bot/trade", json={
-            "action": "buy",
-            "token_address": "TOKEN1",
-        })
+        resp = await client_no_auth.post(
+            "/bot/trade",
+            json={
+                "action": "buy",
+                "token_address": "TOKEN1",
+            },
+        )
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "success"
@@ -543,10 +578,13 @@ class TestManualTrade:
         server_module.bot_instance = mock_bot
         server_module.bot_state["status"] = "running"
 
-        resp = await client_no_auth.post("/bot/trade", json={
-            "action": "buy",
-            "token_address": "TOKEN1",
-        })
+        resp = await client_no_auth.post(
+            "/bot/trade",
+            json={
+                "action": "buy",
+                "token_address": "TOKEN1",
+            },
+        )
         assert resp.status_code == 500
         assert "Buy execution failed" in resp.json()["detail"]
 
@@ -558,10 +596,13 @@ class TestManualTrade:
         server_module.bot_instance = mock_bot
         server_module.bot_state["status"] = "running"
 
-        resp = await client_no_auth.post("/bot/trade", json={
-            "action": "sell",
-            "token_address": "TOKEN1",
-        })
+        resp = await client_no_auth.post(
+            "/bot/trade",
+            json={
+                "action": "sell",
+                "token_address": "TOKEN1",
+            },
+        )
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "success"
@@ -576,20 +617,26 @@ class TestManualTrade:
         server_module.bot_instance = mock_bot
         server_module.bot_state["status"] = "running"
 
-        resp = await client_no_auth.post("/bot/trade", json={
-            "action": "sell",
-            "token_address": "TOKEN1",
-        })
+        resp = await client_no_auth.post(
+            "/bot/trade",
+            json={
+                "action": "sell",
+                "token_address": "TOKEN1",
+            },
+        )
         assert resp.status_code == 500
         assert "Sell execution failed" in resp.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_trade_missing_required_fields(self, client_no_auth: AsyncClient):
         """Missing required fields should return 422."""
-        resp = await client_no_auth.post("/bot/trade", json={
-            "action": "buy",
-            # missing token_address
-        })
+        resp = await client_no_auth.post(
+            "/bot/trade",
+            json={
+                "action": "buy",
+                # missing token_address
+            },
+        )
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
@@ -602,10 +649,13 @@ class TestManualTrade:
         server_module.bot_instance = mock_bot
         server_module.bot_state["status"] = "running"
 
-        resp = await client_no_auth.post("/bot/trade", json={
-            "action": "buy",
-            "token_address": "TOKEN1",
-        })
+        resp = await client_no_auth.post(
+            "/bot/trade",
+            json={
+                "action": "buy",
+                "token_address": "TOKEN1",
+            },
+        )
         assert resp.status_code == 500
         assert "Trade execution error" in resp.json()["detail"]
 
@@ -617,16 +667,20 @@ class TestManualTrade:
         server_module.bot_instance = mock_bot
         server_module.bot_state["status"] = "running"
 
-        resp = await client_no_auth.post("/bot/trade", json={
-            "action": "BUY",
-            "token_address": "TOKEN1",
-        })
+        resp = await client_no_auth.post(
+            "/bot/trade",
+            json={
+                "action": "BUY",
+                "token_address": "TOKEN1",
+            },
+        )
         assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
 #  WebSocket endpoint
 # ---------------------------------------------------------------------------
+
 
 class TestWebSocket:
     """Tests for the /ws/updates WebSocket endpoint."""
@@ -680,7 +734,6 @@ class TestWebSocket:
     async def test_websocket_rejected_without_key(self):
         """WebSocket should be rejected (closed) when API key is required but missing."""
         from starlette.testclient import TestClient
-        from starlette.websockets import WebSocketDisconnect
 
         original_key = server_module.FENRIR_API_KEY
         original_dev = server_module.FENRIR_DEV_MODE
@@ -688,7 +741,7 @@ class TestWebSocket:
         server_module.FENRIR_DEV_MODE = False
         try:
             sync_client = TestClient(app)
-            with pytest.raises(Exception):
+            with pytest.raises(Exception):  # noqa: B017
                 # Connection should be rejected / closed by the server
                 with sync_client.websocket_connect("/ws/updates") as ws:
                     ws.receive_json()
@@ -743,6 +796,7 @@ class TestWebSocket:
 #  Broadcast helper
 # ---------------------------------------------------------------------------
 
+
 class TestBroadcastUpdate:
     """Tests for the broadcast_update helper."""
 
@@ -754,6 +808,7 @@ class TestBroadcastUpdate:
         server_module.active_websockets.extend([ws1, ws2])
 
         from api.server import broadcast_update
+
         await broadcast_update({"event": "test"})
 
         ws1.send_json.assert_awaited_once_with({"event": "test"})
@@ -768,6 +823,7 @@ class TestBroadcastUpdate:
         server_module.active_websockets.extend([ws_good, ws_bad])
 
         from api.server import broadcast_update
+
         await broadcast_update({"event": "test"})
 
         # The bad websocket should have been removed
@@ -778,6 +834,7 @@ class TestBroadcastUpdate:
 # ---------------------------------------------------------------------------
 #  Concurrent state access
 # ---------------------------------------------------------------------------
+
 
 class TestConcurrency:
     """Tests verifying that bot_state_lock prevents race conditions."""
@@ -791,9 +848,11 @@ class TestConcurrency:
         mock_bot = MagicMock()
         mock_bot.start = AsyncMock()
 
-        with patch("api.server.BotConfig", return_value=mock_config), \
-             patch("api.server.TradingMode"), \
-             patch("api.server.FenrirBot", return_value=mock_bot):
+        with (
+            patch("api.server.BotConfig", return_value=mock_config),
+            patch("api.server.TradingMode"),
+            patch("api.server.FenrirBot", return_value=mock_bot),
+        ):
             results = await asyncio.gather(
                 client_no_auth.post("/bot/start", json={"mode": "simulation"}),
                 client_no_auth.post("/bot/start", json={"mode": "simulation"}),
@@ -808,25 +867,32 @@ class TestConcurrency:
 #  Pydantic model validation
 # ---------------------------------------------------------------------------
 
+
 class TestPydanticModels:
     """Tests for request model validation via the API."""
 
     @pytest.mark.asyncio
     async def test_start_bot_negative_take_profit(self, client_no_auth: AsyncClient):
         """take_profit_pct must be > 0."""
-        resp = await client_no_auth.post("/bot/start", json={
-            "mode": "simulation",
-            "take_profit_pct": -5.0,
-        })
+        resp = await client_no_auth.post(
+            "/bot/start",
+            json={
+                "mode": "simulation",
+                "take_profit_pct": -5.0,
+            },
+        )
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
     async def test_start_bot_zero_buy_amount(self, client_no_auth: AsyncClient):
         """buy_amount_sol must be > 0."""
-        resp = await client_no_auth.post("/bot/start", json={
-            "mode": "simulation",
-            "buy_amount_sol": 0,
-        })
+        resp = await client_no_auth.post(
+            "/bot/start",
+            json={
+                "mode": "simulation",
+                "buy_amount_sol": 0,
+            },
+        )
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
@@ -837,9 +903,11 @@ class TestPydanticModels:
         mock_bot = MagicMock()
         mock_bot.start = AsyncMock()
 
-        with patch("api.server.BotConfig", return_value=mock_config), \
-             patch("api.server.TradingMode"), \
-             patch("api.server.FenrirBot", return_value=mock_bot):
+        with (
+            patch("api.server.BotConfig", return_value=mock_config),
+            patch("api.server.TradingMode"),
+            patch("api.server.FenrirBot", return_value=mock_bot),
+        ):
             resp = await client_no_auth.post("/bot/start", json={})
 
         assert resp.status_code == 200
@@ -852,9 +920,12 @@ class TestPydanticModels:
     @pytest.mark.asyncio
     async def test_trade_missing_action(self, client_no_auth: AsyncClient):
         """Trade request without action field should return 422."""
-        resp = await client_no_auth.post("/bot/trade", json={
-            "token_address": "TOKEN1",
-        })
+        resp = await client_no_auth.post(
+            "/bot/trade",
+            json={
+                "token_address": "TOKEN1",
+            },
+        )
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
@@ -867,9 +938,11 @@ class TestPydanticModels:
 
         for mode in ["simulation", "conservative", "aggressive", "degen"]:
             _reset_bot_state()
-            with patch("api.server.BotConfig", return_value=mock_config), \
-                 patch("api.server.TradingMode"), \
-                 patch("api.server.FenrirBot", return_value=mock_bot):
+            with (
+                patch("api.server.BotConfig", return_value=mock_config),
+                patch("api.server.TradingMode"),
+                patch("api.server.FenrirBot", return_value=mock_bot),
+            ):
                 resp = await client_no_auth.post("/bot/start", json={"mode": mode})
             assert resp.status_code == 200, f"Mode {mode} was rejected"
 
@@ -878,17 +951,20 @@ class TestPydanticModels:
 #  Rate limiter unit tests
 # ---------------------------------------------------------------------------
 
+
 class TestRateLimiter:
     """Tests for the in-memory sliding-window RateLimiter."""
 
     def test_allows_under_limit(self):
         from api.server import RateLimiter
+
         rl = RateLimiter(max_requests=5, window_seconds=60)
         for _ in range(5):
             assert rl.is_allowed("127.0.0.1") is True
 
     def test_blocks_over_limit(self):
         from api.server import RateLimiter
+
         rl = RateLimiter(max_requests=3, window_seconds=60)
         for _ in range(3):
             rl.is_allowed("127.0.0.1")
@@ -896,6 +972,7 @@ class TestRateLimiter:
 
     def test_separate_clients_independent(self):
         from api.server import RateLimiter
+
         rl = RateLimiter(max_requests=2, window_seconds=60)
         rl.is_allowed("10.0.0.1")
         rl.is_allowed("10.0.0.1")
@@ -906,6 +983,7 @@ class TestRateLimiter:
 
     def test_remaining_count(self):
         from api.server import RateLimiter
+
         rl = RateLimiter(max_requests=5, window_seconds=60)
         assert rl.remaining("127.0.0.1") == 5
         rl.is_allowed("127.0.0.1")

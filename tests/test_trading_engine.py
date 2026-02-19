@@ -8,7 +8,6 @@ wallet balance pre-checks, slippage guards, and position management.
 Run with: pytest tests/test_trading_engine.py -v
 """
 
-import asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -17,8 +16,7 @@ import pytest
 from fenrir.config import BotConfig, TradingMode
 from fenrir.core.positions import Position, PositionManager
 from fenrir.protocol.pumpfun import BondingCurveState
-from fenrir.trading.engine import TradingEngine, LAMPORTS_PER_SOL, DEFAULT_COMPUTE_UNITS
-
+from fenrir.trading.engine import LAMPORTS_PER_SOL, TradingEngine
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -72,6 +70,7 @@ def _make_position(
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def config():
@@ -144,8 +143,8 @@ def live_engine(live_config, mocks):
 #  Simulation Mode — Buy
 # ===================================================================
 
-class TestSimulationBuy:
 
+class TestSimulationBuy:
     @pytest.mark.asyncio
     async def test_sim_buy_opens_position_with_bonding_curve_pricing(self, sim_engine, mocks):
         """Simulation buy uses bonding-curve state for realistic pricing."""
@@ -188,8 +187,8 @@ class TestSimulationBuy:
 #  Simulation Mode — Sell
 # ===================================================================
 
-class TestSimulationSell:
 
+class TestSimulationSell:
     @pytest.mark.asyncio
     async def test_sim_sell_closes_position_and_logs_pnl(self, sim_engine, mocks):
         """Simulation sell logs PnL and delegates to close_position."""
@@ -228,8 +227,8 @@ class TestSimulationSell:
 #  Live Mode — Buy
 # ===================================================================
 
-class TestLiveBuy:
 
+class TestLiveBuy:
     @pytest.mark.asyncio
     async def test_insufficient_balance_rejects(self, live_engine, mocks):
         """Wallet balance pre-check rejects when SOL is insufficient."""
@@ -260,7 +259,9 @@ class TestLiveBuy:
         # Encode fake account data that decodes to thin_curve
         mocks["solana_client"].get_account_info.return_value = b"x" * 80
 
-        with patch.object(live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)):
+        with patch.object(
+            live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+        ):
             with patch.object(live_engine.pumpfun, "decode_bonding_curve", return_value=thin_curve):
                 result = await live_engine.execute_buy(_make_token_data())
 
@@ -272,8 +273,12 @@ class TestLiveBuy:
         mocks["solana_client"].get_balance.return_value = 10.0
         mocks["solana_client"].get_account_info.return_value = b"x" * 80
 
-        with patch.object(live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)):
-            with patch.object(live_engine.pumpfun, "decode_bonding_curve", return_value=MIGRATED_CURVE):
+        with patch.object(
+            live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+        ):
+            with patch.object(
+                live_engine.pumpfun, "decode_bonding_curve", return_value=MIGRATED_CURVE
+            ):
                 result = await live_engine.execute_buy(_make_token_data())
 
         assert result is False
@@ -286,7 +291,9 @@ class TestLiveBuy:
         mocks["solana_client"].get_balance.return_value = 10.0
         mocks["solana_client"].get_account_info.return_value = None
 
-        with patch.object(live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)):
+        with patch.object(
+            live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+        ):
             result = await live_engine.execute_buy(_make_token_data())
 
         assert result is False
@@ -297,7 +304,9 @@ class TestLiveBuy:
         mocks["solana_client"].get_balance.return_value = 10.0
         mocks["solana_client"].get_account_info.return_value = b"x" * 80
 
-        with patch.object(live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)):
+        with patch.object(
+            live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+        ):
             with patch.object(live_engine.pumpfun, "decode_bonding_curve", return_value=None):
                 result = await live_engine.execute_buy(_make_token_data())
 
@@ -318,20 +327,41 @@ class TestLiveBuy:
         confirmed_status.confirmation_status = "confirmed"
         mocks["solana_client"].get_signature_statuses.return_value = [confirmed_status]
 
-        with patch.object(live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)):
-            with patch.object(live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE):
-                with patch.object(live_engine.pumpfun, "get_associated_bonding_curve_address", return_value=MagicMock()):
-                    with patch.object(live_engine.pumpfun, "build_buy_instruction", return_value=MagicMock()):
+        with patch.object(
+            live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+        ):
+            with patch.object(
+                live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE
+            ):
+                with patch.object(
+                    live_engine.pumpfun,
+                    "get_associated_bonding_curve_address",
+                    return_value=MagicMock(),
+                ):
+                    with patch.object(
+                        live_engine.pumpfun, "build_buy_instruction", return_value=MagicMock()
+                    ):
                         with patch("fenrir.trading.engine.Message") as MockMsg:
                             with patch("fenrir.trading.engine.Transaction") as MockTx:
-                                with patch("fenrir.trading.engine.get_associated_token_address", return_value=MagicMock()):
-                                    with patch("fenrir.trading.engine.set_compute_unit_price", return_value=MagicMock()):
-                                        with patch("fenrir.trading.engine.set_compute_unit_limit", return_value=MagicMock()):
+                                with patch(
+                                    "fenrir.trading.engine.get_associated_token_address",
+                                    return_value=MagicMock(),
+                                ):
+                                    with patch(
+                                        "fenrir.trading.engine.set_compute_unit_price",
+                                        return_value=MagicMock(),
+                                    ):
+                                        with patch(
+                                            "fenrir.trading.engine.set_compute_unit_limit",
+                                            return_value=MagicMock(),
+                                        ):
                                             mock_tx_instance = MagicMock()
                                             MockTx.new_unsigned.return_value = mock_tx_instance
                                             MockMsg.new_with_blockhash.return_value = MagicMock()
 
-                                            result = await live_engine.execute_buy(_make_token_data())
+                                            result = await live_engine.execute_buy(
+                                                _make_token_data()
+                                            )
 
         assert result is True
         mocks["positions"].open_position.assert_called_once()
@@ -344,8 +374,8 @@ class TestLiveBuy:
 #  Live Mode — Transaction Confirmation Polling
 # ===================================================================
 
-class TestConfirmTransaction:
 
+class TestConfirmTransaction:
     @pytest.mark.asyncio
     async def test_confirmed_on_first_poll(self, live_engine, mocks):
         """Transaction confirmed on first polling attempt."""
@@ -420,8 +450,8 @@ class TestConfirmTransaction:
 #  Live Mode — Sell
 # ===================================================================
 
-class TestLiveSell:
 
+class TestLiveSell:
     @pytest.mark.asyncio
     async def test_sell_uses_actual_on_chain_balance(self, live_engine, mocks):
         """Sell amount is the on-chain token balance, not the position's amount_tokens."""
@@ -443,20 +473,38 @@ class TestLiveSell:
         confirmed_status.confirmation_status = "confirmed"
         mocks["solana_client"].get_signature_statuses.return_value = [confirmed_status]
 
-        with patch.object(live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)):
-            with patch.object(live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE):
-                with patch.object(live_engine.pumpfun, "get_associated_bonding_curve_address", return_value=MagicMock()):
-                    with patch.object(live_engine.pumpfun, "build_sell_instruction") as mock_sell_ix:
+        with patch.object(
+            live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+        ):
+            with patch.object(
+                live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE
+            ):
+                with patch.object(
+                    live_engine.pumpfun,
+                    "get_associated_bonding_curve_address",
+                    return_value=MagicMock(),
+                ):
+                    with patch.object(
+                        live_engine.pumpfun, "build_sell_instruction"
+                    ) as mock_sell_ix:
                         mock_sell_ix.return_value = MagicMock()
                         with patch("fenrir.trading.engine.Message") as MockMsg:
                             with patch("fenrir.trading.engine.Transaction") as MockTx:
-                                with patch("fenrir.trading.engine.set_compute_unit_price", return_value=MagicMock()):
-                                    with patch("fenrir.trading.engine.set_compute_unit_limit", return_value=MagicMock()):
+                                with patch(
+                                    "fenrir.trading.engine.set_compute_unit_price",
+                                    return_value=MagicMock(),
+                                ):
+                                    with patch(
+                                        "fenrir.trading.engine.set_compute_unit_limit",
+                                        return_value=MagicMock(),
+                                    ):
                                         mock_tx_instance = MagicMock()
                                         MockTx.new_unsigned.return_value = mock_tx_instance
                                         MockMsg.new_with_blockhash.return_value = MagicMock()
 
-                                        result = await live_engine.execute_sell(FAKE_TOKEN, "take_profit")
+                                        result = await live_engine.execute_sell(
+                                            FAKE_TOKEN, "take_profit"
+                                        )
 
         assert result is True
         # Verify the sell instruction received the on-chain balance, not position amount
@@ -479,8 +527,12 @@ class TestLiveSell:
         mocks["jupiter"].get_quote.return_value = {"outAmount": "50000000"}
         mocks["jupiter"].get_swap_transaction.return_value = "base64tx"
 
-        with patch.object(live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)):
-            with patch.object(live_engine.pumpfun, "decode_bonding_curve", return_value=MIGRATED_CURVE):
+        with patch.object(
+            live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+        ):
+            with patch.object(
+                live_engine.pumpfun, "decode_bonding_curve", return_value=MIGRATED_CURVE
+            ):
                 result = await live_engine.execute_sell(FAKE_TOKEN, "take_profit")
 
         assert result is True
@@ -496,8 +548,12 @@ class TestLiveSell:
         mocks["solana_client"].get_account_info.return_value = b"x" * 80
         mocks["solana_client"].get_token_accounts_by_owner.return_value = None
 
-        with patch.object(live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)):
-            with patch.object(live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE):
+        with patch.object(
+            live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+        ):
+            with patch.object(
+                live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE
+            ):
                 result = await live_engine.execute_sell(FAKE_TOKEN, "stop_loss")
 
         assert result is False
@@ -514,8 +570,12 @@ class TestLiveSell:
             "amount": 0,
         }
 
-        with patch.object(live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)):
-            with patch.object(live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE):
+        with patch.object(
+            live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+        ):
+            with patch.object(
+                live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE
+            ):
                 result = await live_engine.execute_sell(FAKE_TOKEN, "stop_loss")
 
         assert result is False
@@ -525,8 +585,8 @@ class TestLiveSell:
 #  Position Management
 # ===================================================================
 
-class TestManagePositions:
 
+class TestManagePositions:
     @pytest.mark.asyncio
     async def test_delegates_to_check_exit_conditions(self, sim_engine, mocks):
         """manage_positions calls check_exit_conditions and sells flagged positions."""
