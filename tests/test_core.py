@@ -201,6 +201,66 @@ class TestPositionManager:
         assert "Take Profit" in exits[0][1]
 
 
+class TestTradingPresets:
+    """Test mode-specific configuration presets."""
+
+    def test_conservative_preset_valid(self):
+        # Non-simulation modes require a private key; supply a dummy for validation
+        config = BotConfig.from_mode(TradingMode.CONSERVATIVE, private_key="dummykey")
+        errors = config.validate()
+        assert len(errors) == 0, f"Validation errors: {errors}"
+        assert config.mode == TradingMode.CONSERVATIVE
+        assert config.buy_amount_sol == 0.05
+        assert config.max_slippage_bps == 300
+        assert config.stop_loss_pct == 15.0
+        assert config.ai_min_confidence_to_buy == 0.75
+
+    def test_aggressive_preset_valid(self):
+        config = BotConfig.from_mode(TradingMode.AGGRESSIVE, private_key="dummykey")
+        errors = config.validate()
+        assert len(errors) == 0, f"Validation errors: {errors}"
+        assert config.mode == TradingMode.AGGRESSIVE
+        assert config.buy_amount_sol == 0.2
+        assert config.priority_fee_lamports == 1_000_000
+
+    def test_degen_preset_valid(self):
+        config = BotConfig.from_mode(TradingMode.DEGEN, private_key="dummykey")
+        errors = config.validate()
+        assert len(errors) == 0, f"Validation errors: {errors}"
+        assert config.mode == TradingMode.DEGEN
+        assert config.max_slippage_bps == 1500
+        assert config.take_profit_pct == 500.0
+
+    def test_simulation_preset_valid(self):
+        config = BotConfig.from_mode(TradingMode.SIMULATION)
+        errors = config.validate()
+        assert len(errors) == 0, f"Validation errors: {errors}"
+
+    def test_preset_overrides_work(self):
+        config = BotConfig.from_mode(TradingMode.CONSERVATIVE, buy_amount_sol=0.01)
+        assert config.buy_amount_sol == 0.01
+        assert config.stop_loss_pct == 15.0
+
+    def test_all_presets_have_valid_stop_loss(self):
+        for mode in TradingMode:
+            config = BotConfig.from_mode(mode)
+            assert config.stop_loss_pct < 100.0, f"{mode.value} has invalid stop_loss"
+
+    def test_all_presets_have_positive_priority_fee(self):
+        for mode in TradingMode:
+            config = BotConfig.from_mode(mode)
+            assert config.priority_fee_lamports > 0, f"{mode.value} has zero priority fee"
+
+    def test_presets_risk_ordering(self):
+        conservative = BotConfig.from_mode(TradingMode.CONSERVATIVE)
+        aggressive = BotConfig.from_mode(TradingMode.AGGRESSIVE)
+        degen = BotConfig.from_mode(TradingMode.DEGEN)
+
+        assert conservative.buy_amount_sol < aggressive.buy_amount_sol < degen.buy_amount_sol
+        assert conservative.stop_loss_pct < aggressive.stop_loss_pct < degen.stop_loss_pct
+        assert conservative.max_slippage_bps < aggressive.max_slippage_bps < degen.max_slippage_bps
+
+
 class TestWalletManager:
     """Test wallet functionality."""
 

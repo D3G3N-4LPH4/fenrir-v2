@@ -13,12 +13,12 @@
   "stop_loss_pct": 25.0,
   "take_profit_pct": 100.0,
   "trailing_stop_pct": 15.0,
-  "max_position_age_minutes": 60,
-  
-  "min_initial_liquidity_sol": 5.0,
-  "max_initial_market_cap_sol": 100.0,
-  
-  "priority_fee_lamports": 100000,
+  "max_position_age_minutes": 30,
+
+  "min_initial_liquidity_sol": 3.0,
+  "max_initial_market_cap_sol": 80.0,
+
+  "priority_fee_lamports": 500000,
   "use_jito": false,
   "jito_tip_lamports": 10000,
   
@@ -28,8 +28,8 @@
   "ai_analysis_enabled": false,
   "ai_model": "anthropic/claude-sonnet-4",
   "ai_provider": "openrouter",
-  "ai_entry_timeout_seconds": 8.0,
-  "ai_exit_timeout_seconds": 5.0,
+  "ai_entry_timeout_seconds": 5.0,
+  "ai_exit_timeout_seconds": 3.0,
   "ai_exit_eval_interval_seconds": 60.0,
   "ai_min_confidence_to_buy": 0.6,
   "ai_memory_size": 15,

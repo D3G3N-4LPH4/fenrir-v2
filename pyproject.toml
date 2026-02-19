@@ -49,6 +49,9 @@ include = ["fenrir*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "devnet: integration tests requiring Solana devnet access (deselect: -m 'not devnet')",
+]
 
 # ── Ruff (linter + formatter) ──────────────────────────────────────
 [tool.ruff]

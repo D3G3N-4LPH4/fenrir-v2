@@ -1,0 +1,33 @@
+{
+  "comment": "FENRIR Devnet Configuration - For development and testing only",
+  "comment2": "WARNING: Pump.fun, Jupiter, and Jito do NOT exist on devnet.",
+  "comment3": "This config is for testing RPC connectivity, wallet ops, and tx building.",
+
+  "rpc_url": "https://api.devnet.solana.com",
+  "ws_url": "wss://api.devnet.solana.com",
+
+  "mode": "simulation",
+
+  "buy_amount_sol": 0.01,
+  "max_slippage_bps": 500,
+
+  "stop_loss_pct": 25.0,
+  "take_profit_pct": 100.0,
+  "trailing_stop_pct": 15.0,
+  "max_position_age_minutes": 30,
+
+  "min_initial_liquidity_sol": 1.0,
+  "max_initial_market_cap_sol": 50.0,
+
+  "priority_fee_lamports": 1000,
+  "use_jito": false,
+  "jito_tip_lamports": 0,
+
+  "websocket_enabled": false,
+  "poll_interval_seconds": 5.0,
+
+  "ai_analysis_enabled": false,
+
+  "log_level": "DEBUG",
+  "log_file": "fenrir_devnet.log"
+}

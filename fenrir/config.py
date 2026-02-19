@@ -42,6 +42,71 @@ class TradingMode(Enum):
     DEGEN = "degen"  # YOLO mode - maximum risk
 
 
+# ── Mode-specific trading presets ──────────────────────────────────────
+TRADING_PRESETS: dict[TradingMode, dict] = {
+    TradingMode.SIMULATION: {
+        "buy_amount_sol": 0.1,
+        "max_slippage_bps": 500,
+        "stop_loss_pct": 25.0,
+        "take_profit_pct": 100.0,
+        "trailing_stop_pct": 15.0,
+        "max_position_age_minutes": 30,
+        "min_initial_liquidity_sol": 3.0,
+        "max_initial_market_cap_sol": 80.0,
+        "priority_fee_lamports": 500_000,
+        "ai_entry_timeout_seconds": 5.0,
+        "ai_exit_timeout_seconds": 3.0,
+        "ai_min_confidence_to_buy": 0.6,
+        "ai_temperature": 0.3,
+    },
+    TradingMode.CONSERVATIVE: {
+        "buy_amount_sol": 0.05,
+        "max_slippage_bps": 300,
+        "stop_loss_pct": 15.0,
+        "take_profit_pct": 75.0,
+        "trailing_stop_pct": 10.0,
+        "max_position_age_minutes": 20,
+        "min_initial_liquidity_sol": 5.0,
+        "max_initial_market_cap_sol": 60.0,
+        "priority_fee_lamports": 500_000,
+        "ai_entry_timeout_seconds": 5.0,
+        "ai_exit_timeout_seconds": 3.0,
+        "ai_min_confidence_to_buy": 0.75,
+        "ai_temperature": 0.2,
+    },
+    TradingMode.AGGRESSIVE: {
+        "buy_amount_sol": 0.2,
+        "max_slippage_bps": 800,
+        "stop_loss_pct": 30.0,
+        "take_profit_pct": 200.0,
+        "trailing_stop_pct": 20.0,
+        "max_position_age_minutes": 45,
+        "min_initial_liquidity_sol": 2.0,
+        "max_initial_market_cap_sol": 120.0,
+        "priority_fee_lamports": 1_000_000,
+        "ai_entry_timeout_seconds": 3.0,
+        "ai_exit_timeout_seconds": 2.0,
+        "ai_min_confidence_to_buy": 0.55,
+        "ai_temperature": 0.4,
+    },
+    TradingMode.DEGEN: {
+        "buy_amount_sol": 0.5,
+        "max_slippage_bps": 1500,
+        "stop_loss_pct": 50.0,
+        "take_profit_pct": 500.0,
+        "trailing_stop_pct": 30.0,
+        "max_position_age_minutes": 60,
+        "min_initial_liquidity_sol": 1.0,
+        "max_initial_market_cap_sol": 200.0,
+        "priority_fee_lamports": 2_000_000,
+        "ai_entry_timeout_seconds": 2.0,
+        "ai_exit_timeout_seconds": 1.5,
+        "ai_min_confidence_to_buy": 0.4,
+        "ai_temperature": 0.5,
+    },
+}
+
+
 @dataclass
 class BotConfig:
     """
@@ -68,14 +133,14 @@ class BotConfig:
     stop_loss_pct: float = 25.0  # Exit if down 25%
     take_profit_pct: float = 100.0  # Exit if up 100%
     trailing_stop_pct: float = 15.0  # Trail by 15% from peak
-    max_position_age_minutes: int = 60  # Auto-sell after 1 hour
+    max_position_age_minutes: int = 30  # Memecoins pump/dump in minutes
 
     # Launch Criteria - What makes a token worth sniping?
-    min_initial_liquidity_sol: float = 5.0  # Minimum SOL in bonding curve
-    max_initial_market_cap_sol: float = 100.0  # Don't buy if already too big
+    min_initial_liquidity_sol: float = 3.0  # Minimum SOL in bonding curve
+    max_initial_market_cap_sol: float = 80.0  # Don't buy if already too big
 
     # Execution Settings
-    priority_fee_lamports: int = 100000  # 0.0001 SOL priority (adjust for speed)
+    priority_fee_lamports: int = 500_000  # 0.0005 SOL for competitive inclusion
     use_jito: bool = False  # MEV protection via Jito bundles
     jito_tip_lamports: int = 10000  # Tip for Jito validators
 
@@ -88,8 +153,8 @@ class BotConfig:
     ai_api_key: str = ""
     ai_model: str = "anthropic/claude-sonnet-4"
     ai_provider: str = "openrouter"  # "openrouter" or "anthropic_direct"
-    ai_entry_timeout_seconds: float = 8.0  # Max wait for entry analysis
-    ai_exit_timeout_seconds: float = 5.0  # Max wait for exit evaluation
+    ai_entry_timeout_seconds: float = 5.0  # Max wait for entry analysis
+    ai_exit_timeout_seconds: float = 3.0  # Max wait for exit evaluation
     ai_exit_eval_interval_seconds: float = 60.0  # Proactive exit check cadence
     ai_min_confidence_to_buy: float = 0.6  # Minimum confidence for BUY
     ai_memory_size: int = 15  # Rolling decision history size
@@ -112,6 +177,13 @@ class BotConfig:
             self.private_key = os.getenv("WALLET_PRIVATE_KEY", "")
         if not self.ai_api_key:
             self.ai_api_key = os.getenv("OPENROUTER_API_KEY", "")
+
+    @classmethod
+    def from_mode(cls, mode: TradingMode, **overrides) -> "BotConfig":
+        """Create a BotConfig pre-tuned for a specific trading mode."""
+        preset = TRADING_PRESETS.get(mode, {})
+        merged = {**preset, "mode": mode, **overrides}
+        return cls(**merged)
 
     def __repr__(self) -> str:
         """Redact sensitive fields to prevent accidental secret leakage in logs."""
