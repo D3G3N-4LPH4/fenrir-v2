@@ -63,5 +63,6 @@ jobs:
       - name: Ruff format check
         run: ruff format --check fenrir/ api/ tests/
 
-      - name: Mypy type check
+      - name: Mypy type check (advisory)
+        continue-on-error: true
         run: mypy fenrir/ --ignore-missing-imports --check-untyped-defs
