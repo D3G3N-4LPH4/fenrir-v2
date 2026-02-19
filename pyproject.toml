@@ -1,0 +1,85 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fenrir"
+version = "1.0.0"
+description = "FENRIR - Pump.fun Trading Bot for Solana"
+readme = "docs/README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+
+dependencies = [
+    "solana>=0.30.0",
+    "solders>=0.19.0",
+    "base58>=2.1.0",
+    "aiohttp>=3.9.0",
+    "websockets>=12.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+]
+data = [
+    "pandas>=2.0.0",
+]
+dashboard = [
+    "rich>=13.0.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "httpx>=0.25.0",
+    "ruff>=0.4.0",
+    "mypy>=1.8.0",
+    "pre-commit>=3.6.0",
+]
+all = ["fenrir[api,data,dashboard,dev]"]
+
+[project.scripts]
+fenrir = "fenrir.bot:main"
+
+[tool.setuptools.packages.find]
+include = ["fenrir*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+# ── Ruff (linter + formatter) ──────────────────────────────────────
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "UP",     # pyupgrade
+    "S",      # flake8-bandit (security)
+    "ASYNC",  # flake8-async
+]
+ignore = [
+    "E501",   # line length handled by formatter
+    "S101",   # assert in tests is fine
+    "S311",   # random is not used for crypto
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S"]
+
+# ── Mypy (type checking) ───────────────────────────────────────────
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+ignore_missing_imports = true

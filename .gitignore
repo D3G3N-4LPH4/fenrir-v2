@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# IDE & tools
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Database files
+*.db
+*.sqlite3
+
+# Secrets & credentials
+.env
+.env.local
+.env.production
+credentials.json
+*_key.json
+
+# Config overrides (keep example)
+config/local.json
+
+# Node modules (if frontend exists)
+node_modules/
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Distribution
+*.tar.gz
+*.whl

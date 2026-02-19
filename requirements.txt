@@ -1,0 +1,36 @@
+# Fenrir Trading Bot - Python Dependencies
+
+# Solana & Web3
+solana==0.35.0
+solders==0.21.0
+base58==2.1.1
+
+# HTTP & Async
+aiohttp==3.11.11
+httpx==0.28.1
+
+# FastAPI & Web Server
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+websockets==14.1
+
+# Data & Config
+python-dotenv==1.0.1
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# Data Analysis
+pandas>=2.0.0
+
+# Utilities
+python-dateutil==2.9.0.post0
+
+# Testing (dev)
+pytest==8.3.4
+pytest-asyncio==0.24.0
+
+# Linting (dev)
+ruff==0.8.6
+mypy==1.14.1
+pre-commit==4.0.1

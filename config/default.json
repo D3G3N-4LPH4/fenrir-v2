@@ -1,0 +1,45 @@
+{
+  "comment": "FENRIR Trading Bot Configuration - JSON Format",
+  "comment2": "Copy this to config.json and customize. Use with: python fenrir_pumpfun_bot.py --config config.json",
+  
+  "rpc_url": "https://api.mainnet-beta.solana.com",
+  "ws_url": "wss://api.mainnet-beta.solana.com",
+  
+  "mode": "simulation",
+  
+  "buy_amount_sol": 0.1,
+  "max_slippage_bps": 500,
+  
+  "stop_loss_pct": 25.0,
+  "take_profit_pct": 100.0,
+  "trailing_stop_pct": 15.0,
+  "max_position_age_minutes": 60,
+  
+  "min_initial_liquidity_sol": 5.0,
+  "max_initial_market_cap_sol": 100.0,
+  
+  "priority_fee_lamports": 100000,
+  "use_jito": false,
+  "jito_tip_lamports": 10000,
+  
+  "websocket_enabled": true,
+  "poll_interval_seconds": 2.0,
+  
+  "ai_analysis_enabled": false,
+  "ai_model": "anthropic/claude-sonnet-4",
+  "ai_provider": "openrouter",
+  "ai_entry_timeout_seconds": 8.0,
+  "ai_exit_timeout_seconds": 5.0,
+  "ai_exit_eval_interval_seconds": 60.0,
+  "ai_min_confidence_to_buy": 0.6,
+  "ai_memory_size": 15,
+  "ai_temperature": 0.3,
+  "ai_fallback_to_rules": true,
+  "ai_dynamic_position_sizing": false,
+  
+  "log_level": "INFO",
+  "log_file": "fenrir_bot.log",
+  
+  "comment3": "SECURITY: Never put your private_key in this file!",
+  "comment4": "Use WALLET_PRIVATE_KEY environment variable instead"
+}
