@@ -26,6 +26,8 @@ class Position:
     amount_sol_invested: float
     peak_price: float  # For trailing stops
     current_price: float = 0.0
+    strategy_id: str = "default"  # Which strategy opened this position
+    token_symbol: str = "???"  # noqa: S105
 
     def update_price(self, new_price: float):
         """Update current price and track peak."""
@@ -76,7 +78,13 @@ class PositionManager:
         self.positions: dict[str, Position] = {}
 
     def open_position(
-        self, token_address: str, entry_price: float, amount_tokens: float, amount_sol: float
+        self,
+        token_address: str,
+        entry_price: float,
+        amount_tokens: float,
+        amount_sol: float,
+        strategy_id: str = "default",
+        token_symbol: str = "???",  # noqa: S107
     ):
         """Open a new position with ceremony."""
         position = Position(
@@ -87,6 +95,8 @@ class PositionManager:
             amount_sol_invested=amount_sol,
             peak_price=entry_price,
             current_price=entry_price,
+            strategy_id=strategy_id,
+            token_symbol=token_symbol,
         )
         self.positions[token_address] = position
         self.logger.info(f"Position opened: {token_address[:8]}... | {amount_tokens:.2f} tokens")
@@ -150,3 +160,18 @@ class PositionManager:
             "total_pnl_sol": total_pnl,
             "total_pnl_pct": (total_pnl / total_invested * 100) if total_invested > 0 else 0,
         }
+
+    def get_by_strategy(self, strategy_id: str) -> dict[str, Position]:
+        """Get all positions opened by a specific strategy."""
+        return {
+            addr: pos
+            for addr, pos in self.positions.items()
+            if pos.strategy_id == strategy_id
+        }
+
+    def count_by_strategy(self, strategy_id: str) -> int:
+        """Count open positions for a strategy."""
+        return sum(
+            1 for pos in self.positions.values()
+            if pos.strategy_id == strategy_id
+        )

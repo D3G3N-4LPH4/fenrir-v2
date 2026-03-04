@@ -97,6 +97,8 @@ class ClaudeBrain:
         self,
         token_data: dict,
         positions: dict,
+        strategy_context: str | None = None,
+        historical_context: str | None = None,
     ) -> tuple[bool, TokenAnalysis | None, float | None]:
         """
         Evaluate whether to buy a newly detected token.
@@ -104,6 +106,8 @@ class ClaudeBrain:
         Args:
             token_data: Dict from PumpFunMonitor with token info
             positions: Dict of open positions from PositionManager
+            strategy_context: Optional strategy-specific instructions for AI
+            historical_context: Optional historical performance context
 
         Returns:
             (should_buy, analysis, buy_amount_override)
@@ -133,6 +137,17 @@ class ClaudeBrain:
             memory_context = self.memory.build_context_block()
             portfolio_context = self.memory.build_portfolio_context(positions)
             risk_context = self.memory.get_risk_appetite_adjustment()
+
+            # Merge optional strategy/historical context into memory_context
+            extra_blocks = []
+            if strategy_context:
+                extra_blocks.append(strategy_context)
+            if historical_context:
+                extra_blocks.append(historical_context)
+            if extra_blocks and memory_context:
+                memory_context = "\n\n".join(extra_blocks) + "\n\n" + memory_context
+            elif extra_blocks:
+                memory_context = "\n\n".join(extra_blocks)
 
             # Call AI with timeout
             start_ms = _now_ms()
