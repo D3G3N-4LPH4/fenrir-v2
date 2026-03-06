@@ -29,6 +29,7 @@ from fenrir.ai.decision_engine import (
     TokenAnalysis,
     TokenMetadata,
 )
+from fenrir.ai.local_backend import LocalAITradingAnalyst
 from fenrir.ai.memory import AISessionMemory, DecisionRecord
 
 
@@ -76,18 +77,47 @@ class ClaudeBrain:
             )
             return
 
-        self.analyst = AITradingAnalyst(
-            api_key=self.config.ai_api_key,
-            model=self.config.ai_model,
-            temperature=self.config.ai_temperature,
-            timeout_seconds=int(self.config.ai_entry_timeout_seconds) + 2,
-        )
-        await self.analyst.initialize()
-        self.logger.info(
-            f"🧠 AI Brain: ONLINE (model={self.config.ai_model}, "
-            f"entry_timeout={self.config.ai_entry_timeout_seconds}s, "
-            f"min_confidence={self.config.ai_min_confidence_to_buy})"
-        )
+        if getattr(self.config, "ai_local_model_enabled", False):
+            self.analyst = LocalAITradingAnalyst(
+                base_url=self.config.ai_local_model_url,
+                model_name=self.config.ai_local_model_name,
+                temperature=self.config.ai_temperature,
+                timeout_seconds=int(self.config.ai_entry_timeout_seconds) + 2,
+            )
+            await self.analyst.initialize()
+
+            # Health check on startup
+            healthy, status_msg = await self.analyst.health_check()
+            if not healthy:
+                self.logger.warning(f"🦙 Local model health check FAILED: {status_msg}")
+                self.logger.warning("   Falling back to cloud API. Fix local server to use abliterated model.")
+                # Fall back to cloud analyst
+                self.analyst = AITradingAnalyst(
+                    api_key=self.config.ai_api_key,
+                    model=self.config.ai_model,
+                    temperature=self.config.ai_temperature,
+                    timeout_seconds=int(self.config.ai_entry_timeout_seconds) + 2,
+                )
+                await self.analyst.initialize()
+                self.logger.info(f"🧠 AI Brain: ONLINE (cloud fallback, model={self.config.ai_model})")
+            else:
+                self.logger.info(
+                    f"🦙 AI Brain: LOCAL ONLINE (model={self.config.ai_local_model_name}, "
+                    f"url={self.config.ai_local_model_url})"
+                )
+        else:
+            self.analyst = AITradingAnalyst(
+                api_key=self.config.ai_api_key,
+                model=self.config.ai_model,
+                temperature=self.config.ai_temperature,
+                timeout_seconds=int(self.config.ai_entry_timeout_seconds) + 2,
+            )
+            await self.analyst.initialize()
+            self.logger.info(
+                f"🧠 AI Brain: ONLINE (model={self.config.ai_model}, "
+                f"entry_timeout={self.config.ai_entry_timeout_seconds}s, "
+                f"min_confidence={self.config.ai_min_confidence_to_buy})"
+            )
 
     # ──────────────────────────────────────────────────────────────
     #  ENTRY EVALUATION

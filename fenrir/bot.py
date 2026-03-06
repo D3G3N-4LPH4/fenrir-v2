@@ -19,7 +19,13 @@ from datetime import datetime
 from pathlib import Path
 
 from fenrir.ai.brain import ClaudeBrain
+from fenrir.ai.market_geometry import MarketGeometryAnalyzer
 from fenrir.config import BotConfig, TradingMode
+from fenrir.core.dump_recovery import (
+    OuroborosConfig,
+    PostDumpRecoveryDetector,
+    ouroboros_detected_event,
+)
 from fenrir.core.budget import BudgetTracker
 from fenrir.core.client import SolanaClient
 from fenrir.core.jupiter import JupiterSwapEngine
@@ -127,6 +133,19 @@ class FenrirBot:
 
         # ── NEW: Budget Tracker ─────────────────────────────────
         self.budget_tracker = BudgetTracker()
+
+        # Ouroboros / dump recovery detector
+        self.dump_detector = PostDumpRecoveryDetector(
+            config=OuroborosConfig(
+                dump_threshold_pct=30.0,       # Flag if drops 30%+ from peak
+                recovery_threshold_pct=10.0,   # And then recovers 10%+
+                max_recovery_to_flag_pct=60.0, # But less than 60% (full recovery = legit)
+                tightened_trailing_stop_pct=8.0,  # Tighten trail to 8% on Ouroboros
+            )
+        )
+
+        # Market geometry analyzer (pre-entry informed pipeline)
+        self.market_geometry = MarketGeometryAnalyzer()
 
         # ── NEW: Strategy System ────────────────────────────────
         self.strategies: list[TradingStrategy] = []
@@ -281,9 +300,14 @@ class FenrirBot:
         )
 
         # Get strategy-specific AI context
-        strategy_context = strategy.get_ai_context()
+        base_strategy_context = strategy.get_ai_context()
 
-        # AI evaluation (with strategy + historical context)
+        # Run pre-entry market geometry analysis (informed pipeline pattern)
+        # Derives token-specific TradeParams and enriches AI context
+        geometry_report = self.market_geometry.analyze(token_data, strategy)
+        strategy_context = base_strategy_context + "\n\n" + geometry_report.ai_context_block
+
+        # AI evaluation (with strategy + geometry + historical context)
         should_buy, analysis, buy_amount_override = await self.claude_brain.evaluate_entry(
             token_data,
             strategy_positions,
@@ -306,8 +330,8 @@ class FenrirBot:
         if not should_buy:
             return
 
-        # Determine trade parameters
-        params = strategy.get_trade_params()
+        # Use geometry-derived params if available, else fall back to strategy defaults
+        params = geometry_report.derived_params if geometry_report.derived_params else strategy.get_trade_params()
         effective_amount = params.buy_amount_sol
         if buy_amount_override is not None:
             effective_amount = min(buy_amount_override, params.buy_amount_sol * 2)
@@ -390,6 +414,23 @@ class FenrirBot:
                             if pos:
                                 pos.update_price(result.price)
 
+                                # Ouroboros detection: dump → fake recovery → second dump
+                                alert = self.dump_detector.update(
+                                    addr, pos.current_price, pos.entry_price
+                                )
+                                if alert.ouroboros_detected:
+                                    # Tighten trailing stop on the Position object
+                                    if hasattr(pos, "trailing_stop_override_pct"):
+                                        pos.trailing_stop_override_pct = alert.tightened_trailing_stop_pct
+                                    await self.event_bus.emit(
+                                        ouroboros_detected_event(
+                                            addr,
+                                            alert,
+                                            symbol=pos.token_symbol,
+                                            strategy_id=pos.strategy_id,
+                                        )
+                                    )
+
                 # Phase 2: Mechanical exit conditions
                 mechanical_exits = self.positions.check_exit_conditions()
                 triggered_tokens = set()
@@ -462,6 +503,7 @@ class FenrirBot:
         )
 
         await self.trading_engine.execute_sell(token_address, reason)
+        self.dump_detector.remove_position(token_address)
 
         # Record in AI session memory
         self.claude_brain.record_trade_outcome(

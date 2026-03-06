@@ -28,6 +28,9 @@ class Position:
     current_price: float = 0.0
     strategy_id: str = "default"  # Which strategy opened this position
     token_symbol: str = "???"  # noqa: S105
+    # Dynamic trailing stop override (set by Ouroboros detector or AI)
+    # When set, overrides the strategy's trailing_stop_pct for this position only
+    trailing_stop_override_pct: float | None = None
 
     def update_price(self, new_price: float):
         """Update current price and track peak."""
@@ -133,17 +136,19 @@ class PositionManager:
                 exits.append((token_address, f"Stop Loss: {position.get_pnl_percent():.2f}%"))
 
             # Trailing stop
-            elif position.should_trailing_stop(self.config.trailing_stop_pct):
-                exits.append(
-                    (
-                        token_address,
-                        f"Trailing Stop: down {self.config.trailing_stop_pct}% from peak",
-                    )
+            else:
+                # Use per-position override if Ouroboros has tightened the stop
+                trailing_pct = (
+                    position.trailing_stop_override_pct
+                    if position.trailing_stop_override_pct is not None
+                    else self.config.trailing_stop_pct
                 )
+                if position.should_trailing_stop(trailing_pct):
+                    exits.append((token_address, f"Trailing Stop: {position.get_pnl_percent():+.1f}%"))
 
-            # Time-based exit
-            elif position.is_expired(self.config.max_position_age_minutes):
-                exits.append((token_address, "Max hold time reached"))
+                # Time-based exit
+                elif position.is_expired(self.config.max_position_age_minutes):
+                    exits.append((token_address, "Max hold time reached"))
 
         return exits
 

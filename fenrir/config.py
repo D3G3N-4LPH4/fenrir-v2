@@ -162,6 +162,14 @@ class BotConfig:
     ai_fallback_to_rules: bool = True  # Auto-buy on AI failure/timeout?
     ai_dynamic_position_sizing: bool = False  # Let AI set buy amount?
 
+    # Local Model Backend (OBLITERATUS-abliterated model)
+    # Set ai_local_model_enabled=True to route ClaudeBrain to a local vLLM/llama.cpp server
+    # instead of the Anthropic/OpenRouter API. The local server must implement OpenAI's
+    # /v1/chat/completions API (vLLM and llama.cpp server mode both do this).
+    ai_local_model_enabled: bool = False
+    ai_local_model_url: str = "http://localhost:8000/v1/chat/completions"
+    ai_local_model_name: str = "fenrir-brain"
+
     # Logging
     log_level: str = "INFO"
     log_file: str = "fenrir_bot.log"
@@ -177,6 +185,14 @@ class BotConfig:
             self.private_key = os.getenv("WALLET_PRIVATE_KEY", "")
         if not self.ai_api_key:
             self.ai_api_key = os.getenv("OPENROUTER_API_KEY", "")
+        if not self.ai_local_model_url:
+            self.ai_local_model_url = os.getenv(
+                "AI_LOCAL_MODEL_URL", "http://localhost:8000/v1/chat/completions"
+            )
+        if not self.ai_local_model_name:
+            self.ai_local_model_name = os.getenv("AI_LOCAL_MODEL_NAME", "fenrir-brain")
+        if not self.ai_local_model_enabled:
+            self.ai_local_model_enabled = os.getenv("AI_LOCAL_MODEL_ENABLED", "").lower() == "true"
 
     @classmethod
     def from_mode(cls, mode: TradingMode, **overrides) -> "BotConfig":
@@ -239,5 +255,11 @@ class BotConfig:
 
         if not (0.0 <= self.ai_min_confidence_to_buy <= 1.0):
             errors.append("AI min confidence must be between 0.0 and 1.0")
+
+        if self.ai_local_model_enabled and self.ai_analysis_enabled:
+            if not self.ai_local_model_url.startswith("http"):
+                errors.append("ai_local_model_url must be a valid HTTP URL")
+            if not self.ai_local_model_name:
+                errors.append("ai_local_model_name must be set when ai_local_model_enabled=True")
 
         return errors
