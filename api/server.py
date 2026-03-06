@@ -34,9 +34,13 @@ try:
         TradingMode,
         WalletManager,
     )
+    from fenrir.events.bus import EventListener
+    from fenrir.events.types import TradeEvent
 except ImportError:
     print("Warning: fenrir package not found.")
     print("   Make sure the fenrir/ package is in your Python path.")
+    EventListener = object  # type: ignore[assignment,misc]
+    TradeEvent = object  # type: ignore[assignment,misc]
 
 # Configure logging with file handler for post-mortem analysis
 LOG_DIR = os.getenv("FENRIR_LOG_DIR", "logs")
@@ -96,6 +100,21 @@ class RateLimiter:
         cutoff = now - self.window_seconds
         active = [t for t in self._requests.get(client_ip, []) if t > cutoff]
         return max(0, self.max_requests - len(active))
+
+
+# ===================================================================
+#                     WEBSOCKET EVENT ADAPTER
+# ===================================================================
+
+
+class WebSocketEventAdapter(EventListener):
+    """
+    EventBus adapter that forwards every bot event to all connected
+    WebSocket clients. Register on the bot's event_bus after start.
+    """
+
+    async def on_event(self, event: "TradeEvent") -> None:  # type: ignore[override]
+        await broadcast_update(event.to_dict())
 
 
 # Rate limit settings (configurable via env)
@@ -361,6 +380,8 @@ async def start_bot(request: StartBotRequest):
                 )
 
             bot_instance = FenrirBot(config)
+            # Bridge all EventBus events to WebSocket clients
+            bot_instance.event_bus.register(WebSocketEventAdapter())
             bot_task = asyncio.create_task(bot_instance.start())
 
             bot_state["status"] = "running"
@@ -463,6 +484,8 @@ async def get_positions():
             positions.append(
                 {
                     "token_address": token_address,
+                    "token_symbol": getattr(position, "token_symbol", "???"),
+                    "strategy_id": getattr(position, "strategy_id", "default"),
                     "entry_time": position.entry_time.isoformat(),
                     "entry_price": position.entry_price,
                     "current_price": position.current_price,
@@ -471,6 +494,8 @@ async def get_positions():
                     "pnl_percent": position.get_pnl_percent(),
                     "pnl_sol": position.get_pnl_sol(),
                     "peak_price": position.peak_price,
+                    "trailing_stop_override_pct": getattr(position, "trailing_stop_override_pct", None),
+                    "ouroboros_triggered": getattr(position, "trailing_stop_override_pct", None) is not None,
                 }
             )
 
@@ -537,6 +562,59 @@ async def execute_manual_trade(request: ManualTradeRequest):
     except Exception as e:
         logger.error(f"Error executing trade: {e}")
         raise HTTPException(status_code=500, detail=f"Trade execution error: {str(e)}") from e
+
+
+@app.get("/bot/full-status")
+async def get_full_status():
+    """Full bot status including AI brain, strategies, budget, audit, and Ouroboros stats."""
+    if not bot_instance or bot_state["status"] != "running":
+        return {"running": False, "status": bot_state["status"]}
+    try:
+        status = bot_instance.get_full_status()
+        # Append Ouroboros detector stats if available
+        if hasattr(bot_instance, "dump_detector"):
+            status["ouroboros"] = bot_instance.dump_detector.get_stats()
+        if hasattr(bot_instance, "market_geometry"):
+            status["market_geometry"] = bot_instance.market_geometry.get_stats()
+        return status
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.get("/bot/strategies")
+async def get_strategies():
+    """List all active strategies and their runtime state."""
+    if not bot_instance or bot_state["status"] != "running":
+        return {"strategies": []}
+    return {"strategies": [s.get_status() for s in bot_instance.strategies]}
+
+
+@app.post("/bot/strategies/{strategy_id}/pause")
+async def pause_strategy(strategy_id: str):
+    """Pause a strategy (stops new entries, keeps existing positions)."""
+    if not bot_instance or bot_state["status"] != "running":
+        raise HTTPException(status_code=400, detail="Bot is not running")
+    for strategy in bot_instance.strategies:
+        if strategy.strategy_id == strategy_id:
+            strategy.pause()
+            await broadcast_update({"event": "strategy_paused", "strategy_id": strategy_id,
+                                    "timestamp": datetime.now().isoformat()})
+            return {"status": "success", "strategy_id": strategy_id, "paused": True}
+    raise HTTPException(status_code=404, detail=f"Strategy '{strategy_id}' not found")
+
+
+@app.post("/bot/strategies/{strategy_id}/resume")
+async def resume_strategy(strategy_id: str):
+    """Resume a paused strategy."""
+    if not bot_instance or bot_state["status"] != "running":
+        raise HTTPException(status_code=400, detail="Bot is not running")
+    for strategy in bot_instance.strategies:
+        if strategy.strategy_id == strategy_id:
+            strategy.resume()
+            await broadcast_update({"event": "strategy_resumed", "strategy_id": strategy_id,
+                                    "timestamp": datetime.now().isoformat()})
+            return {"status": "success", "strategy_id": strategy_id, "paused": False}
+    raise HTTPException(status_code=404, detail=f"Strategy '{strategy_id}' not found")
 
 
 @app.get("/bot/config")
