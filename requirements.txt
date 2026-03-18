@@ -22,6 +22,12 @@ pydantic-settings==2.7.1
 
 # Data Analysis
 pandas>=2.0.0
+numpy>=1.24.0
+polars>=0.20.0
+
+# Duality layer — optional enrichment adapters
+# pip install smartmoneyconcepts  (required for smc_adapter.py)
+# pip install twitter-cli         (required for social_signal_adapter.py)
 
 # Utilities
 python-dateutil==2.9.0.post0

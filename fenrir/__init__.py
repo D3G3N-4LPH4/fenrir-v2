@@ -14,6 +14,11 @@ Usage:
 
 __version__ = "1.0.0"
 
+# Duality layer (backtest/live strategy framework) — import directly:
+#   from fenrir.duality import run_backtest, PromptTester, ARTExporter
+#   from fenrir.duality.smc_adapter import SMCAdapter, FENRIRSMCMixin
+#   from fenrir.duality.social_signal_adapter import SocialSignalAdapter, FENRIRSocialMixin
+
 # Core configuration
 # AI
 from fenrir.ai.brain import ClaudeBrain
