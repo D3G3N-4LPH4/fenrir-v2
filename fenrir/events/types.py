@@ -7,8 +7,13 @@ Every significant action in the bot lifecycle emits an event.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
+
+
+def _utcnow() -> datetime:
+    """Return current UTC time (timezone-aware)."""
+    return datetime.now(timezone.utc)
 
 
 class EventSeverity(Enum):
@@ -43,7 +48,7 @@ class TradeEvent:
     event_type: str
     category: EventCategory
     severity: EventSeverity = EventSeverity.INFO
-    timestamp: datetime = field(default_factory=datetime.now)
+    timestamp: datetime = field(default_factory=_utcnow)
 
     # Context (all optional — not every event involves a token or strategy)
     token_address: str | None = None

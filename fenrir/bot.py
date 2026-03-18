@@ -350,7 +350,9 @@ class FenrirBot:
             await self.event_bus.emit(budget_exhausted_event(
                 strategy_id=strategy.strategy_id,
                 budget_sol=strategy.budget_sol,
-                spent_sol=self.budget_tracker._get_state(strategy.strategy_id).sol_spent,
+                spent_sol=self.budget_tracker.get_strategy_budget_status(
+                strategy.strategy_id, strategy.budget_sol
+            )["sol_spent"],
             ))
             return
 
@@ -502,7 +504,12 @@ class FenrirBot:
             (datetime.now() - position.entry_time).total_seconds() / 60
         )
 
-        await self.trading_engine.execute_sell(token_address, reason)
+        sold = await self.trading_engine.execute_sell(token_address, reason)
+        if not sold:
+            self.logger.warning(
+                f"Sell failed for {token_address[:8]}... — skipping outcome recording"
+            )
+            return
         self.dump_detector.remove_position(token_address)
 
         # Record in AI session memory

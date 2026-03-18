@@ -55,7 +55,12 @@ class TradingEngine:
         # Direct pump.fun program interface
         self.pumpfun = PumpFunProgram()
 
-    async def execute_buy(self, token_data: dict, amount_sol: float | None = None) -> bool:
+    async def execute_buy(
+        self,
+        token_data: dict,
+        amount_sol: float | None = None,
+        strategy_id: str = "default",
+    ) -> bool:
         """
         Snipe a new token launch via direct pump.fun bonding curve buy.
 
@@ -64,6 +69,7 @@ class TradingEngine:
             amount_sol: SOL to spend. Defaults to config.buy_amount_sol.
                         Passed explicitly to avoid mutating shared config
                         during concurrent calls.
+            strategy_id: Which strategy opened this position (for position tracking).
         """
         token_address = token_data["token_address"]
         amount_sol = amount_sol if amount_sol is not None else self.config.buy_amount_sol
@@ -88,6 +94,8 @@ class TradingEngine:
                 entry_price=sim_price,
                 amount_tokens=tokens_out,
                 amount_sol=amount_sol,
+                strategy_id=strategy_id,
+                token_symbol=token_data.get("symbol", "???"),
             )
             return True
 
@@ -215,6 +223,8 @@ class TradingEngine:
                 entry_price=entry_price,
                 amount_tokens=tokens_out,
                 amount_sol=amount_sol,
+                strategy_id=strategy_id,
+                token_symbol=token_data.get("symbol", "???"),
             )
 
             self.logger.info(f"TX Signature: {signature}")

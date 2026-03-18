@@ -92,16 +92,22 @@ class BondingCurveState:
 
         # New virtual reserves after buy
         new_virtual_sol = self.virtual_sol_reserves + sol_lamports
+        if new_virtual_sol == 0:
+            return 0, 100.0
 
         # Constant product: k = x * y
         k = self.virtual_token_reserves * self.virtual_sol_reserves
         new_virtual_tokens = k // new_virtual_sol
+        if new_virtual_tokens == 0:
+            return 0, 100.0
 
         # Tokens received
         tokens_out = self.virtual_token_reserves - new_virtual_tokens
 
         # Price impact
         original_price = self.get_price()
+        if original_price == 0:
+            return tokens_out, 0.0
         new_price = new_virtual_sol / new_virtual_tokens / 1e9
         price_impact = ((new_price - original_price) / original_price) * 100
 
@@ -115,6 +121,8 @@ class BondingCurveState:
         """
         # New virtual reserves after sell
         new_virtual_tokens = self.virtual_token_reserves + token_amount
+        if new_virtual_tokens == 0:
+            return 0, 100.0
 
         # Constant product
         k = self.virtual_token_reserves * self.virtual_sol_reserves
@@ -125,6 +133,8 @@ class BondingCurveState:
 
         # Price impact
         original_price = self.get_price()
+        if original_price == 0 or new_virtual_tokens == 0:
+            return sol_out, 0.0
         new_price = new_virtual_sol / new_virtual_tokens / 1e9
         price_impact = ((original_price - new_price) / original_price) * 100
 

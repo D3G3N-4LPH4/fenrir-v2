@@ -126,7 +126,7 @@ class PositionManager:
         """
         exits = []
 
-        for token_address, position in self.positions.items():
+        for token_address, position in list(self.positions.items()):
             # Take profit
             if position.should_take_profit(self.config.take_profit_pct):
                 exits.append((token_address, f"Take Profit: {position.get_pnl_percent():.2f}%"))

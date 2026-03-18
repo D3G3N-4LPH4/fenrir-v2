@@ -21,6 +21,7 @@ Usage:
 """
 
 import asyncio
+from collections import deque
 from datetime import datetime
 
 from fenrir.ai.decision_engine import (
@@ -65,7 +66,7 @@ class ClaudeBrain:
             "ai_exits_evaluated": 0,
             "ai_exits_overridden": 0,
             "ai_avg_response_ms": 0.0,
-            "_response_times": [],
+            "_response_times": deque(maxlen=100),
         }
 
     async def initialize(self) -> None:
@@ -439,12 +440,10 @@ class ClaudeBrain:
         )
 
     def _record_response_time(self, ms: float) -> None:
-        """Track response times for averaging."""
+        """Track response times for averaging (bounded deque, O(1) appends)."""
         times = self.stats["_response_times"]
         times.append(ms)
-        if len(times) > 100:
-            times.pop(0)
-        self.stats["ai_avg_response_ms"] = sum(times) / len(times)
+        self.stats["ai_avg_response_ms"] = sum(times) / len(times) if times else 0.0
 
     async def close(self) -> None:
         """Shutdown the brain. Closes HTTP sessions."""

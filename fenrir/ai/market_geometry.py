@@ -493,9 +493,12 @@ class MarketGeometryAnalyzer:
         risk = report.overall_risk_score
 
         # ── Position size: scale with quality, shrink with risk ────────────
+        # Multiplier range: 0.3x (very risky) to 1.5x (high quality, low risk)
+        # Hard cap: never auto-scale above 2x the base or 1.0 SOL (whichever is lower)
         size_multiplier = 0.5 + (quality * 1.0) - (risk * 0.5)
         size_multiplier = max(0.3, min(size_multiplier, 1.5))
-        derived_buy = round(base.buy_amount_sol * size_multiplier, 4)
+        max_buy = min(base.buy_amount_sol * 2.0, 1.0)
+        derived_buy = round(min(base.buy_amount_sol * size_multiplier, max_buy), 4)
 
         # ── Slippage: coordinated momentum needs tighter tolerance ─────────
         if not report.momentum_geometry.is_organic:

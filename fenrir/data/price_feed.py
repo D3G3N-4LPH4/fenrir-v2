@@ -313,7 +313,10 @@ class PriceFeedManager:
         fresh_quotes = [q for q in quotes if not q.is_stale()]
 
         if not fresh_quotes:
-            fresh_quotes = quotes  # Use stale if no fresh available
+            # Warn and fall back to stale quotes rather than returning nothing
+            stale_ages = [f"{q.source.value}:{q.age_seconds():.0f}s" for q in quotes]
+            logger.warning("All price quotes are stale (%s) — using stale data", ", ".join(stale_ages))
+            fresh_quotes = quotes
 
         # Calculate weighted average
         total_weight = sum(q.confidence for q in fresh_quotes)
