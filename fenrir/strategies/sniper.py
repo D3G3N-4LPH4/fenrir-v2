@@ -38,8 +38,14 @@ class SniperStrategy(TradingStrategy):
         # Apply mode presets
         preset = TRADING_PRESETS.get(config.mode, {})
 
-        # Strategy-specific limits from config
-        self.budget_sol = config.buy_amount_sol * 10  # 10 trades per day default
+        # Strategy-specific limits from config.
+        # Prefer the explicit sniper_daily_budget_sol when set; fall back to
+        # 10 × buy_amount_sol only as a last resort so that tuning buy size
+        # doesn't silently balloon the daily spend cap.
+        if config.sniper_daily_budget_sol > 0:
+            self.budget_sol = config.sniper_daily_budget_sol
+        else:
+            self.budget_sol = config.buy_amount_sol * 10  # legacy auto default
         self.max_concurrent_positions = 5
 
         # Build trade params from config + presets

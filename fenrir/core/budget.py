@@ -177,10 +177,21 @@ class BudgetTracker:
         returned_sol: float,
         pnl_pct: float,
     ) -> None:
-        """Record a sell (position close)."""
+        """Record a sell (position close).
+
+        Decrements _global_sol_spent by the amount returned so the global
+        limit tracks *net live exposure* across the session rather than
+        cumulative gross spend — which would cause false-trips after many
+        round-trips without a midnight reset.
+        """
         state = self._get_state(strategy_id)
         state.sol_returned += returned_sol
         state.positions_open = max(0, state.positions_open - 1)
+
+        # Keep global counter in sync with net exposure, not gross spend.
+        # Clamp to 0 to guard against floating-point underflow on equal
+        # buy/sell amounts.
+        self._global_sol_spent = max(0.0, self._global_sol_spent - returned_sol)
 
         if pnl_pct > 0:
             state.wins += 1
@@ -231,7 +242,10 @@ class BudgetTracker:
 
         return {
             "global_sol_limit": self._global_sol_limit,
-            "global_sol_spent": self._global_sol_spent,
+            # Net live exposure: what the global limit gates are checked against.
+            # Decremented on each sell so it represents funds currently at risk,
+            # not cumulative gross volume.
+            "global_sol_net_exposure": self._global_sol_spent,
             "total_sol_spent": total_spent,
             "total_sol_returned": total_returned,
             "net_spent": total_spent - total_returned,

@@ -27,6 +27,7 @@ Usage:
 import hashlib
 import json
 import sqlite3
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -114,12 +115,22 @@ class AuditChain:
         self.session_id = session_id or str(uuid.uuid4())[:8]
         self.conn: sqlite3.Connection | None = None
         self._last_hash: str = ""
+        # Serialises concurrent calls to record() from the async event bus.
+        # check_same_thread=False allows the connection to be used from any
+        # thread, but SQLite's writer lock only blocks one writer at a time —
+        # the threading.Lock here additionally serialises _last_hash mutation
+        # so two concurrent record() calls can't interleave their hash chains.
+        self._write_lock = threading.Lock()
         self._initialize_db()
 
     def _initialize_db(self) -> None:
         """Create audit table and load the last hash for chain continuity."""
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # WAL mode: readers never block writers and writers never block readers.
+        # Essential when the async event bus and background health checks both
+        # query the DB while the trading loop writes audit records.
+        self.conn.execute("PRAGMA journal_mode=WAL")
 
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS audit_chain (
@@ -186,6 +197,10 @@ class AuditChain:
         """
         Record an event in the audit chain.
 
+        Thread-safe: serialised via _write_lock so concurrent callers (e.g.
+        the async event bus dispatching to the AuditAdapter while a background
+        task also records) cannot interleave their hash chains.
+
         Args:
             event_type: One of AuditEventType constants
             token_address: Token mint address (if applicable)
@@ -199,90 +214,161 @@ class AuditChain:
         timestamp = datetime.now().isoformat()
         payload_json = json.dumps(payload, sort_keys=True, default=str)
 
-        # Compute chained hash
-        new_hash = self._compute_hash(
-            self._last_hash, event_type, payload_json, timestamp
-        )
+        with self._write_lock:
+            # Compute chained hash inside the lock so _last_hash is stable.
+            new_hash = self._compute_hash(
+                self._last_hash, event_type, payload_json, timestamp
+            )
 
-        cursor = self.conn.execute(
-            """
-            INSERT INTO audit_chain
-                (session_id, timestamp, event_type, token_address,
-                 strategy_id, payload, prev_hash, hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                self.session_id,
-                timestamp,
-                event_type,
-                token_address,
-                strategy_id,
-                payload_json,
-                self._last_hash,
-                new_hash,
-            ),
-        )
-        self.conn.commit()
+            cursor = self.conn.execute(
+                """
+                INSERT INTO audit_chain
+                    (session_id, timestamp, event_type, token_address,
+                     strategy_id, payload, prev_hash, hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self.session_id,
+                    timestamp,
+                    event_type,
+                    token_address,
+                    strategy_id,
+                    payload_json,
+                    self._last_hash,
+                    new_hash,
+                ),
+            )
+            self.conn.commit()
 
-        record = AuditRecord(
-            id=cursor.lastrowid,
-            session_id=self.session_id,
-            timestamp=timestamp,
-            event_type=event_type,
-            token_address=token_address,
-            strategy_id=strategy_id,
-            payload=payload,
-            prev_hash=self._last_hash,
-            hash=new_hash,
-        )
+            record = AuditRecord(
+                id=cursor.lastrowid,
+                session_id=self.session_id,
+                timestamp=timestamp,
+                event_type=event_type,
+                token_address=token_address,
+                strategy_id=strategy_id,
+                payload=payload,
+                prev_hash=self._last_hash,
+                hash=new_hash,
+            )
 
-        self._last_hash = new_hash
+            self._last_hash = new_hash
+
         return record
 
     def verify_chain(
         self,
         session_id: str | None = None,
+        page_size: int = 50_000,
     ) -> tuple[bool, int | None]:
         """
         Verify the integrity of the audit chain.
 
         Args:
-            session_id: If provided, verify only that session's entries.
-                        If None, verify the entire chain.
+            session_id: If provided, verify only that session's entries
+                        AND confirm the session's first record correctly
+                        anchors into the broader chain (cross-session link).
+                        If None, verify the entire chain in paginated batches.
+            page_size: Maximum rows loaded per batch for full-chain verify.
+                       Prevents OOM on long-running deployments.
 
         Returns:
             (is_valid, broken_at_id)
             - is_valid: True if entire chain is intact
             - broken_at_id: ID of first broken record, or None if valid
         """
+        genesis_hash = hashlib.sha256(GENESIS_SEED.encode()).hexdigest()
+
         if session_id:
             rows = self.conn.execute(
                 "SELECT * FROM audit_chain WHERE session_id = ? ORDER BY id ASC",
                 (session_id,),
             ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM audit_chain ORDER BY id ASC"
-            ).fetchall()
 
-        if not rows:
+            if not rows:
+                return (True, None)
+
+            # ── Per-record hash integrity ──────────────────────────────
+            for row in rows:
+                expected = self._compute_hash(
+                    row["prev_hash"],
+                    row["event_type"],
+                    row["payload"],
+                    row["timestamp"],
+                )
+                if expected != row["hash"]:
+                    return (False, row["id"])
+
+            # ── Adjacent-row linkage within the session ────────────────
+            for i in range(1, len(rows)):
+                if rows[i]["prev_hash"] != rows[i - 1]["hash"]:
+                    return (False, rows[i]["id"])
+
+            # ── Cross-session anchor check ─────────────────────────────
+            # The first row's prev_hash must either be the genesis hash or
+            # resolve to an existing record from a prior session. Without
+            # this check a fabricated session that starts from an arbitrary
+            # hash would pass per-session verification.
+            first_prev = rows[0]["prev_hash"]
+            if first_prev != genesis_hash:
+                anchor = self.conn.execute(
+                    "SELECT id FROM audit_chain WHERE hash = ?",
+                    (first_prev,),
+                ).fetchone()
+                if anchor is None:
+                    return (False, rows[0]["id"])
+
             return (True, None)
 
-        for row in rows:
-            expected_hash = self._compute_hash(
-                row["prev_hash"],
-                row["event_type"],
-                row["payload"],
-                row["timestamp"],
+        # ── Full-chain verify (paginated) ──────────────────────────────
+        total = self.conn.execute(
+            "SELECT COUNT(*) as n FROM audit_chain"
+        ).fetchone()["n"]
+
+        if total > page_size:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "verify_chain: chain has %d records; verifying in pages of %d. "
+                "This may take a moment.",
+                total,
+                page_size,
             )
 
-            if expected_hash != row["hash"]:
-                return (False, row["id"])
+        prev_page_last_hash: str | None = None
+        prev_page_last_id: int | None = None
+        offset = 0
 
-        # Also verify chain linkage (each prev_hash matches prior row's hash)
-        for i in range(1, len(rows)):
-            if rows[i]["prev_hash"] != rows[i - 1]["hash"]:
-                return (False, rows[i]["id"])
+        while offset < total:
+            rows = self.conn.execute(
+                "SELECT * FROM audit_chain ORDER BY id ASC LIMIT ? OFFSET ?",
+                (page_size, offset),
+            ).fetchall()
+
+            if not rows:
+                break
+
+            # Verify linkage from previous page boundary
+            if prev_page_last_hash is not None:
+                if rows[0]["prev_hash"] != prev_page_last_hash:
+                    return (False, rows[0]["id"])
+
+            for row in rows:
+                expected = self._compute_hash(
+                    row["prev_hash"],
+                    row["event_type"],
+                    row["payload"],
+                    row["timestamp"],
+                )
+                if expected != row["hash"]:
+                    return (False, row["id"])
+
+            for i in range(1, len(rows)):
+                if rows[i]["prev_hash"] != rows[i - 1]["hash"]:
+                    return (False, rows[i]["id"])
+
+            prev_page_last_hash = rows[-1]["hash"]
+            prev_page_last_id = rows[-1]["id"]
+            offset += page_size
 
         return (True, None)
 

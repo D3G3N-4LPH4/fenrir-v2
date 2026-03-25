@@ -148,6 +148,11 @@ class BotConfig:
     websocket_enabled: bool = True  # Real-time vs polling
     poll_interval_seconds: float = 2.0  # If WebSocket fails
 
+    # Strategy budgets — explicit daily SOL caps per strategy.
+    # Setting these separately from buy_amount_sol prevents the budget
+    # from silently scaling when buy_amount_sol is tuned for risk.
+    sniper_daily_budget_sol: float = 0.0   # 0 = auto (10 × buy_amount_sol)
+
     # AI Integration - Claude Brain (autonomous LLM decision engine)
     ai_analysis_enabled: bool = False  # Master switch for AI decisions
     ai_api_key: str = ""
