@@ -118,6 +118,14 @@ class HealthMonitorConfig:
     win_rate_min_trades: int = 8
     # Need at least this many trades for meaningful win rate comparison.
 
+    # ── Linguistic hedge drift ───────────────────────────────────
+    hedge_window: int = 10
+    # Rolling window for hedge rate (matches HedgeDetector.WINDOW_SIZE).
+    hedge_drift_threshold: float = 0.6
+    # Flag when > 60% of recent responses contained hedging language.
+    hedge_drift_min_samples: int = 5
+    # Need at least this many samples before flagging.
+
     # ── Cooldowns ───────────────────────────────────────────────
     alert_cooldown_seconds: float = 300.0
     # Don't repeat the same alert type within this window.
@@ -139,6 +147,7 @@ class DriftType(Enum):
     RESPONSE_TIME_DRIFT = "response_time_drift"
     LOSS_CASCADE = "loss_cascade"
     WIN_RATE_DECAY = "win_rate_decay"
+    LINGUISTIC_HEDGE_DRIFT = "linguistic_hedge_drift"
 
 
 @dataclass
@@ -181,6 +190,9 @@ class _StrategyHealthState:
     # Token flow (to distinguish "no tokens arriving" from "skipping everything")
     tokens_seen_since_last_buy: int = 0
 
+    # Linguistic hedge tracking (7th detector)
+    hedge_counts: deque = field(default_factory=lambda: deque(maxlen=10))
+
     @property
     def total_trades(self) -> int:
         return self.total_wins + self.total_losses
@@ -206,6 +218,7 @@ def _new_strategy_state(config: HealthMonitorConfig) -> _StrategyHealthState:
         reasoning_hashes=deque(maxlen=config.reasoning_window),
         response_times_ms=deque(maxlen=config.response_time_window),
         trade_outcomes=deque(maxlen=config.trade_outcome_window),
+        hedge_counts=deque(maxlen=config.hedge_window),
     )
 
 
@@ -326,6 +339,10 @@ class AIHealthMonitor(EventListener):
         else:
             state.consecutive_skips = 0
 
+        # Track linguistic hedge count from HedgeDetector (7th detector input)
+        hedge_count = data.get("hedge_count", 0)
+        state.hedge_counts.append(int(hedge_count))
+
     def _on_buy(self, event: TradeEvent) -> None:
         """Reset skip/token counters on buy."""
         state = self._get_state(event.strategy_id)
@@ -376,6 +393,10 @@ class AIHealthMonitor(EventListener):
             alerts.append(alert)
 
         alert = self._detect_win_rate_decay(state, strategy_id)
+        if alert:
+            alerts.append(alert)
+
+        alert = self._detect_linguistic_hedge_drift(state, strategy_id)
         if alert:
             alerts.append(alert)
 
@@ -619,6 +640,53 @@ class AIHealthMonitor(EventListener):
             strategy_id=strategy_id,
         )
 
+    def _detect_linguistic_hedge_drift(
+        self,
+        state: _StrategyHealthState,
+        strategy_id: str | None,
+    ) -> DriftAlert | None:
+        """
+        7th detector: linguistic hedge drift from HedgeDetector.
+
+        G0DM0D3 lineage: Rising hedge rate in Claude output precedes other
+        drift metrics and indicates the model is becoming uncertain about
+        its own outputs. hedge_count per response is emitted in AI_DECISION
+        events by HedgeDetector and ingested here via _on_ai_decision.
+
+        Fires when > hedge_drift_threshold fraction of recent responses
+        contained at least one epistemic hedge phrase.
+        """
+        if len(state.hedge_counts) < self.config.hedge_drift_min_samples:
+            return None
+
+        counts = list(state.hedge_counts)
+        hedged = sum(1 for c in counts if c > 0)
+        rate = hedged / len(counts)
+        avg_count = sum(counts) / len(counts)
+
+        if rate <= self.config.hedge_drift_threshold:
+            return None
+
+        return DriftAlert(
+            drift_type=DriftType.LINGUISTIC_HEDGE_DRIFT,
+            severity="warning",
+            message=(
+                f"Linguistic hedge drift: {rate:.0%} of last {len(counts)} responses "
+                f"contained hedging language (avg {avg_count:.1f} hedges/response). "
+                f"Claude may be uncertain about its own outputs — epistemic self-censorship "
+                f"precedes other drift metrics. Consider resetting session memory."
+            ),
+            details={
+                "hedge_rate": round(rate, 3),
+                "threshold": self.config.hedge_drift_threshold,
+                "avg_hedge_count": round(avg_count, 2),
+                "samples": len(counts),
+                "hedged_responses": hedged,
+                "recent_counts": counts[-5:],
+            },
+            strategy_id=strategy_id,
+        )
+
     # ───────────────────────────────────────────────────────────
     #  ALERT EMISSION
     # ───────────────────────────────────────────────────────────
@@ -748,6 +816,19 @@ class AIHealthMonitor(EventListener):
                 "rolling_win_rate": round(state.rolling_win_rate, 3),
                 "consecutive_losses": state.consecutive_losses,
                 "total_trades": state.total_trades,
+            },
+            "linguistic": {
+                "hedge_samples": len(state.hedge_counts),
+                "hedge_rate": round(
+                    sum(1 for c in state.hedge_counts if c > 0) / len(state.hedge_counts), 3
+                ) if state.hedge_counts else 0.0,
+                "avg_hedge_count": round(
+                    sum(state.hedge_counts) / len(state.hedge_counts), 2
+                ) if state.hedge_counts else 0.0,
+                "healthy": (
+                    sum(1 for c in state.hedge_counts if c > 0) / len(state.hedge_counts)
+                    <= self.config.hedge_drift_threshold
+                ) if len(state.hedge_counts) >= self.config.hedge_drift_min_samples else True,
             },
         }
 
