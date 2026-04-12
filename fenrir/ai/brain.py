@@ -24,6 +24,7 @@ import asyncio
 from collections import deque
 from datetime import datetime
 
+from fenrir.ai.context_builder import apply_exit_plan_to_position, build_batched_exit_context
 from fenrir.ai.decision_engine import (
     AIDecision,
     AITradingAnalyst,
@@ -444,6 +445,118 @@ class ClaudeBrain:
         times = self.stats["_response_times"]
         times.append(ms)
         self.stats["ai_avg_response_ms"] = sum(times) / len(times) if times else 0.0
+
+    # ──────────────────────────────────────────────────────────────
+    #  BATCHED EXIT EVALUATION (Nocturne pattern)
+    # ──────────────────────────────────────────────────────────────
+
+    async def evaluate_exits_batched(
+        self,
+        positions: dict,
+        portfolio_summary: dict,
+        wallet_balance_sol: float = 0.0,
+        triggered_exits: dict[str, str] | None = None,
+    ) -> list[dict]:
+        """
+        Evaluate exit actions for ALL open positions in a single LLM call.
+
+        Implements Nocturne's batched-asset pattern: instead of one round-trip
+        per position, the full portfolio state is packed into one structured
+        context and evaluated at once. Positions still in AI-imposed cooldown
+        are automatically skipped.
+
+        Args:
+            positions:          Dict of token_address → Position objects
+            portfolio_summary:  From PositionManager.get_portfolio_summary()
+            wallet_balance_sol: Available wallet balance in SOL
+            triggered_exits:    Dict of token_address → mechanical trigger string
+
+        Returns:
+            List of exit_decision dicts (one per active position):
+            [{"token_address": "...", "action": "HOLD|EXIT|...", "exit_plan": "...", ...}]
+
+        Side effects:
+            Calls apply_exit_plan_to_position() on each position so the AI's
+            continuation contract is persisted for the next evaluation cycle.
+        """
+        if not self.enabled or not self.analyst:
+            # AI disabled — defer all to mechanical triggers
+            return [
+                {
+                    "token_address": addr,
+                    "action": "EXIT" if triggered_exits and addr in triggered_exits else "HOLD",
+                    "reasoning": "AI disabled",
+                    "urgency": 0.0,
+                    "exit_plan": "",
+                }
+                for addr in positions
+            ]
+
+        exit_timeout = self.config.ai_exit_timeout_seconds
+
+        try:
+            memory_block = self.memory.build_context_block()
+            context_json, active_addresses = build_batched_exit_context(
+                positions=positions,
+                portfolio_summary=portfolio_summary,
+                wallet_balance_sol=wallet_balance_sol,
+                session_memory_block=memory_block,
+                triggered_exits=triggered_exits or {},
+            )
+
+            if not active_addresses:
+                return []
+
+            result = await asyncio.wait_for(
+                self.analyst.evaluate_exits_batched(
+                    context_json=context_json,
+                    active_addresses=active_addresses,
+                ),
+                timeout=exit_timeout,
+            )
+
+            decisions = result.get("exit_decisions", [])
+
+            # Persist AI continuation contracts onto Position objects
+            for decision in decisions:
+                addr = decision.get("token_address")
+                exit_plan = decision.get("exit_plan", "")
+                if addr and addr in positions and exit_plan:
+                    apply_exit_plan_to_position(positions[addr], exit_plan)
+
+            self.stats["ai_exits_evaluated"] += len(decisions)
+            return decisions
+
+        except TimeoutError:
+            self.stats["ai_timeouts"] += 1
+            self.logger.warning(
+                f"🧠 AI Brain: batched exit eval TIMEOUT ({exit_timeout}s) "
+                f"for {len(positions)} positions"
+            )
+            return [
+                {
+                    "token_address": addr,
+                    "action": "EXIT" if triggered_exits and addr in triggered_exits else "HOLD",
+                    "reasoning": "AI timeout",
+                    "urgency": 0.0,
+                    "exit_plan": "",
+                }
+                for addr in positions
+            ]
+
+        except Exception as e:
+            self.stats["ai_errors"] += 1
+            self.logger.error("AI Brain batched exit evaluation", e)
+            return [
+                {
+                    "token_address": addr,
+                    "action": "EXIT" if triggered_exits and addr in triggered_exits else "HOLD",
+                    "reasoning": "AI error",
+                    "urgency": 0.0,
+                    "exit_plan": "",
+                }
+                for addr in positions
+            ]
 
     async def close(self) -> None:
         """Shutdown the brain. Closes HTTP sessions."""

@@ -5,7 +5,7 @@ FENRIR - Position Tracking
 Position management and portfolio tracking.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from fenrir.config import BotConfig
@@ -31,6 +31,15 @@ class Position:
     # Dynamic trailing stop override (set by Ouroboros detector or AI)
     # When set, overrides the strategy's trailing_stop_pct for this position only
     trailing_stop_override_pct: float | None = None
+
+    # ── Nocturne pattern: AI-written exit plan and self-imposed cooldown ──────
+    # After each batched exit evaluation, ClaudeBrain writes its continuation
+    # contract here via context_builder.apply_exit_plan_to_position().
+    # The plan string is replayed into the next evaluation context so Claude
+    # can check whether its own conditions have been met or invalidated.
+    # Example: "Hold while drawdown < 30%. cooldown_until: 2025-10-19T16:00Z"
+    ai_exit_plan: str | None = None
+    ai_cooldown_until: datetime | None = None
 
     def update_price(self, new_price: float):
         """Update current price and track peak."""
