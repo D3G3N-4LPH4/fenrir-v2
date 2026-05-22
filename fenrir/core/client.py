@@ -16,11 +16,11 @@ from solders.signature import Signature
 from solders.transaction import Transaction
 
 from fenrir.config import BotConfig
+from fenrir.core.circuit_breaker import CircuitBreaker, CircuitOpen
 from fenrir.logger import FenrirLogger
 
 # Default timeout for individual RPC calls (seconds)
 RPC_TIMEOUT_SECONDS = 15
-
 
 class SolanaClient:
     """
@@ -28,178 +28,126 @@ class SolanaClient:
     Every RPC call is a question. This class asks them eloquently.
     """
 
-    def __init__(self, config: BotConfig, logger: FenrirLogger):
+    def __init__(self, config: BotConfig, logger: FenrirLogger, breaker: CircuitBreaker | None = None):
         self.config = config
         self.logger = logger
+        self._breaker = breaker
         self.client = AsyncClient(config.rpc_url)
         self.pumpfun_program = Pubkey.from_string(config.pumpfun_program)
 
+    async def _rpc(self, coro, name: str, timeout: float = RPC_TIMEOUT_SECONDS):
+        """Run one RPC coroutine with circuit-breaker protection and timeout."""
+        try:
+            if self._breaker:
+                self._breaker.check()
+            result = await asyncio.wait_for(coro, timeout=timeout)
+            if self._breaker:
+                self._breaker.record_success()
+            return result
+        except CircuitOpen:
+            self.logger.warning(f"RPC circuit OPEN: {name}")
+            return None
+        except TimeoutError:
+            if self._breaker:
+                self._breaker.record_failure("timeout")
+            self.logger.warning(f"RPC timeout: {name}")
+            return None
+        except Exception as e:
+            if self._breaker:
+                self._breaker.record_failure(type(e).__name__)
+            self.logger.error(f"RPC error: {name}", e)
+            return None
+
     async def get_balance(self, pubkey: Pubkey) -> float:
         """Check SOL balance with grace."""
-        try:
-            response = await asyncio.wait_for(
-                self.client.get_balance(pubkey),
-                timeout=RPC_TIMEOUT_SECONDS,
-            )
-            return response.value / 1e9  # Lamports to SOL
-        except TimeoutError:
-            self.logger.warning("RPC timeout: get_balance")
-            return 0.0
-        except Exception as e:
-            self.logger.error("Failed to fetch balance", e)
-            return 0.0
+        resp = await self._rpc(self.client.get_balance(pubkey), "get_balance")
+        return resp.value / 1e9 if resp else 0.0
 
-    async def get_recent_signatures(self, address: Pubkey, limit: int = 10) -> list[dict]:
+    async def get_recent_signatures(self, address: Pubkey, limit: int = 10) -> list:
         """Retrieve recent transactions."""
-        try:
-            response = await asyncio.wait_for(
-                self.client.get_signatures_for_address(address, limit=limit),
-                timeout=RPC_TIMEOUT_SECONDS,
-            )
-            return response.value if response.value else []
-        except TimeoutError:
-            self.logger.warning("RPC timeout: get_signatures_for_address")
-            return []
-        except Exception as e:
-            self.logger.error("Failed to fetch signatures", e)
-            return []
+        resp = await self._rpc(
+            self.client.get_signatures_for_address(address, limit=limit),
+            "get_signatures_for_address",
+        )
+        return resp.value if resp and resp.value else []
 
-    async def get_transaction(self, signature: str) -> dict | None:
+    async def get_transaction(self, signature: str):
         """Decode a transaction's story."""
-        try:
-            sig = Signature.from_string(signature)
-            response = await asyncio.wait_for(
-                self.client.get_transaction(
-                    sig,
-                    encoding="jsonParsed",
-                    max_supported_transaction_version=0,
-                ),
-                timeout=RPC_TIMEOUT_SECONDS,
-            )
-            return response.value if response.value else None
-        except TimeoutError:
-            self.logger.warning(f"RPC timeout: get_transaction {signature[:16]}...")
-            return None
-        except Exception as e:
-            self.logger.error(f"Failed to fetch tx {signature}", e)
-            return None
+        sig = Signature.from_string(signature)
+        resp = await self._rpc(
+            self.client.get_transaction(
+                sig, encoding="jsonParsed", max_supported_transaction_version=0
+            ),
+            f"get_transaction:{signature[:16]}",
+        )
+        return resp.value if resp else None
 
     async def simulate_transaction(self, transaction: Transaction) -> bool:
-        """
-        Test the waters before diving in.
-        Returns True if simulation succeeds.
-        """
-        try:
-            response = await asyncio.wait_for(
-                self.client.simulate_transaction(transaction),
-                timeout=RPC_TIMEOUT_SECONDS,
-            )
-            if response.value.err:
-                self.logger.warning(f"Simulation failed: {response.value.err}")
-                return False
-            return True
-        except TimeoutError:
-            self.logger.warning("RPC timeout: simulate_transaction")
+        """Test the waters before diving in. Returns True if simulation succeeds."""
+        resp = await self._rpc(
+            self.client.simulate_transaction(transaction), "simulate_transaction"
+        )
+        if resp is None:
             return False
-        except Exception as e:
-            self.logger.error("Simulation error", e)
+        if resp.value.err:
+            self.logger.warning(f"Simulation failed: {resp.value.err}")
             return False
+        return True
 
     async def send_transaction(
         self, transaction: Transaction, skip_preflight: bool = False
     ) -> str | None:
-        """
-        Broadcast to the network.
-        The moment code becomes action on-chain.
-        """
-        try:
-            opts = TxOpts(skip_preflight=skip_preflight, preflight_commitment=Confirmed)
-            response = await asyncio.wait_for(
-                self.client.send_transaction(transaction, opts),
-                timeout=RPC_TIMEOUT_SECONDS,
-            )
-            return str(response.value)
-        except TimeoutError:
-            self.logger.warning("RPC timeout: send_transaction")
-            return None
-        except Exception as e:
-            self.logger.error("Failed to send transaction", e)
-            return None
+        """Broadcast to the network. The moment code becomes action on-chain."""
+        opts = TxOpts(skip_preflight=skip_preflight, preflight_commitment=Confirmed)
+        resp = await self._rpc(
+            self.client.send_transaction(transaction, opts), "send_transaction"
+        )
+        return str(resp.value) if resp else None
 
     async def get_latest_blockhash(self):
         """Fetch a recent blockhash for building transactions."""
-        try:
-            response = await asyncio.wait_for(
-                self.client.get_latest_blockhash(commitment=Confirmed),
-                timeout=RPC_TIMEOUT_SECONDS,
-            )
-            return response.value.blockhash
-        except TimeoutError:
-            self.logger.warning("RPC timeout: get_latest_blockhash")
-            return None
-        except Exception as e:
-            self.logger.error("Failed to fetch latest blockhash", e)
-            return None
+        resp = await self._rpc(
+            self.client.get_latest_blockhash(commitment=Confirmed), "get_latest_blockhash"
+        )
+        return resp.value.blockhash if resp else None
 
     async def get_account_info(self, pubkey: Pubkey) -> bytes | None:
         """Fetch raw account data bytes."""
-        try:
-            response = await asyncio.wait_for(
-                self.client.get_account_info(pubkey, commitment=Confirmed),
-                timeout=RPC_TIMEOUT_SECONDS,
-            )
-            if response.value and response.value.data:
-                return bytes(response.value.data)
-            return None
-        except TimeoutError:
-            self.logger.warning(f"RPC timeout: get_account_info {pubkey}")
-            return None
-        except Exception as e:
-            self.logger.error(f"Failed to fetch account info for {pubkey}", e)
-            return None
+        resp = await self._rpc(
+            self.client.get_account_info(pubkey, commitment=Confirmed),
+            f"get_account_info:{pubkey}",
+        )
+        if resp and resp.value and resp.value.data:
+            return bytes(resp.value.data)
+        return None
 
     async def get_token_accounts_by_owner(self, owner: Pubkey, mint: Pubkey) -> dict | None:
         """Get token account and balance for a specific mint."""
-        try:
-            response = await asyncio.wait_for(
-                self.client.get_token_accounts_by_owner_json_parsed(
-                    owner, TokenAccountOpts(mint=mint)
-                ),
-                timeout=RPC_TIMEOUT_SECONDS,
-            )
-            if response.value:
-                for account_info in response.value:
-                    parsed = account_info.account.data.parsed
-                    token_amount = parsed["info"]["tokenAmount"]
-                    return {
-                        "address": account_info.pubkey,
-                        "amount": int(token_amount["amount"]),
-                        "decimals": token_amount["decimals"],
-                        "ui_amount": float(token_amount["uiAmount"] or 0),
-                    }
-            return None
-        except TimeoutError:
-            self.logger.warning(f"RPC timeout: get_token_accounts_by_owner {owner}")
-            return None
-        except Exception as e:
-            self.logger.error(f"Failed to fetch token accounts for {owner}", e)
-            return None
+        resp = await self._rpc(
+            self.client.get_token_accounts_by_owner_json_parsed(
+                owner, TokenAccountOpts(mint=mint)
+            ),
+            f"get_token_accounts:{owner}",
+        )
+        if resp and resp.value:
+            for account_info in resp.value:
+                parsed = account_info.account.data.parsed
+                token_amount = parsed["info"]["tokenAmount"]
+                return {
+                    "address": account_info.pubkey,
+                    "amount": int(token_amount["amount"]),
+                    "decimals": token_amount["decimals"],
+                    "ui_amount": float(token_amount["uiAmount"] or 0),
+                }
+        return None
 
-    async def get_signature_statuses(self, signatures: list[str]) -> list[dict] | None:
+    async def get_signature_statuses(self, signatures: list[str]):
         """Check confirmation status of transaction signatures."""
-        try:
-            sigs = [Signature.from_string(s) for s in signatures]
-            response = await asyncio.wait_for(
-                self.client.get_signature_statuses(sigs),
-                timeout=RPC_TIMEOUT_SECONDS,
-            )
-            return response.value if response.value else None
-        except TimeoutError:
-            self.logger.warning("RPC timeout: get_signature_statuses")
-            return None
-        except Exception as e:
-            self.logger.error("Failed to fetch signature statuses", e)
-            return None
+        sigs = [Signature.from_string(s) for s in signatures]
+        resp = await self._rpc(
+            self.client.get_signature_statuses(sigs), "get_signature_statuses"
+        )
+        return resp.value if resp and resp.value else None
 
     async def close(self):
         """Graceful shutdown."""

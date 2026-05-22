@@ -21,6 +21,7 @@ from pathlib import Path
 from fenrir.ai.brain import ClaudeBrain
 from fenrir.ai.market_geometry import MarketGeometryAnalyzer
 from fenrir.config import BotConfig, TradingMode
+from fenrir.core.circuit_breaker import ServiceBreakers
 from fenrir.core.dump_recovery import (
     OuroborosConfig,
     PostDumpRecoveryDetector,
@@ -78,12 +79,15 @@ class FenrirBot:
                 self.logger.error("Configuration error", Exception(err))
             raise ValueError("Invalid configuration")
 
+        # ── Circuit breakers (per-service fault isolation) ──────
+        self.breakers = ServiceBreakers()
+
         # ── Core infrastructure ─────────────────────────────────
         self.wallet = WalletManager(
             config.private_key, simulation_mode=(config.mode == TradingMode.SIMULATION)
         )
-        self.solana_client = SolanaClient(config, self.logger)
-        self.jupiter = JupiterSwapEngine(config, self.logger)
+        self.solana_client = SolanaClient(config, self.logger, breaker=self.breakers.solana_rpc)
+        self.jupiter = JupiterSwapEngine(config, self.logger, breaker=self.breakers.jupiter)
         self.positions = PositionManager(config, self.logger)
 
         # Jito MEV protection (optional)
@@ -152,7 +156,7 @@ class FenrirBot:
         self._init_strategies(strategies)
 
         # ── AI Brain (with historical memory) ───────────────────
-        self.claude_brain = ClaudeBrain(config, self.logger)
+        self.claude_brain = ClaudeBrain(config, self.logger, breaker=self.breakers.openrouter)
 
         self.running = False
 
@@ -171,6 +175,7 @@ class FenrirBot:
                     chat_id=tg_chat,
                     alert_on_trades=True,
                     alert_on_errors=True,
+                    breaker=self.breakers.telegram,
                 )
             )
 
@@ -632,6 +637,7 @@ class FenrirBot:
                 "total_outcomes": self.historical_memory.get_total_outcomes(),
             },
             "ai_health": self.health_monitor.get_health_report(),
+            "circuit_breakers": self.breakers.get_all_stats(),
         }
 
     def get_ai_health_report(self) -> dict:

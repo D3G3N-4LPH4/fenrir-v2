@@ -24,6 +24,7 @@ from typing import Any, Callable, Coroutine
 
 import aiohttp
 
+from fenrir.core.circuit_breaker import CircuitBreaker, CircuitOpen
 from fenrir.events.bus import EventListener
 from fenrir.events.types import EventSeverity, TradeEvent
 from fenrir.events.alert_evaluator import (
@@ -69,12 +70,14 @@ class TelegramAdapter(EventListener):
         alert_on_trades: bool = True,
         alert_on_errors: bool = True,
         max_messages_per_minute: int = 20,
+        breaker: CircuitBreaker | None = None,
     ):
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.alert_on_trades = alert_on_trades
         self.alert_on_errors = alert_on_errors
         self.max_per_minute = max_messages_per_minute
+        self._breaker = breaker
 
         self._session: aiohttp.ClientSession | None = None
         self._message_times: list[float] = []
@@ -167,6 +170,13 @@ class TelegramAdapter(EventListener):
                 timeout=aiohttp.ClientTimeout(total=10)
             )
 
+        if self._breaker:
+            try:
+                self._breaker.check()
+            except CircuitOpen:
+                logger.warning("Telegram circuit OPEN: _send_message")
+                return
+
         url = TELEGRAM_API.format(token=self.bot_token)
         payload = {
             "chat_id": self.chat_id,
@@ -180,7 +190,14 @@ class TelegramAdapter(EventListener):
                 if resp.status != 200:
                     body = await resp.text()
                     logger.warning("Telegram send failed (%d): %s", resp.status, body[:200])
+                    if self._breaker:
+                        self._breaker.record_failure(f"HTTP {resp.status}")
+                else:
+                    if self._breaker:
+                        self._breaker.record_success()
         except Exception as e:
+            if self._breaker:
+                self._breaker.record_failure(type(e).__name__)
             logger.warning("Telegram adapter error: %s", e)
 
     async def shutdown(self) -> None:
@@ -251,6 +268,7 @@ class TelegramAdapterV2:
         poll_interval_s: float = 5.0,
         dedup_window_h: float = 4.0,
         dedup_prune_h: float = 24.0,
+        breaker: CircuitBreaker | None = None,
     ) -> None:
         self.bot_token = bot_token
         self.chat_id = str(chat_id)
@@ -259,6 +277,7 @@ class TelegramAdapterV2:
         self.poll_interval_s = poll_interval_s
         self.dedup_window_s = dedup_window_h * 3600
         self.dedup_prune_s = dedup_prune_h * 3600
+        self._breaker = breaker
 
         self._alert_history: list[_AlertRecord] = []
         self._content_hashes: dict[str, float] = {}
@@ -464,6 +483,13 @@ class TelegramAdapterV2:
         if not self.is_configured or not self._session:
             return {"ok": False}
 
+        if self._breaker:
+            try:
+                self._breaker.check()
+            except CircuitOpen:
+                logger.warning("[Telegram v2] Circuit OPEN: send_message")
+                return {"ok": False}
+
         target_chat = chat_id or self.chat_id
         chunks = self._chunk_text(text, TELEGRAM_MAX_TEXT)
         last_result: dict[str, Any] = {"ok": False}
@@ -486,6 +512,8 @@ class TelegramAdapterV2:
                     if not resp.ok:
                         body = await resp.text()
                         logger.error("[Telegram v2] Send failed (%s): %s", resp.status, body[:200])
+                        if self._breaker:
+                            self._breaker.record_failure(f"HTTP {resp.status}")
                         return last_result
                     data = await resp.json()
                     last_result = {
@@ -494,8 +522,12 @@ class TelegramAdapterV2:
                     }
             except Exception as exc:
                 logger.error("[Telegram v2] Send error: %s", exc)
+                if self._breaker:
+                    self._breaker.record_failure(type(exc).__name__)
                 return {"ok": False}
 
+        if self._breaker and last_result.get("ok"):
+            self._breaker.record_success()
         return last_result
 
     @staticmethod

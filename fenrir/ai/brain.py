@@ -46,9 +46,10 @@ class ClaudeBrain:
     - Dynamic exit evaluation with override capability
     """
 
-    def __init__(self, config, logger):
+    def __init__(self, config, logger, breaker=None):
         self.config = config
         self.logger = logger
+        self._breaker = breaker
         self.analyst: AITradingAnalyst | None = None
         self.memory = AISessionMemory(max_size=config.ai_memory_size)
         self.enabled = config.ai_analysis_enabled and bool(config.ai_api_key)
@@ -99,6 +100,7 @@ class ClaudeBrain:
                     model=self.config.ai_model,
                     temperature=self.config.ai_temperature,
                     timeout_seconds=int(self.config.ai_entry_timeout_seconds) + 2,
+                    breaker=self._breaker,
                 )
                 await self.analyst.initialize()
                 self.logger.info(f"🧠 AI Brain: ONLINE (cloud fallback, model={self.config.ai_model})")
@@ -113,6 +115,7 @@ class ClaudeBrain:
                 model=self.config.ai_model,
                 temperature=self.config.ai_temperature,
                 timeout_seconds=int(self.config.ai_entry_timeout_seconds) + 2,
+                breaker=self._breaker,
             )
             await self.analyst.initialize()
             self.logger.info(

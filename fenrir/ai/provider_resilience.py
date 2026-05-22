@@ -23,9 +23,11 @@ Usage:
 
 import json
 import logging
-from typing import Any
+from typing import Any, cast
 
 import aiohttp
+
+from fenrir.core.circuit_breaker import CircuitBreaker, CircuitOpen
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +52,14 @@ class ProviderResilientCaller:
         url: str = OPENROUTER_URL,
         http_referer: str | None = None,
         app_title: str | None = None,
+        breaker: CircuitBreaker | None = None,
     ):
         self.api_key = api_key
         self.session = session
         self.url = url
         self.http_referer = http_referer
         self.app_title = app_title
+        self._breaker = breaker
 
         # Degradation state — survives across calls in this session
         self.allow_structured: bool = True
@@ -99,6 +103,9 @@ class ProviderResilientCaller:
         Raises:
             aiohttp.ClientResponseError: After all retries are exhausted.
         """
+        if self._breaker:
+            self._breaker.check()
+
         headers = self._headers()
 
         for attempt in range(max_retries):
@@ -113,7 +120,9 @@ class ProviderResilientCaller:
 
             async with self.session.post(self.url, headers=headers, json=request) as resp:
                 if resp.status == 200:
-                    return await resp.json()
+                    if self._breaker:
+                        self._breaker.record_success()
+                    return cast(dict[str, Any], await resp.json())
 
                 error_text = await resp.text()
                 try:
@@ -169,8 +178,12 @@ class ProviderResilientCaller:
                     continue  # retry with degraded flags
 
                 # Unrecoverable error — raise immediately
+                if self._breaker:
+                    self._breaker.record_failure(f"HTTP {resp.status}")
                 resp.raise_for_status()
 
+        if self._breaker:
+            self._breaker.record_failure("max_retries_exhausted")
         raise RuntimeError(
             "ProviderResilientCaller: max_retries=%d exhausted" % max_retries
         )

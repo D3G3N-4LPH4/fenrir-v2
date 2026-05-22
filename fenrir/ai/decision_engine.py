@@ -139,11 +139,13 @@ class AITradingAnalyst:
         model: str = "anthropic/claude-sonnet-4",
         temperature: float = 0.3,  # Lower = more conservative
         timeout_seconds: int = 30,
+        breaker=None,
     ):
         self.api_key = api_key
         self.model = model
         self.temperature = temperature
         self.timeout = timeout_seconds
+        self._breaker = breaker
 
         self.session: aiohttp.ClientSession | None = None
         # Created in initialize() once the session exists.
@@ -163,6 +165,7 @@ class AITradingAnalyst:
                 api_key=self.api_key,
                 session=self.session,
                 url=self.OPENROUTER_API,
+                breaker=self._breaker,
             )
 
     async def close(self):
