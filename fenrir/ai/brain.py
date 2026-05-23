@@ -31,6 +31,7 @@ from fenrir.ai.decision_engine import (
     TokenAnalysis,
     TokenMetadata,
 )
+from fenrir.ai.ensemble_scorer import EnsembleScorer
 from fenrir.ai.local_backend import LocalAITradingAnalyst
 from fenrir.ai.memory import AISessionMemory, DecisionRecord
 
@@ -51,6 +52,7 @@ class ClaudeBrain:
         self.logger = logger
         self._breaker = breaker
         self.analyst: AITradingAnalyst | None = None
+        self._ensemble_scorer: EnsembleScorer | None = None
         self.memory = AISessionMemory(max_size=config.ai_memory_size)
         self.enabled = config.ai_analysis_enabled and bool(config.ai_api_key)
 
@@ -123,6 +125,15 @@ class ClaudeBrain:
                 f"entry_timeout={self.config.ai_entry_timeout_seconds}s, "
                 f"min_confidence={self.config.ai_min_confidence_to_buy})"
             )
+
+        # G0DM0D3: ensemble scorer for independent second-opinion on BUY decisions
+        if self.enabled:
+            sol_threshold = getattr(self.config, "ensemble_sol_threshold", 0.5)
+            self._ensemble_scorer = EnsembleScorer(
+                api_key=self.config.ai_api_key,
+                sol_threshold=sol_threshold,
+            )
+            await self._ensemble_scorer.initialize()
 
     # ──────────────────────────────────────────────────────────────
     #  ENTRY EVALUATION
@@ -217,6 +228,31 @@ class ClaudeBrain:
                 analysis.decision in (AIDecision.STRONG_BUY, AIDecision.BUY)
                 and analysis.confidence >= min_confidence
             )
+
+            # G0DM0D3: ensemble gate — independent second opinion
+            buy_amount = None
+            if should_buy and self._ensemble_scorer:
+                try:
+                    ensemble_ctx = self._build_ensemble_context(token_data, analysis)
+                    ensemble = await self._ensemble_scorer.score(
+                        context=ensemble_ctx,
+                        sol_amount=self.config.buy_amount_sol,
+                    )
+                    if not ensemble.should_trade:
+                        should_buy = False
+                        self.logger.info(
+                            f"🔬 Ensemble REJECTED ${token_data.get('symbol', '???')}: "
+                            f"{ensemble.conviction.value}"
+                        )
+                    elif ensemble.position_multiplier < 1.0:
+                        buy_amount = self.config.buy_amount_sol * ensemble.position_multiplier
+                        self.logger.info(
+                            f"🔬 Ensemble LOW_CONVICTION: scaling to "
+                            f"{ensemble.position_multiplier:.0%}"
+                        )
+                except Exception as ens_err:
+                    self.logger.warning(f"🔬 Ensemble scorer error: {ens_err} — skipping gate")
+
             record.was_bought = should_buy
             self.memory.record_decision(record)
 
@@ -236,8 +272,7 @@ class ClaudeBrain:
 
             if should_buy:
                 self.stats["ai_entries_bought"] += 1
-                buy_amount = None
-                if dynamic_sizing and analysis.suggested_buy_amount_sol:
+                if dynamic_sizing and analysis.suggested_buy_amount_sol and buy_amount is None:
                     buy_amount = analysis.suggested_buy_amount_sol
                 return (True, analysis, buy_amount)
             else:
@@ -449,6 +484,23 @@ class ClaudeBrain:
         times.append(ms)
         self.stats["ai_avg_response_ms"] = sum(times) / len(times) if times else 0.0
 
+    def _build_ensemble_context(self, token_data: dict, analysis: TokenAnalysis) -> str:
+        """Build a compact context string for EnsembleScorer's independent scoring."""
+        lines = [
+            f"Token: {token_data.get('name', 'Unknown')} ({token_data.get('symbol', '???')})",
+            f"Liquidity: {token_data.get('initial_liquidity_sol', 0):.2f} SOL",
+            f"Market cap: {token_data.get('market_cap_sol', 0):.2f} SOL",
+        ]
+        if token_data.get("creator"):
+            lines.append(f"Creator: {token_data['creator']}")
+        if analysis.reasoning:
+            lines.append(f"Primary analysis: {analysis.reasoning[:200]}")
+        if analysis.red_flags:
+            lines.append(f"Red flags: {', '.join(analysis.red_flags[:3])}")
+        if analysis.green_flags:
+            lines.append(f"Green flags: {', '.join(analysis.green_flags[:3])}")
+        return "\n".join(lines)
+
     # ──────────────────────────────────────────────────────────────
     #  BATCHED EXIT EVALUATION (Nocturne pattern)
     # ──────────────────────────────────────────────────────────────
@@ -566,6 +618,9 @@ class ClaudeBrain:
         if self.analyst:
             await self.analyst.close()
             self.analyst = None
+        if self._ensemble_scorer:
+            await self._ensemble_scorer.close()
+            self._ensemble_scorer = None
         self.logger.info("🧠 AI Brain: OFFLINE")
 
 

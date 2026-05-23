@@ -43,6 +43,8 @@ from fenrir.ai.structured_output import (
     parse_or_sanitize,
 )
 from fenrir.ai.provider_resilience import ProviderResilientCaller
+from fenrir.ai.hedge_detector import HedgeDetector
+from fenrir.ai.sampling_tuner import SamplingTuner, MarketRegime, SamplingParams
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +154,10 @@ class AITradingAnalyst:
         # Persists for the analyst lifetime, carrying structured-output / tool
         # degradation state across calls (Nocturne allow_structured pattern).
         self._caller: ProviderResilientCaller | None = None
+
+        # G0DM0D3: hedge normalizer + EMA sampling adapter (session-scoped)
+        self._hedge_detector = HedgeDetector()
+        self._sampling_tuner = SamplingTuner()
 
         # Track AI performance (bounded to prevent unbounded growth)
         self.predictions: deque = deque(maxlen=200)
@@ -324,6 +330,7 @@ Remember: You're trading REAL money. Be conservative. Most memecoins go to zero.
         user: str,
         response_format: dict | None = None,
         tools: list | None = None,
+        sampling_params: SamplingParams | None = None,
     ) -> dict:
         """
         Call OpenRouter and return the raw message dict.
@@ -331,19 +338,26 @@ Remember: You're trading REAL money. Be conservative. Most memecoins go to zero.
         Uses ProviderResilientCaller so structured-output and tool failures
         degrade automatically without bubbling exceptions.
         Replaces the fragile _call_llm() → response.find("{") pattern.
+
+        sampling_params: if provided, overrides self.temperature/top_p for this
+        call (G0DM0D3 SamplingTuner regime adaptation).
         """
         if not self._caller:
             await self.initialize()
 
+        temperature = sampling_params.temperature if sampling_params else self.temperature
         payload = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "temperature": self.temperature,
+            "temperature": temperature,
             "max_tokens": 2000,
         }
+        if sampling_params:
+            payload["top_p"] = sampling_params.top_p
+
         try:
             data = await self._caller.post(
                 payload=payload,
@@ -352,7 +366,13 @@ Remember: You're trading REAL money. Be conservative. Most memecoins go to zero.
             )
             if not data.get("choices"):
                 raise ValueError("No choices in response")
-            return data["choices"][0]["message"]
+            msg = dict(data["choices"][0]["message"])
+            # G0DM0D3: strip epistemic hedges before JSON extraction
+            content = msg.get("content") or ""
+            if content:
+                cleaned, _ = self._hedge_detector.process(content)
+                msg["content"] = cleaned
+            return msg
         except Exception as exc:
             logger.error("LLM API error: %s", exc)
             return {"content": self._get_conservative_default()}
@@ -529,10 +549,12 @@ Respond with JSON:
             "You err on the side of caution. "
             "You respond ONLY with valid JSON."
         )
+        entry_params = self._sampling_tuner.get_params(MarketRegime.SNIPE)
         message = await self._call_llm_structured(
             system=system,
             user=enhanced_prompt,
             response_format=build_response_format("entry_analysis", ENTRY_ANALYSIS_SCHEMA),
+            sampling_params=entry_params,
         )
 
         data = await parse_or_sanitize(
@@ -555,6 +577,8 @@ Respond with JSON:
                 "analysis": analysis,
                 "actual_performance": None,
                 "had_context": True,
+                "_regime": MarketRegime.SNIPE,
+                "_params_used": entry_params,
             }
         )
         return analysis
@@ -624,10 +648,12 @@ exit_plan MUST encode:
             "You are an expert memecoin analyst evaluating exit timing. "
             "Respond ONLY with valid JSON matching the provided schema."
         )
+        exit_params = self._sampling_tuner.get_params(MarketRegime.GRADUATION)
         message = await self._call_llm_structured(
             system=system,
             user=prompt,
             response_format=build_response_format("exit_analysis", EXIT_ANALYSIS_SCHEMA),
+            sampling_params=exit_params,
         )
 
         data = await parse_or_sanitize(
@@ -774,6 +800,10 @@ exit_plan MUST encode:
                     "hold_time_minutes": hold_time_minutes,
                     "timestamp": datetime.now().isoformat(),
                 }
+                regime = pred.get("_regime")
+                params_used = pred.get("_params_used")
+                if regime and params_used:
+                    self._sampling_tuner.record_outcome(regime, params_used, actual_pnl_pct)
                 break
 
     def get_ai_performance_report(self) -> dict:
@@ -812,6 +842,8 @@ exit_plan MUST encode:
             "buy_count": len(buys),
             "avg_buy_return_pct": avg_buy_return,
             "skip_count": len(skips),
+            "hedge_detector": self._hedge_detector.get_stats(),
+            "sampling_tuner": self._sampling_tuner.get_all_params(),
         }
 
 
