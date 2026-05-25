@@ -142,6 +142,7 @@ class AITradingAnalyst:
         temperature: float = 0.3,  # Lower = more conservative
         timeout_seconds: int = 30,
         breaker=None,
+        db_path: str = "fenrir_trades.db",
     ):
         self.api_key = api_key
         self.model = model
@@ -157,7 +158,7 @@ class AITradingAnalyst:
 
         # G0DM0D3: hedge normalizer + EMA sampling adapter (session-scoped)
         self._hedge_detector = HedgeDetector()
-        self._sampling_tuner = SamplingTuner()
+        self._sampling_tuner = SamplingTuner(db_path=db_path)
 
         # Track AI performance (bounded to prevent unbounded growth)
         self.predictions: deque = deque(maxlen=200)
@@ -357,6 +358,8 @@ Remember: You're trading REAL money. Be conservative. Most memecoins go to zero.
         }
         if sampling_params:
             payload["top_p"] = sampling_params.top_p
+            if sampling_params.frequency_penalty:
+                payload["frequency_penalty"] = sampling_params.frequency_penalty
 
         try:
             data = await self._caller.post(

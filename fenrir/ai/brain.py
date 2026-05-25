@@ -47,10 +47,11 @@ class ClaudeBrain:
     - Dynamic exit evaluation with override capability
     """
 
-    def __init__(self, config, logger, breaker=None):
+    def __init__(self, config, logger, breaker=None, db_path: str = "fenrir_trades.db"):
         self.config = config
         self.logger = logger
         self._breaker = breaker
+        self._db_path = db_path
         self.analyst: AITradingAnalyst | None = None
         self._ensemble_scorer: EnsembleScorer | None = None
         self.memory = AISessionMemory(max_size=config.ai_memory_size)
@@ -103,6 +104,7 @@ class ClaudeBrain:
                     temperature=self.config.ai_temperature,
                     timeout_seconds=int(self.config.ai_entry_timeout_seconds) + 2,
                     breaker=self._breaker,
+                    db_path=self._db_path,
                 )
                 await self.analyst.initialize()
                 self.logger.info(f"🧠 AI Brain: ONLINE (cloud fallback, model={self.config.ai_model})")
@@ -118,6 +120,7 @@ class ClaudeBrain:
                 temperature=self.config.ai_temperature,
                 timeout_seconds=int(self.config.ai_entry_timeout_seconds) + 2,
                 breaker=self._breaker,
+                db_path=self._db_path,
             )
             await self.analyst.initialize()
             self.logger.info(

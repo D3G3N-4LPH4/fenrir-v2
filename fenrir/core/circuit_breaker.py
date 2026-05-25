@@ -179,6 +179,9 @@ class CircuitBreaker:
                     f"HALF_OPEN at capacity ({self._half_open_calls} probe(s) in flight)",
                     0.0,
                 )
+            # Track the in-flight probe so max-calls limit is enforced
+            # whether callers use guard() or the manual check/record pattern.
+            self._half_open_calls += 1
 
     def record_success(self) -> None:
         """Record a successful call. May close the breaker from HALF_OPEN."""
@@ -224,9 +227,7 @@ class CircuitBreaker:
                 result = await some_external_call()
         """
         async with self._lock:
-            self.check()
-            if self._state == CircuitState.HALF_OPEN:
-                self._half_open_calls += 1
+            self.check()  # check() now increments _half_open_calls when HALF_OPEN
 
         try:
             yield
@@ -323,11 +324,8 @@ class CircuitBreaker:
             # Schedule callback without blocking the caller.
             # Errors in the callback are swallowed so they never affect trading.
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(
-                        self._safe_callback(old_state, new_state)
-                    )
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._safe_callback(old_state, new_state))
             except RuntimeError:
                 pass
 

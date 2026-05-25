@@ -156,7 +156,7 @@ class FenrirBot:
         self._init_strategies(strategies)
 
         # ── AI Brain (with historical memory) ───────────────────
-        self.claude_brain = ClaudeBrain(config, self.logger, breaker=self.breakers.openrouter)
+        self.claude_brain = ClaudeBrain(config, self.logger, breaker=self.breakers.openrouter, db_path=db_path)
 
         self.running = False
 

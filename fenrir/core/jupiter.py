@@ -29,7 +29,8 @@ class JupiterSwapEngine:
 
     async def initialize(self):
         """Start the HTTP session."""
-        self.session = aiohttp.ClientSession()
+        if not self.session:
+            self.session = aiohttp.ClientSession()
 
     async def get_quote(
         self, input_mint: str, output_mint: str, amount: int, slippage_bps: int
