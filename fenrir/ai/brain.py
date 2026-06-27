@@ -47,11 +47,14 @@ class ClaudeBrain:
     - Dynamic exit evaluation with override capability
     """
 
-    def __init__(self, config, logger, breaker=None, db_path: str = "fenrir_trades.db"):
+    def __init__(self, config, logger, breaker=None, db_path: str = "fenrir_trades.db", audit=None):
         self.config = config
         self.logger = logger
         self._breaker = breaker
         self._db_path = db_path
+        # Optional AuditChain — when ai_memory_resume is set, session memory is
+        # rebuilt as a projection of this log on startup (§1 harness kernel).
+        self._audit = audit
         self.analyst: AITradingAnalyst | None = None
         self._ensemble_scorer: EnsembleScorer | None = None
         self.memory = AISessionMemory(max_size=config.ai_memory_size)
@@ -82,6 +85,26 @@ class ClaudeBrain:
                 "(set ai_analysis_enabled=True and provide ai_api_key to enable)"
             )
             return
+
+        # §1: optionally rebuild session memory as a projection of the audit log.
+        # Off by default — preserves the deliberate reset-on-restart behavior;
+        # when enabled (and the audit session_id is reused across restarts) this
+        # restores recent decisions/outcomes so the brain isn't blind after a crash.
+        if getattr(self.config, "ai_memory_resume", False) and self._audit is not None:
+            try:
+                restored = AISessionMemory.from_audit_chain(
+                    self._audit, max_size=self.config.ai_memory_size
+                )
+                if restored.decisions:
+                    self.memory = restored
+                    self.logger.info(
+                        f"🧠 AI Brain: restored {len(restored.decisions)} decision(s) "
+                        "from audit chain (session memory resume)"
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    f"🧠 AI Brain: memory resume failed ({e}); starting with empty memory"
+                )
 
         if getattr(self.config, "ai_local_model_enabled", False):
             self.analyst = LocalAITradingAnalyst(
