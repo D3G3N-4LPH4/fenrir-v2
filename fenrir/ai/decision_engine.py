@@ -138,7 +138,7 @@ class AITradingAnalyst:
     def __init__(
         self,
         api_key: str,
-        model: str = "anthropic/claude-sonnet-4",
+        model: str = "anthropic/claude-haiku-4-5",
         temperature: float = 0.3,  # Lower = more conservative
         timeout_seconds: int = 30,
         breaker=None,
@@ -332,6 +332,7 @@ Remember: You're trading REAL money. Be conservative. Most memecoins go to zero.
         response_format: dict | None = None,
         tools: list | None = None,
         sampling_params: SamplingParams | None = None,
+        max_tokens: int = 2000,
     ) -> dict:
         """
         Call OpenRouter and return the raw message dict.
@@ -354,7 +355,7 @@ Remember: You're trading REAL money. Be conservative. Most memecoins go to zero.
                 {"role": "user", "content": user},
             ],
             "temperature": temperature,
-            "max_tokens": 2000,
+            "max_tokens": max_tokens,
         }
         if sampling_params:
             payload["top_p"] = sampling_params.top_p
@@ -558,6 +559,10 @@ Respond with JSON:
             user=enhanced_prompt,
             response_format=build_response_format("entry_analysis", ENTRY_ANALYSIS_SCHEMA),
             sampling_params=entry_params,
+            # Entry analysis returns a small JSON object; cap tokens low so the
+            # call comfortably fits the entry timeout (2000 pushed latency to
+            # ~4.5-5s, right at the cliff).
+            max_tokens=700,
         )
 
         data = await parse_or_sanitize(

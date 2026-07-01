@@ -55,6 +55,25 @@ class TradingEngine:
         # Direct pump.fun program interface
         self.pumpfun = PumpFunProgram()
 
+    async def fetch_curve_state(self, token_address: str) -> BondingCurveState | None:
+        """
+        Fetch and decode a token's pump.fun bonding curve from chain.
+
+        Shared price source for both entry and mark-to-market so PnL stays
+        scale-consistent (PnL depends only on the current/entry price ratio).
+        Returns None if the curve can't be fetched/decoded.
+        """
+        try:
+            token_mint = Pubkey.from_string(token_address)
+            bonding_curve, _ = self.pumpfun.derive_bonding_curve_address(token_mint)
+            account_data = await self.client.get_account_info(bonding_curve)
+            if not account_data:
+                return None
+            return self.pumpfun.decode_bonding_curve(account_data)
+        except Exception as e:
+            self.logger.debug(f"Bonding curve fetch failed for {token_address[:8]}...: {e}")
+            return None
+
     async def execute_buy(
         self,
         token_data: dict,
@@ -78,20 +97,34 @@ class TradingEngine:
 
         if self.config.mode == TradingMode.SIMULATION:
             self.logger.info("SIMULATION MODE - No real transaction sent")
-            # Use bonding curve state if available for realistic sim pricing
+            # Price the position from the pump.fun bonding curve so that entry
+            # and later mark-to-market updates share the SAME source and scale.
+            # PnL then depends only on the price ratio, which is what we want.
+            # If the curve is unavailable, refuse rather than fabricate a bogus
+            # position (the old fallback minted 100k tokens at a made-up price,
+            # which produced nonsensical multi-million-SOL PnL against the feed).
             curve_state = token_data.get("bonding_curve_state")
-            if curve_state and isinstance(curve_state, BondingCurveState):
-                tokens_out, _ = curve_state.calculate_buy_price(amount_sol)
-                sim_price = (
-                    (amount_sol * LAMPORTS_PER_SOL) / tokens_out if tokens_out > 0 else 0.000001
+            if not (curve_state and isinstance(curve_state, BondingCurveState)):
+                curve_state = await self.fetch_curve_state(token_address)
+            if not curve_state:
+                self.logger.warning(
+                    f"Cannot price {token_address[:8]}... (no bonding curve) - skipping sim buy"
                 )
-            else:
-                tokens_out = int(amount_sol / 0.000001)
-                sim_price = 0.000001
+                return False
+
+            entry_price = curve_state.get_price()
+            if entry_price <= 0:
+                self.logger.warning(
+                    f"Non-positive curve price for {token_address[:8]}... - skipping sim buy"
+                )
+                return False
+
+            # tokens_out * entry_price == amount_sol (invariant preserved)
+            tokens_out = amount_sol / entry_price
 
             self.positions.open_position(
                 token_address=token_address,
-                entry_price=sim_price,
+                entry_price=entry_price,
                 amount_tokens=tokens_out,
                 amount_sol=amount_sol,
                 strategy_id=strategy_id,
@@ -214,14 +247,23 @@ class TradingEngine:
                 self.logger.warning(f"Buy transaction not confirmed: {signature}")
                 return False
 
-            # 13. Calculate entry price and open position
-            entry_price = (amount_sol * LAMPORTS_PER_SOL) / tokens_out if tokens_out > 0 else 0
+            # 13. Calculate entry price and open position.
+            # Price from the bonding curve (get_price) so entry and later
+            # mark-to-market share one scale — PnL then tracks the price ratio.
+            # (The old (amount_sol * LAMPORTS_PER_SOL)/tokens_out gave lamports
+            # per token, which didn't match the SOL-scale mark price.)
+            entry_price = curve_state.get_price()
+            if entry_price <= 0:
+                entry_price = (amount_sol / tokens_out) if tokens_out > 0 else 0.0
             self.logger.buy_executed(token_address, amount_sol, entry_price)
 
+            # Track a curve-consistent notional so amount_tokens * entry_price
+            # == amount_sol. Real sells use the on-chain balance, not this value.
+            amount_tokens = (amount_sol / entry_price) if entry_price > 0 else tokens_out
             self.positions.open_position(
                 token_address=token_address,
                 entry_price=entry_price,
-                amount_tokens=tokens_out,
+                amount_tokens=amount_tokens,
                 amount_sol=amount_sol,
                 strategy_id=strategy_id,
                 token_symbol=token_data.get("symbol", "???"),

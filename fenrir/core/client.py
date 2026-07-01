@@ -76,7 +76,10 @@ class SolanaClient:
         sig = Signature.from_string(signature)
         resp = await self._rpc(
             self.client.get_transaction(
-                sig, encoding="jsonParsed", max_supported_transaction_version=0
+                sig,
+                encoding="jsonParsed",
+                commitment=Confirmed,
+                max_supported_transaction_version=0,
             ),
             f"get_transaction:{signature[:16]}",
         )

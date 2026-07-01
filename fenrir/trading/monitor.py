@@ -8,12 +8,15 @@ Watches the blockchain for fresh token launches on pump.fun.
 
 import asyncio
 import base64 as b64
+import base58
 import json
 from collections import OrderedDict
 from collections.abc import Callable
 from datetime import datetime
+from typing import Any
 
-import websockets
+from websockets.asyncio.client import connect as ws_connect
+from websockets.exceptions import ConnectionClosed
 from solders.pubkey import Pubkey
 
 from fenrir.config import BotConfig
@@ -29,37 +32,66 @@ class PumpFunMonitor:
     """
 
     MAX_WS_RECONNECT_ATTEMPTS = 5
-    MAX_SEEN_TOKENS = 10_000  # Bound the set to prevent unbounded memory growth
+    MAX_SEEN_TOKENS = 10_000
 
     def __init__(self, config: BotConfig, solana_client: SolanaClient, logger: FenrirLogger):
         self.config = config
         self.client = solana_client
         self.logger = logger
-        # Bounded seen-set: evicts oldest entries when capacity is exceeded
-        self._seen_tokens_lru: OrderedDict = OrderedDict()
+        self._seen_tokens_lru: OrderedDict[str, None] = OrderedDict()
         self.running = False
-        self.ws_connection = None
-        self.ws_subscription_id = None
-
-        # Real launch detection via engine modules
+        self.ws_connection: Any = None
+        self.ws_subscription_id: int | None = None
         self.launch_detector = TokenLaunchDetector()
         self.pumpfun_program = PumpFunProgram()
 
     def _is_seen(self, key: str) -> bool:
-        """Check if a signature has already been processed."""
         return key in self._seen_tokens_lru
 
     def _mark_seen(self, key: str) -> None:
-        """Mark a signature as seen, evicting oldest if at capacity."""
         self._seen_tokens_lru[key] = None
         if len(self._seen_tokens_lru) > self.MAX_SEEN_TOKENS:
             self._seen_tokens_lru.popitem(last=False)
 
-    async def start_monitoring(self, on_launch: Callable):
+    def _get_program_id(self, ix: Any, account_keys: Any) -> str:
         """
-        Begin the hunt.
-        on_launch: async callback function when new token detected
+        Safely resolve program ID from any solders instruction type.
+        - CompiledInstruction: has program_id_index, needs account_keys lookup
+        - UiPartiallyDecodedInstruction / ParsedInstruction: exposes program_id directly
         """
+        if hasattr(ix, "program_id_index"):
+            try:
+                return str(account_keys[ix.program_id_index])
+            except (IndexError, TypeError):
+                return ""
+        if hasattr(ix, "program_id"):
+            return str(ix.program_id)
+        return ""
+
+    def _get_ix_data(self, ix: Any) -> bytes:
+        """
+        Safely extract raw instruction bytes from any solders instruction type.
+        ParsedInstruction may not have a data field at all.
+        """
+        data = getattr(ix, "data", None)
+        if data is None:
+            return b""
+        if isinstance(data, (bytes, bytearray)):
+            return bytes(data)
+        if isinstance(data, str):
+            # jsonParsed encoding returns instruction data as base58; older/base64
+            # encodings fall back to b64. Try base58 first, then base64.
+            try:
+                return base58.b58decode(data)
+            except Exception:
+                try:
+                    return b64.b64decode(data)
+                except Exception:
+                    return b""
+        return b""
+
+    async def start_monitoring(self, on_launch: Callable[..., Any]) -> None:
+        """Begin the hunt. on_launch: async callback when new token detected."""
         self.running = True
         self.logger.info("FENRIR awakens... Monitoring pump.fun launches")
 
@@ -68,10 +100,9 @@ class PumpFunMonitor:
         else:
             await self._monitor_polling(on_launch)
 
-    async def _monitor_websocket(self, on_launch: Callable):
+    async def _monitor_websocket(self, on_launch: Callable[..., Any]) -> None:
         """
         Real-time monitoring via WebSocket logsSubscribe.
-        Subscribes to pump.fun program logs and detects INITIALIZE instructions.
         Falls back to polling after repeated failures.
         """
         self.logger.info("WebSocket monitoring active")
@@ -80,7 +111,7 @@ class PumpFunMonitor:
 
         while self.running and consecutive_failures < self.MAX_WS_RECONNECT_ATTEMPTS:
             try:
-                async with websockets.connect(
+                async with ws_connect(
                     self.config.ws_url,
                     ping_interval=20,
                     ping_timeout=20,
@@ -90,7 +121,6 @@ class PumpFunMonitor:
                     consecutive_failures = 0
                     backoff = 1.0
 
-                    # Subscribe to pump.fun program logs
                     subscribe_msg = json.dumps(
                         {
                             "jsonrpc": "2.0",
@@ -104,7 +134,6 @@ class PumpFunMonitor:
                     )
                     await ws.send(subscribe_msg)
 
-                    # Wait for subscription confirmation
                     confirm = json.loads(await ws.recv())
                     if "result" in confirm:
                         self.ws_subscription_id = confirm["result"]
@@ -112,7 +141,6 @@ class PumpFunMonitor:
                             f"Subscribed to pump.fun logs (sub_id: {self.ws_subscription_id})"
                         )
 
-                    # Listen for log notifications
                     async for message in ws:
                         if not self.running:
                             break
@@ -122,42 +150,40 @@ class PumpFunMonitor:
                         except json.JSONDecodeError:
                             continue
 
-                        # Process notification
                         if "method" not in data or data["method"] != "logsNotification":
                             continue
 
                         notification = data.get("params", {}).get("result", {})
                         value = notification.get("value", {})
-                        signature = value.get("signature")
-                        logs = value.get("logs", [])
+                        signature: str = value.get("signature", "")
+                        logs: list[str] = value.get("logs", [])
                         err = value.get("err")
 
-                        # Skip failed transactions
                         if err or not signature:
                             continue
 
-                        # Skip if already seen
                         if self._is_seen(signature):
                             continue
                         self._mark_seen(signature)
 
-                        # Quick check: does this look like a create instruction?
+                        # pump.fun's native token creation emits "Instruction: CreateV2".
+                        # Matching that specific line (rather than a bare "Create")
+                        # avoids fetching every CreateTokenAccount / CreateIdempotent
+                        # from unrelated router transactions that merely touch pump.
                         has_create_hint = any(
-                            "Program log: Instruction: Create" in log or "InitializeMint" in log
-                            for log in logs
+                            "Instruction: CreateV2" in log for log in logs
                         )
 
                         if not has_create_hint:
                             continue
 
-                        # Fetch full transaction for detailed parsing
                         tx = await self.client.get_transaction(signature)
                         if tx and self._is_token_launch(tx):
                             token_data = await self._extract_token_data(tx)
                             if token_data and self._meets_criteria(token_data):
                                 await on_launch(token_data)
 
-            except websockets.ConnectionClosed as e:
+            except ConnectionClosed as e:
                 consecutive_failures += 1
                 self.logger.warning(
                     f"WebSocket disconnected: {e}. "
@@ -176,96 +202,83 @@ class PumpFunMonitor:
                 self.ws_connection = None
                 self.ws_subscription_id = None
 
-        # Exhausted retries - fall back to polling
         if self.running:
             self.logger.warning(
                 f"WebSocket failed {self.MAX_WS_RECONNECT_ATTEMPTS} times - falling back to polling"
             )
             await self._monitor_polling(on_launch)
 
-    async def _monitor_polling(self, on_launch: Callable):
-        """
-        Polling-based monitoring.
-        Reliable fallback when WebSocket is unavailable.
-        """
+    async def _monitor_polling(self, on_launch: Callable[..., Any]) -> None:
+        """Polling-based monitoring. Reliable fallback when WebSocket is unavailable."""
         self.logger.info(f"Polling every {self.config.poll_interval_seconds}s")
 
-        last_signature = None
+        last_signature: Any = None
 
         while self.running:
             try:
-                # Get recent transactions to pump.fun program
-                signatures = await self.client.get_recent_signatures(
+                signatures: list[Any] = await self.client.get_recent_signatures(
                     self.client.pumpfun_program, limit=20
                 )
 
                 for sig_info in signatures:
                     signature = sig_info.signature
 
-                    # Skip if we've seen it
                     if signature == last_signature:
                         break
 
-                    if self._is_seen(str(signature)):
+                    sig_str = str(signature)
+                    if self._is_seen(sig_str):
                         continue
+                    self._mark_seen(sig_str)
 
-                    # Mark as seen
-                    self._mark_seen(str(signature))
-
-                    # Analyze the transaction
-                    tx = await self.client.get_transaction(str(signature))
+                    tx = await self.client.get_transaction(sig_str)
                     if tx and self._is_token_launch(tx):
                         token_data = await self._extract_token_data(tx)
                         if token_data and self._meets_criteria(token_data):
                             await on_launch(token_data)
 
-                # Update last signature
                 if signatures:
                     last_signature = signatures[0].signature
 
-                # Wait before next poll
                 await asyncio.sleep(self.config.poll_interval_seconds)
 
             except Exception as e:
                 self.logger.error("Monitoring error", e)
                 await asyncio.sleep(self.config.poll_interval_seconds)
 
-    def _is_token_launch(self, tx) -> bool:
+    def _is_token_launch(self, tx: Any) -> bool:
         """
         Determine if a transaction contains a pump.fun token creation.
-        Parses instruction data to match the INITIALIZE discriminator.
+        Handles all three solders instruction types via _get_program_id().
         """
         try:
-            # Navigate the parsed transaction structure
             meta = tx.transaction.meta
             message = tx.transaction.transaction.message
 
             if not meta or not message:
                 return False
 
-            # Check inner instructions for pump.fun create calls
             pumpfun_id = str(self.client.pumpfun_program)
 
             # Check top-level instructions
             for ix in message.instructions:
-                program_id = str(message.account_keys[ix.program_id_index])
-                if program_id == pumpfun_id:
-                    ix_data = b64.b64decode(ix.data) if isinstance(ix.data, str) else bytes(ix.data)
-                    if self.launch_detector.is_create_instruction(ix_data):
-                        return True
+                program_id = self._get_program_id(ix, message.account_keys)
+                if program_id != pumpfun_id:
+                    continue
+                ix_data = self._get_ix_data(ix)
+                if ix_data and self.launch_detector.is_create_instruction(ix_data):
+                    return True
 
             # Also check inner instructions (pump.fun may use CPI)
             if meta.inner_instructions:
                 for inner in meta.inner_instructions:
                     for ix in inner.instructions:
-                        if hasattr(ix, "program_id") and str(ix.program_id) == pumpfun_id:
-                            ix_data = (
-                                b64.b64decode(ix.data)
-                                if isinstance(ix.data, str)
-                                else bytes(ix.data)
-                            )
-                            if self.launch_detector.is_create_instruction(ix_data):
-                                return True
+                        program_id = self._get_program_id(ix, message.account_keys)
+                        if program_id != pumpfun_id:
+                            continue
+                        ix_data = self._get_ix_data(ix)
+                        if ix_data and self.launch_detector.is_create_instruction(ix_data):
+                            return True
 
             return False
 
@@ -273,7 +286,7 @@ class PumpFunMonitor:
             self.logger.error("Error parsing transaction for launch detection", e)
             return False
 
-    async def _extract_token_data(self, tx) -> dict | None:
+    async def _extract_token_data(self, tx: Any) -> dict[str, Any] | None:
         """
         Extract token details from a launch transaction.
         Uses TokenLaunchDetector to parse instruction data and accounts,
@@ -283,40 +296,51 @@ class PumpFunMonitor:
             message = tx.transaction.transaction.message
             pumpfun_id = str(self.client.pumpfun_program)
 
-            # Find the create instruction and extract data
             for ix in message.instructions:
-                program_id = str(message.account_keys[ix.program_id_index])
+                program_id = self._get_program_id(ix, message.account_keys)
                 if program_id != pumpfun_id:
                     continue
 
-                ix_data = b64.b64decode(ix.data) if isinstance(ix.data, str) else bytes(ix.data)
-                if not self.launch_detector.is_create_instruction(ix_data):
+                ix_data = self._get_ix_data(ix)
+                if not ix_data or not self.launch_detector.is_create_instruction(ix_data):
                     continue
 
-                # Resolve account keys for this instruction
-                accounts = [str(message.account_keys[idx]) for idx in ix.accounts]
+                # Resolve account keys safely — CompiledInstruction has int indices,
+                # UiPartiallyDecodedInstruction has already-resolved pubkey strings
+                raw_accounts = getattr(ix, "accounts", [])
+                if raw_accounts and isinstance(raw_accounts[0], int):
+                    accounts: list[str] = [
+                        str(message.account_keys[idx]) for idx in raw_accounts
+                    ]
+                else:
+                    accounts = [str(a) for a in raw_accounts]
 
-                # Parse create event
-                launch_info = self.launch_detector.parse_create_event(ix_data, accounts)
+                launch_info: dict[str, Any] | None = self.launch_detector.parse_create_event(
+                    ix_data, accounts
+                )
                 if not launch_info:
                     continue
 
-                token_mint = launch_info["token_mint"]
-                bonding_curve_addr = launch_info.get("bonding_curve")
+                token_mint: str = launch_info["token_mint"]
+                bonding_curve_addr: str | None = launch_info.get("bonding_curve")
 
-                # Fetch bonding curve state for liquidity/price data
                 initial_liquidity_sol = 0.0
                 market_cap_sol = 0.0
                 curve_state = None
 
                 if bonding_curve_addr:
-                    bc_pubkey = Pubkey.from_string(bonding_curve_addr)
-                    account_data = await self.client.get_account_info(bc_pubkey)
-                    if account_data:
-                        curve_state = self.pumpfun_program.decode_bonding_curve(account_data)
-                        if curve_state:
-                            initial_liquidity_sol = curve_state.real_sol_reserves / 1e9
-                            market_cap_sol = curve_state.get_market_cap_sol()
+                    try:
+                        bc_pubkey = Pubkey.from_string(bonding_curve_addr)
+                        account_data = await self.client.get_account_info(bc_pubkey)
+                        if account_data:
+                            curve_state = self.pumpfun_program.decode_bonding_curve(account_data)
+                            if curve_state:
+                                initial_liquidity_sol = curve_state.real_sol_reserves / 1e9
+                                market_cap_sol = curve_state.get_market_cap_sol()
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Could not fetch bonding curve for {bonding_curve_addr}: {e}"
+                        )
 
                 return {
                     "token_address": token_mint,
@@ -337,33 +361,29 @@ class PumpFunMonitor:
             self.logger.error("Error extracting token data", e)
             return None
 
-    def _meets_criteria(self, token_data: dict) -> bool:
-        """
-        Quality filter. Not all launches are created equal.
-        """
-        liq = token_data.get("initial_liquidity_sol", 0)
-        mcap = token_data.get("market_cap_sol", float("inf"))
+    def _meets_criteria(self, token_data: dict[str, Any]) -> bool:
+        """Quality filter. Not all launches are created equal."""
+        liq: float = token_data.get("initial_liquidity_sol", 0)
+        mcap: float = token_data.get("market_cap_sol", float("inf"))
 
         if liq < self.config.min_initial_liquidity_sol:
             self.logger.info(
-                f"Skipping {token_data.get('symbol', '???')}: " f"liquidity too low ({liq:.2f} SOL)"
+                f"Skipping {token_data.get('symbol', '???')}: liquidity too low ({liq:.2f} SOL)"
             )
             return False
 
         if mcap > self.config.max_initial_market_cap_sol:
             self.logger.info(
-                f"Skipping {token_data.get('symbol', '???')}: "
-                f"market cap too high ({mcap:.2f} SOL)"
+                f"Skipping {token_data.get('symbol', '???')}: market cap too high ({mcap:.2f} SOL)"
             )
             return False
 
         return True
 
-    async def stop(self):
+    async def stop(self) -> None:
         """Cease the hunt and unsubscribe from WebSocket."""
         self.running = False
 
-        # Unsubscribe from WebSocket if active
         if self.ws_connection and self.ws_subscription_id is not None:
             try:
                 unsub_msg = json.dumps(

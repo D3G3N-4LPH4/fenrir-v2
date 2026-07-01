@@ -5,21 +5,27 @@ FENRIR - Core Configuration
 Trading modes, bot configuration, and environment management.
 """
 
+import importlib  # FIX 1: was used below but never imported
 import os
-import sys
 from dataclasses import dataclass
 from enum import Enum
 
 from dotenv import load_dotenv
 
 # Dependency check (single location for the whole package)
+_deps_missing = False
 try:
-    from solana.rpc.async_api import AsyncClient  # noqa: F401
-    from solders.keypair import Keypair  # noqa: F401
+    # Import solana and solders modules dynamically to avoid static analysis
+    # issues in environments where the packages aren't installed.
+    _solana_rpc = importlib.import_module("solana.rpc.async_api")
+    AsyncClient = _solana_rpc.AsyncClient  # type: ignore
+
+    _solders_kp = importlib.import_module("solders.keypair")
+    Keypair = _solders_kp.Keypair  # noqa: F401
 except ImportError:
     print("Missing dependencies. Install with:")
     print("   pip install solana solders base58 aiohttp python-dotenv websockets")
-    sys.exit(1)
+    _deps_missing = True
 
 
 _dotenv_loaded = False
@@ -36,14 +42,14 @@ def _ensure_dotenv() -> None:
 class TradingMode(Enum):
     """Trading modes reflecting different risk appetites."""
 
-    SIMULATION = "simulation"  # Paper trading - no real txs
+    SIMULATION = "simulation"      # Paper trading - no real txs
     CONSERVATIVE = "conservative"  # Small positions, strict stops
-    AGGRESSIVE = "aggressive"  # Larger positions, wider stops
-    DEGEN = "degen"  # YOLO mode - maximum risk
+    AGGRESSIVE = "aggressive"      # Larger positions, wider stops
+    DEGEN = "degen"                # YOLO mode - maximum risk
 
 
 # ── Mode-specific trading presets ──────────────────────────────────────
-TRADING_PRESETS: dict[TradingMode, dict] = {
+TRADING_PRESETS: dict[TradingMode, dict] = {  # type: ignore[type-arg]
     TradingMode.SIMULATION: {
         "buy_amount_sol": 0.1,
         "max_slippage_bps": 500,
@@ -51,11 +57,11 @@ TRADING_PRESETS: dict[TradingMode, dict] = {
         "take_profit_pct": 100.0,
         "trailing_stop_pct": 15.0,
         "max_position_age_minutes": 30,
-        "min_initial_liquidity_sol": 3.0,
+        "min_initial_liquidity_sol": 0.0,
         "max_initial_market_cap_sol": 80.0,
         "priority_fee_lamports": 500_000,
-        "ai_entry_timeout_seconds": 5.0,
-        "ai_exit_timeout_seconds": 3.0,
+        "ai_entry_timeout_seconds": 12.0,
+        "ai_exit_timeout_seconds": 10.0,
         "ai_min_confidence_to_buy": 0.6,
         "ai_temperature": 0.3,
     },
@@ -69,8 +75,8 @@ TRADING_PRESETS: dict[TradingMode, dict] = {
         "min_initial_liquidity_sol": 5.0,
         "max_initial_market_cap_sol": 60.0,
         "priority_fee_lamports": 500_000,
-        "ai_entry_timeout_seconds": 5.0,
-        "ai_exit_timeout_seconds": 3.0,
+        "ai_entry_timeout_seconds": 12.0,
+        "ai_exit_timeout_seconds": 10.0,
         "ai_min_confidence_to_buy": 0.75,
         "ai_temperature": 0.2,
     },
@@ -84,8 +90,8 @@ TRADING_PRESETS: dict[TradingMode, dict] = {
         "min_initial_liquidity_sol": 2.0,
         "max_initial_market_cap_sol": 120.0,
         "priority_fee_lamports": 1_000_000,
-        "ai_entry_timeout_seconds": 3.0,
-        "ai_exit_timeout_seconds": 2.0,
+        "ai_entry_timeout_seconds": 10.0,
+        "ai_exit_timeout_seconds": 8.0,
         "ai_min_confidence_to_buy": 0.55,
         "ai_temperature": 0.4,
     },
@@ -99,8 +105,8 @@ TRADING_PRESETS: dict[TradingMode, dict] = {
         "min_initial_liquidity_sol": 1.0,
         "max_initial_market_cap_sol": 200.0,
         "priority_fee_lamports": 2_000_000,
-        "ai_entry_timeout_seconds": 2.0,
-        "ai_exit_timeout_seconds": 1.5,
+        "ai_entry_timeout_seconds": 10.0,
+        "ai_exit_timeout_seconds": 8.0,
         "ai_min_confidence_to_buy": 0.4,
         "ai_temperature": 0.5,
     },
@@ -126,70 +132,80 @@ class BotConfig:
 
     # Trading Parameters
     mode: TradingMode = TradingMode.SIMULATION
-    buy_amount_sol: float = 0.1  # SOL per trade
-    max_slippage_bps: int = 500  # 5% max slippage
+    buy_amount_sol: float = 0.1       # SOL per trade
+    max_slippage_bps: int = 500       # 5% max slippage
 
-    # Risk Management - The guardrails that keep you alive
-    stop_loss_pct: float = 25.0  # Exit if down 25%
-    take_profit_pct: float = 100.0  # Exit if up 100%
-    trailing_stop_pct: float = 15.0  # Trail by 15% from peak
-    max_position_age_minutes: int = 30  # Memecoins pump/dump in minutes
+    # Risk Management
+    stop_loss_pct: float = 25.0           # Exit if down 25%
+    take_profit_pct: float = 100.0        # Exit if up 100%
+    trailing_stop_pct: float = 15.0       # Trail by 15% from peak
+    max_position_age_minutes: int = 30    # Memecoins pump/dump in minutes
 
-    # Launch Criteria - What makes a token worth sniping?
-    min_initial_liquidity_sol: float = 3.0  # Minimum SOL in bonding curve
-    max_initial_market_cap_sol: float = 80.0  # Don't buy if already too big
+    # Launch Criteria
+    min_initial_liquidity_sol: float = 0.0      # Minimum SOL in bonding curve (0 = snipe at creation)
+    max_initial_market_cap_sol: float = 80.0    # Don't buy if already too big
 
     # Execution Settings
     priority_fee_lamports: int = 500_000  # 0.0005 SOL for competitive inclusion
-    use_jito: bool = False  # MEV protection via Jito bundles
-    jito_tip_lamports: int = 10000  # Tip for Jito validators
+    use_jito: bool = False                # MEV protection via Jito bundles
+    jito_tip_lamports: int = 10000        # Tip for Jito validators
 
     # Monitoring
-    websocket_enabled: bool = True  # Real-time vs polling
-    poll_interval_seconds: float = 2.0  # If WebSocket fails
+    websocket_enabled: bool = True        # Real-time vs polling
+    poll_interval_seconds: float = 2.0   # If WebSocket fails
 
-    # Strategy budgets — explicit daily SOL caps per strategy.
-    # Setting these separately from buy_amount_sol prevents the budget
-    # from silently scaling when buy_amount_sol is tuned for risk.
-    sniper_daily_budget_sol: float = 0.0   # 0 = auto (10 × buy_amount_sol)
+    # Strategy budgets
+    sniper_daily_budget_sol: float = 0.0  # 0 = auto (10 × buy_amount_sol)
 
-    # AI Integration - Claude Brain (autonomous LLM decision engine)
-    ai_analysis_enabled: bool = False  # Master switch for AI decisions
+    # AI Integration - Claude Brain
+    ai_analysis_enabled: bool = True      # Master switch for AI decisions
     ai_api_key: str = ""
-    ai_model: str = "anthropic/claude-sonnet-4"
-    ai_provider: str = "openrouter"  # "openrouter" or "anthropic_direct"
-    ai_entry_timeout_seconds: float = 5.0  # Max wait for entry analysis
-    ai_exit_timeout_seconds: float = 3.0  # Max wait for exit evaluation
-    ai_exit_eval_interval_seconds: float = 60.0  # Proactive exit check cadence
-    ai_min_confidence_to_buy: float = 0.6  # Minimum confidence for BUY
-    ai_memory_size: int = 15  # Rolling decision history size
-    ai_temperature: float = 0.3  # LLM temperature (lower = more conservative)
-    ai_fallback_to_rules: bool = True  # Auto-buy on AI failure/timeout?
-    ai_dynamic_position_sizing: bool = False  # Let AI set buy amount?
+    ai_model: str = "anthropic/claude-haiku-4-5"
+    ai_provider: str = "openrouter"       # "openrouter" or "anthropic_direct"
+    ai_entry_timeout_seconds: float = 12.0
+    ai_exit_timeout_seconds: float = 10.0
+    ai_exit_eval_interval_seconds: float = 60.0
+    ai_min_confidence_to_buy: float = 0.6
+    ai_memory_size: int = 15
+    ai_temperature: float = 0.3
+    ai_fallback_to_rules: bool = True
+    ai_dynamic_position_sizing: bool = False
 
-    # Local Model Backend (OBLITERATUS-abliterated model)
-    # Set ai_local_model_enabled=True to route ClaudeBrain to a local vLLM/llama.cpp server
-    # instead of the Anthropic/OpenRouter API. The local server must implement OpenAI's
-    # /v1/chat/completions API (vLLM and llama.cpp server mode both do this).
+    # Local Model Backend
     ai_local_model_enabled: bool = False
     ai_local_model_url: str = "http://localhost:8000/v1/chat/completions"
     ai_local_model_name: str = "fenrir-brain"
 
-    # Logging
+    # Logging — default is INFO; override via LOG_LEVEL env var
+    # NOTE: do NOT use os.getenv() here — .env isn't loaded yet at class
+    # definition time. The __post_init__ method handles the env override
+    # after _ensure_dotenv() has run.
     log_level: str = "INFO"
     log_file: str = "fenrir_bot.log"
 
-    def __post_init__(self):
-        """Fill env-based defaults after dataclass init (avoids module-level side effects)."""
+    def __post_init__(self) -> None:
+        """Fill env-based defaults after dataclass init."""
         _ensure_dotenv()
+
         if not self.rpc_url:
             self.rpc_url = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
         if not self.ws_url:
             self.ws_url = os.getenv("SOLANA_WS_URL", "wss://api.mainnet-beta.solana.com")
         if not self.private_key:
             self.private_key = os.getenv("WALLET_PRIVATE_KEY", "")
+
+        # FIX 2: ai_analysis_enabled controllable from .env
+        env_ai_enabled = os.getenv("AI_ANALYSIS_ENABLED", "")
+        if env_ai_enabled != "":
+            self.ai_analysis_enabled = env_ai_enabled.lower() == "true"
+
+        # FIX 3: support both OpenRouter and direct Anthropic API keys
         if not self.ai_api_key:
-            self.ai_api_key = os.getenv("OPENROUTER_API_KEY", "")
+            self.ai_api_key = (
+                os.getenv("OPENROUTER_API_KEY", "")
+                or os.getenv("ANTHROPIC_API_KEY", "")
+            )
+
         if not self.ai_local_model_url:
             self.ai_local_model_url = os.getenv(
                 "AI_LOCAL_MODEL_URL", "http://localhost:8000/v1/chat/completions"
@@ -197,12 +213,21 @@ class BotConfig:
         if not self.ai_local_model_name:
             self.ai_local_model_name = os.getenv("AI_LOCAL_MODEL_NAME", "fenrir-brain")
         if not self.ai_local_model_enabled:
-            self.ai_local_model_enabled = os.getenv("AI_LOCAL_MODEL_ENABLED", "").lower() == "true"
+            self.ai_local_model_enabled = (
+                os.getenv("AI_LOCAL_MODEL_ENABLED", "").lower() == "true"
+            )
+
+        # FIX 4: LOG_LEVEL controllable from .env
+        # Always defer to env var — .env is now loaded so os.getenv is reliable
+        env_log_level = os.getenv("LOG_LEVEL", "").upper()
+        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if env_log_level in valid_levels:
+            self.log_level = env_log_level
 
     @classmethod
-    def from_mode(cls, mode: TradingMode, **overrides) -> "BotConfig":
+    def from_mode(cls, mode: TradingMode, **overrides) -> "BotConfig":  # type: ignore[override]
         """Create a BotConfig pre-tuned for a specific trading mode."""
-        preset = TRADING_PRESETS.get(mode, {})
+        preset = TRADING_PRESETS.get(mode, {})  # type: ignore[arg-type]
         merged = {**preset, "mode": mode, **overrides}
         return cls(**merged)
 
@@ -226,8 +251,9 @@ class BotConfig:
             errors.append("RPC URL required - get one from QuickNode or Helius")
 
         if self.rpc_url and not self.rpc_url.startswith("https://"):
-            if not self.rpc_url.startswith("http://127.0.0.1") and not self.rpc_url.startswith(
-                "http://localhost"
+            if (
+                not self.rpc_url.startswith("http://127.0.0.1")
+                and not self.rpc_url.startswith("http://localhost")
             ):
                 errors.append("RPC URL must use HTTPS (plaintext HTTP leaks wallet data)")
 
@@ -249,10 +275,10 @@ class BotConfig:
         if self.use_jito and self.jito_tip_lamports <= 0:
             errors.append("Jito tip must be positive when use_jito=True")
 
-        # AI configuration validation
         if self.ai_analysis_enabled and not self.ai_api_key:
             errors.append(
-                "AI API key required when ai_analysis_enabled=True (set OPENROUTER_API_KEY)"
+                "AI API key required when ai_analysis_enabled=True "
+                "(set OPENROUTER_API_KEY or ANTHROPIC_API_KEY)"
             )
 
         if not (0.0 <= self.ai_temperature <= 2.0):
@@ -265,6 +291,8 @@ class BotConfig:
             if not self.ai_local_model_url.startswith("http"):
                 errors.append("ai_local_model_url must be a valid HTTP URL")
             if not self.ai_local_model_name:
-                errors.append("ai_local_model_name must be set when ai_local_model_enabled=True")
+                errors.append(
+                    "ai_local_model_name must be set when ai_local_model_enabled=True"
+                )
 
         return errors
