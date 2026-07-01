@@ -54,6 +54,156 @@ class AISessionMemory:
         self._closed_trades = 0
         self._total_pnl_sol = 0.0
 
+    # ──────────────────────────────────────────────────────────────
+    #  PROJECTION FROM AUDIT CHAIN (§1 harness kernel)
+    # ──────────────────────────────────────────────────────────────
+
+    @classmethod
+    def from_audit_chain(
+        cls,
+        audit,
+        session_id: str | None = None,
+        max_size: int = 15,
+    ) -> "AISessionMemory":
+        """
+        Reconstruct session memory by projecting the audit chain's event log.
+
+        This makes AISessionMemory a *pure projection* of the append-only audit
+        trail rather than a parallel in-memory buffer: the same rendered context
+        can be rebuilt deterministically at any time (crash recovery, replay,
+        offline analysis), so the live buffer and the durable log can never
+        silently drift.
+
+        Folds three event types in chronological order, mirroring the live path
+        (record_decision → buy → update_outcome):
+          - AI_DECISION   → a DecisionRecord (decision / confidence / risk /
+                            reasoning)
+          - BUY_EXECUTED  → marks the matching decision was_bought (or synthesizes
+                            a bought record when AI was disabled and the bot
+                            auto-bought, so trade outcomes still surface)
+          - SELL_EXECUTED → backfills the outcome (pnl_pct / reason / hold time)
+
+        Only fields the rendered context actually uses are reconstructed: the
+        audit events don't carry red/green flags or the token name, and neither
+        does build_context_block(), so nothing visible in the prompt is lost.
+
+        Args:
+            audit:      An AuditChain (or anything exposing get_session_log()).
+            session_id: Which session to project. Defaults to the chain's current
+                        session. NOTE: AuditChain assigns a fresh random
+                        session_id per process, so cross-restart resume requires
+                        the operator to reuse a session_id; otherwise this
+                        projects an empty history (a safe no-op).
+            max_size:   Rolling buffer size (keeps the most recent N decisions).
+
+        Returns:
+            A populated AISessionMemory. Returns an empty instance on any read
+            error — projection must never block AI startup.
+        """
+        mem = cls(max_size=max_size)
+        try:
+            records = audit.get_session_log(session_id=session_id, limit=100_000)
+        except Exception:
+            return mem
+
+        decisions: list[DecisionRecord] = []
+        closed = 0
+        profitable = 0
+        total_pnl_sol = 0.0
+        earliest: datetime | None = None
+
+        for rec in records:
+            payload = rec.payload or {}
+            addr = rec.token_address
+            ts = cls._parse_ts(rec.timestamp)
+            if earliest is None or ts < earliest:
+                earliest = ts
+
+            if rec.event_type == "AI_DECISION":
+                decisions.append(
+                    DecisionRecord(
+                        timestamp=ts,
+                        token_mint=addr or "",
+                        token_symbol=payload.get("symbol") or "???",
+                        token_name=payload.get("name") or payload.get("symbol") or "Unknown",
+                        decision=str(payload.get("decision", "SKIP")).upper(),
+                        confidence=float(payload.get("confidence", 0.0) or 0.0),
+                        risk_score=float(payload.get("risk_score", 0.0) or 0.0),
+                        reasoning_summary=str(payload.get("reasoning", ""))[:100],
+                    )
+                )
+
+            elif rec.event_type == "BUY_EXECUTED" and addr:
+                target = cls._latest_unbought(decisions, addr)
+                if target is not None:
+                    target.was_bought = True
+                else:
+                    # AI disabled / auto-buy path: no AI_DECISION precedes the
+                    # buy, so synthesize a minimal bought record. Keeps trade
+                    # outcomes (and the losing-streak signal) reconstructable.
+                    decisions.append(
+                        DecisionRecord(
+                            timestamp=ts,
+                            token_mint=addr,
+                            token_symbol=payload.get("symbol") or "???",
+                            token_name=payload.get("symbol") or "Unknown",
+                            decision="BUY",
+                            confidence=0.0,
+                            risk_score=0.0,
+                            reasoning_summary="auto-buy (AI disabled)",
+                            was_bought=True,
+                        )
+                    )
+
+            elif rec.event_type == "SELL_EXECUTED" and addr:
+                target = cls._latest_open_bought(decisions, addr)
+                if target is not None:
+                    target.outcome_pnl_pct = float(payload.get("pnl_pct", 0.0) or 0.0)
+                    target.outcome_exit_reason = payload.get("reason", "")
+                    target.outcome_hold_time_minutes = int(payload.get("hold_minutes", 0) or 0)
+                    closed += 1
+                    if target.outcome_pnl_pct > 0:
+                        profitable += 1
+                    total_pnl_sol += float(payload.get("pnl_sol", 0.0) or 0.0)
+
+        # Tallies count every decision ever seen (matching the live path, where
+        # _total_* are not decremented on eviction); the deque keeps the tail.
+        mem._total_buys = sum(1 for d in decisions if d.was_bought)
+        mem._total_skips = sum(1 for d in decisions if not d.was_bought)
+        mem._closed_trades = closed
+        mem._profitable_trades = profitable
+        mem._total_pnl_sol = total_pnl_sol
+        mem.decisions = decisions[-max_size:]
+        if earliest is not None:
+            mem.session_start = earliest
+        return mem
+
+    @staticmethod
+    def _parse_ts(value: str) -> datetime:
+        """Parse an audit-chain ISO timestamp; fall back to now() on garbage."""
+        try:
+            return datetime.fromisoformat(value)
+        except (ValueError, TypeError):
+            return datetime.now()
+
+    @staticmethod
+    def _latest_unbought(decisions: list[DecisionRecord], token_mint: str) -> DecisionRecord | None:
+        """Most recent decision for this token not yet marked bought."""
+        for d in reversed(decisions):
+            if d.token_mint == token_mint and not d.was_bought:
+                return d
+        return None
+
+    @staticmethod
+    def _latest_open_bought(
+        decisions: list[DecisionRecord], token_mint: str
+    ) -> DecisionRecord | None:
+        """Most recent bought decision for this token still awaiting an outcome."""
+        for d in reversed(decisions):
+            if d.token_mint == token_mint and d.was_bought and d.outcome_pnl_pct is None:
+                return d
+        return None
+
     def record_decision(self, record: DecisionRecord) -> None:
         """Add a decision to the rolling buffer. Evicts oldest if full."""
         self.decisions.append(record)

@@ -147,35 +147,37 @@ def live_engine(live_config, mocks):
 class TestSimulationBuy:
     @pytest.mark.asyncio
     async def test_sim_buy_opens_position_with_bonding_curve_pricing(self, sim_engine, mocks):
-        """Simulation buy uses bonding-curve state for realistic pricing."""
+        """Simulation buy prices entry from the bonding curve (get_price), keeping
+        amount_tokens * entry_price == amount_sol so PnL tracks the price ratio."""
         token_data = _make_token_data(curve=FRESH_CURVE)
         result = await sim_engine.execute_buy(token_data)
 
         assert result is True
 
-        tokens_out, _ = FRESH_CURVE.calculate_buy_price(0.1)
-        expected_price = (0.1 * LAMPORTS_PER_SOL) / tokens_out
+        expected_price = FRESH_CURVE.get_price()
+        expected_tokens = 0.1 / expected_price
 
         call_args = mocks["positions"].open_position.call_args
         assert call_args.kwargs["token_address"] == FAKE_TOKEN
-        assert call_args.kwargs["amount_tokens"] == tokens_out
-        assert call_args.kwargs["entry_price"] == pytest.approx(expected_price, rel=1e-6)
+        assert call_args.kwargs["entry_price"] == pytest.approx(expected_price, rel=1e-9)
+        assert call_args.kwargs["amount_tokens"] == pytest.approx(expected_tokens, rel=1e-9)
         assert call_args.kwargs["amount_sol"] == 0.1
 
     @pytest.mark.asyncio
-    async def test_sim_buy_fallback_without_curve(self, sim_engine, mocks):
-        """Without bonding curve data, simulation uses fallback 0.000001 price."""
+    async def test_sim_buy_refused_without_curve(self, sim_engine, mocks):
+        """Without any bonding curve, the sim buy is refused rather than opening a
+        fabricated position (the old 0.000001 fallback produced nonsensical PnL)."""
+        mocks["solana_client"].get_account_info.return_value = None
         token_data = _make_token_data(curve=None)
         result = await sim_engine.execute_buy(token_data)
 
-        assert result is True
-        call_args = mocks["positions"].open_position.call_args
-        assert call_args.kwargs["entry_price"] == 0.000001
+        assert result is False
+        mocks["positions"].open_position.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_sim_buy_custom_amount_sol(self, sim_engine, mocks):
         """Explicit amount_sol overrides config default."""
-        token_data = _make_token_data(curve=None)
+        token_data = _make_token_data(curve=FRESH_CURVE)
         result = await sim_engine.execute_buy(token_data, amount_sol=0.5)
 
         assert result is True

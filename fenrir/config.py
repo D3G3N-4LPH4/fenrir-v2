@@ -162,14 +162,15 @@ class BotConfig:
     ai_api_key: str = ""
     ai_model: str = "anthropic/claude-haiku-4-5"
     ai_provider: str = "openrouter"       # "openrouter" or "anthropic_direct"
-    ai_entry_timeout_seconds: float = 12.0
-    ai_exit_timeout_seconds: float = 10.0
-    ai_exit_eval_interval_seconds: float = 60.0
-    ai_min_confidence_to_buy: float = 0.6
-    ai_memory_size: int = 15
-    ai_temperature: float = 0.3
-    ai_fallback_to_rules: bool = True
-    ai_dynamic_position_sizing: bool = False
+    ai_entry_timeout_seconds: float = 12.0  # Max wait for entry analysis
+    ai_exit_timeout_seconds: float = 10.0   # Max wait for exit evaluation
+    ai_exit_eval_interval_seconds: float = 60.0  # Proactive exit check cadence
+    ai_min_confidence_to_buy: float = 0.6  # Minimum confidence for BUY
+    ai_memory_size: int = 15  # Rolling decision history size
+    ai_memory_resume: bool = False  # Rebuild session memory from the audit chain on startup
+    ai_temperature: float = 0.3  # LLM temperature (lower = more conservative)
+    ai_fallback_to_rules: bool = True  # Auto-buy on AI failure/timeout?
+    ai_dynamic_position_sizing: bool = False  # Let AI set buy amount?
 
     # Local Model Backend
     ai_local_model_enabled: bool = False

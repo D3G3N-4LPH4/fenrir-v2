@@ -367,6 +367,11 @@ Remember: You're trading REAL money. Be conservative. Most memecoins go to zero.
                 payload=payload,
                 response_format=response_format,
                 tools=tools,
+                # Deadline-aware backoff: never sleep past the analyst's timeout
+                # budget. On the latency-critical entry path this naturally caps
+                # transient retries so they don't fight the asyncio.wait_for()
+                # cancellation in ClaudeBrain; generous exit timeouts allow more.
+                deadline_s=float(self.timeout),
             )
             if not data.get("choices"):
                 raise ValueError("No choices in response")

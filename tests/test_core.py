@@ -25,8 +25,14 @@ class TestBotConfig:
         errors = config.validate()
         assert len(errors) == 0, f"Validation errors: {errors}"
 
-    def test_missing_private_key_live_trading(self):
+    def test_missing_private_key_live_trading(self, monkeypatch):
         """Live trading requires private key."""
+        # Isolate from the developer's .env, which may define WALLET_PRIVATE_KEY
+        # (BotConfig.__post_init__ would otherwise backfill it and mask the error).
+        import fenrir.config as cfg
+
+        monkeypatch.setattr(cfg, "_ensure_dotenv", lambda: None)
+        monkeypatch.delenv("WALLET_PRIVATE_KEY", raising=False)
         config = BotConfig(mode=TradingMode.CONSERVATIVE, private_key="")
         errors = config.validate()
         assert any("Private key" in err for err in errors)
