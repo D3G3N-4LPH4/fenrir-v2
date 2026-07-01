@@ -9,6 +9,7 @@ Run with: pytest tests/test_trading_engine.py -v
 """
 
 from datetime import datetime
+from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -43,8 +44,8 @@ MIGRATED_CURVE = BondingCurveState(
 )
 
 
-def _make_token_data(curve: BondingCurveState = None) -> dict:
-    data = {"token_address": FAKE_TOKEN}
+def _make_token_data(curve: Optional[BondingCurveState] = None) -> dict:
+    data: dict[str, Any] = {"token_address": FAKE_TOKEN}
     if curve is not None:
         data["bonding_curve_state"] = curve
     return data

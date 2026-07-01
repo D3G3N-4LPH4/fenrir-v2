@@ -41,6 +41,7 @@ class JupiterSwapEngine:
         """
         if not self.session:
             await self.initialize()
+        assert self.session is not None
 
         if self._breaker:
             try:
@@ -81,6 +82,7 @@ class JupiterSwapEngine:
         """
         if not self.session:
             await self.initialize()
+        assert self.session is not None
 
         if self._breaker:
             try:

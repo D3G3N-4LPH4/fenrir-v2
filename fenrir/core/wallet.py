@@ -42,5 +42,5 @@ class WalletManager:
         """Sign with the elegance of a digital signature."""
         if self.simulation_mode:
             return transaction  # Don't actually sign in sim
-        transaction.sign([self.keypair])
+        transaction.sign([self.keypair], transaction.message.recent_blockhash)
         return transaction

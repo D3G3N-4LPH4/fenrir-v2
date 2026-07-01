@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -206,7 +206,7 @@ class SMCAdapter:
             self._emitted_structure_indices.clear()
             self._emitted_liq_indices.clear()
 
-        self._ohlcv = combined.astype(float)
+        self._ohlcv = cast(pd.DataFrame, combined.astype(float))
         self._candle_count = len(self._ohlcv)
         self._last_update = datetime.now(timezone.utc)
 
@@ -329,7 +329,10 @@ class SMCAdapter:
         n = len(ohlcv)
 
         try:
-            swing_df = smc.swing_highs_lows(ohlcv, swing_length=self.swing_length)
+            swing_df = cast(
+                pd.DataFrame,
+                smc.swing_highs_lows(ohlcv, swing_length=self.swing_length),
+            )
         except Exception as e:
             logger.warning(f"SMC swing_highs_lows failed: {e}")
             return
@@ -366,7 +369,7 @@ class SMCAdapter:
             mitigated = not pd.isna(mit_idx_raw) and mit_idx_raw > 0
             mit_idx = int(mit_idx_raw) if mitigated else None
 
-            candle_idx = ohlcv.index.get_loc(i) if i in ohlcv.index else -1
+            candle_idx = cast(int, ohlcv.index.get_loc(i)) if i in ohlcv.index else -1
 
             signal = FVGSignal(
                 direction="bullish" if row["FVG"] == 1 else "bearish",
@@ -408,7 +411,7 @@ class SMCAdapter:
             if pd.isna(level) or pd.isna(broken_idx):
                 continue
 
-            candle_idx = ohlcv.index.get_loc(i) if i in ohlcv.index else -1
+            candle_idx = cast(int, ohlcv.index.get_loc(i)) if i in ohlcv.index else -1
 
             if not pd.isna(bos_val) and bos_val != 0:
                 sig = StructureSignal(
@@ -464,7 +467,7 @@ class SMCAdapter:
             if pd.isna(level) or pd.isna(end_raw):
                 continue
 
-            candle_idx = ohlcv.index.get_loc(i) if i in ohlcv.index else -1
+            candle_idx = cast(int, ohlcv.index.get_loc(i)) if i in ohlcv.index else -1
             swept_idx = int(swept_raw)
 
             sig = LiquiditySignal(
@@ -556,7 +559,11 @@ class FENRIRSMCMixin:
                 # inject context into your Claude prompt
     """
 
-    def __init__(self, *args, **kwargs):
+    # Provided by the concrete strategy class this mixin is combined with.
+    # Declared for type-checkers only; guarded by ``hasattr`` at runtime.
+    event_bus: Any
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._smc_adapters: dict[str, SMCAdapter] = {}
 

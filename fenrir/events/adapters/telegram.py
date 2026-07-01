@@ -457,6 +457,7 @@ class TelegramAdapterV2:
         delta_direction: str,
         token_address: str | None,
     ) -> AlertEvaluation | None:
+        assert self.llm_client is not None  # guarded by caller (self.llm_client is not None)
         user_msg = LLMEvaluationPrompt.build_user_message(signals, delta_direction, token_address)
         response_text = await self.llm_client.complete(
             system=LLMEvaluationPrompt.SYSTEM,

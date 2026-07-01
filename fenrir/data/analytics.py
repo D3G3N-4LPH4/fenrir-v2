@@ -94,30 +94,30 @@ class PerformanceAnalyzer:
         if not positions:
             return self._empty_metrics(start_date, end_date)
 
-        # Determine date range
-        actual_start = min(p.open_time for p in positions)
+        # Determine date range (closed positions always have these fields set)
+        actual_start = min(p.open_time for p in positions if p.open_time)
         actual_end = max(p.close_time for p in positions if p.close_time)
         days_traded = (actual_end - actual_start).days + 1
 
         # Basic statistics
         total_trades = len(positions)
-        winners = [p for p in positions if p.pnl_sol > 0]
-        losers = [p for p in positions if p.pnl_sol <= 0]
+        winners = [p for p in positions if (p.pnl_sol or 0.0) > 0]
+        losers = [p for p in positions if (p.pnl_sol or 0.0) <= 0]
 
         win_rate = len(winners) / total_trades * 100
 
         # P&L statistics
-        total_pnl_sol = sum(p.pnl_sol for p in positions)
-        total_pnl_pct = sum(p.pnl_pct for p in positions)
+        total_pnl_sol = sum(p.pnl_sol or 0.0 for p in positions)
+        total_pnl_pct = sum(p.pnl_pct or 0.0 for p in positions)
 
-        avg_win_sol = sum(p.pnl_sol for p in winners) / len(winners) if winners else 0
-        avg_loss_sol = sum(p.pnl_sol for p in losers) / len(losers) if losers else 0
+        avg_win_sol = sum(p.pnl_sol or 0.0 for p in winners) / len(winners) if winners else 0
+        avg_loss_sol = sum(p.pnl_sol or 0.0 for p in losers) / len(losers) if losers else 0
 
-        avg_win_pct = sum(p.pnl_pct for p in winners) / len(winners) if winners else 0
-        avg_loss_pct = sum(p.pnl_pct for p in losers) / len(losers) if losers else 0
+        avg_win_pct = sum(p.pnl_pct or 0.0 for p in winners) / len(winners) if winners else 0
+        avg_loss_pct = sum(p.pnl_pct or 0.0 for p in losers) / len(losers) if losers else 0
 
-        largest_win = max((p.pnl_pct for p in positions), default=0)
-        largest_loss = min((p.pnl_pct for p in positions), default=0)
+        largest_win = max((p.pnl_pct or 0.0 for p in positions), default=0)
+        largest_loss = min((p.pnl_pct or 0.0 for p in positions), default=0)
 
         # Risk metrics
         sharpe = self._calculate_sharpe_ratio(positions)
@@ -126,11 +126,11 @@ class PerformanceAnalyzer:
         profit_factor = abs(avg_win_sol / avg_loss_sol) if avg_loss_sol != 0 else 0
 
         # Time analysis
-        avg_hold_time = sum(p.hold_time_minutes for p in positions) / total_trades
+        avg_hold_time = sum(p.hold_time_minutes or 0 for p in positions) / total_trades
         best_hour, worst_hour = self._analyze_time_patterns(positions)
 
         # Volume and fees
-        total_volume = sum(p.entry_amount_sol for p in positions)
+        total_volume = sum(p.entry_amount_sol or 0.0 for p in positions)
         # Note: Gas fees would need to be tracked in trades table
         total_gas = 0.0
         gas_pct = (total_gas / total_volume * 100) if total_volume > 0 else 0
@@ -175,7 +175,7 @@ class PerformanceAnalyzer:
         if not positions:
             return 0.0
 
-        returns = [p.pnl_pct / 100 for p in positions]  # Convert to decimal
+        returns = [(p.pnl_pct or 0.0) / 100 for p in positions]  # Convert to decimal
 
         if len(returns) < 2:
             return 0.0
@@ -203,7 +203,7 @@ class PerformanceAnalyzer:
         if not positions:
             return 0.0
 
-        returns = [p.pnl_pct / 100 for p in positions]
+        returns = [(p.pnl_pct or 0.0) / 100 for p in positions]
 
         if len(returns) < 2:
             return 0.0
@@ -235,15 +235,17 @@ class PerformanceAnalyzer:
         if not positions:
             return 0.0
 
-        # Sort by close time
-        sorted_positions = sorted(positions, key=lambda p: p.close_time)
+        # Sort by close time (closed positions always have a close_time)
+        sorted_positions = sorted(
+            positions, key=lambda p: p.close_time or datetime.min
+        )
 
         # Calculate cumulative P&L
         cumulative_pnl = []
         total = 0.0
 
         for p in sorted_positions:
-            total += p.pnl_sol
+            total += p.pnl_sol or 0.0
             cumulative_pnl.append(total)
 
         # Find max drawdown
@@ -265,11 +267,13 @@ class PerformanceAnalyzer:
         Returns (best_hour, worst_hour).
         """
         # Group by hour of day
-        hourly_pnl = defaultdict(list)
+        hourly_pnl: defaultdict[int, list[float]] = defaultdict(list)
 
         for p in positions:
+            if p.open_time is None:
+                continue
             hour = p.open_time.hour
-            hourly_pnl[hour].append(p.pnl_pct)
+            hourly_pnl[hour].append(p.pnl_pct or 0.0)
 
         if not hourly_pnl:
             return ("N/A", "N/A")
@@ -277,8 +281,8 @@ class PerformanceAnalyzer:
         # Calculate average P&L per hour
         hourly_avg = {hour: statistics.mean(pnls) for hour, pnls in hourly_pnl.items()}
 
-        best_hour = max(hourly_avg, key=hourly_avg.get)
-        worst_hour = min(hourly_avg, key=hourly_avg.get)
+        best_hour = max(hourly_avg, key=lambda h: hourly_avg[h])
+        worst_hour = min(hourly_avg, key=lambda h: hourly_avg[h])
 
         return (
             f"{best_hour:02d}:00-{best_hour+1:02d}:00",

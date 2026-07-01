@@ -34,7 +34,7 @@ Input data format (JSON):
 
 import bisect
 import json
-from typing import Dict, List, Optional, Tuple, Callable
+from typing import Dict, List, Optional, Tuple, Callable, cast
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from enum import Enum
@@ -95,7 +95,9 @@ class BacktestPosition:
     pnl_sol: Optional[float] = None
     pnl_pct: Optional[float] = None
     hold_time_minutes: Optional[int] = None
-    peak_price: float = None
+    # Populated in __post_init__ from entry_price; annotated non-optional since
+    # it always holds a float after construction.
+    peak_price: float = cast(float, None)
 
     def __post_init__(self):
         if self.peak_price is None:
@@ -194,17 +196,21 @@ class BacktestEngine:
 
                 if should_exit:
                     self._simulate_sell(position, launch, config, reason)
-                    capital += position.exit_amount_sol
+                    # _simulate_sell always populates these exit fields.
+                    exit_amount_sol = cast(float, position.exit_amount_sol)
+                    exit_time = cast(datetime, position.exit_time)
+                    exit_price = cast(float, position.exit_price)
+                    capital += exit_amount_sol
                     positions.remove(position)
                     closed_positions.append(position)
 
                     trades.append(BacktestTrade(
-                        timestamp=position.exit_time,
+                        timestamp=exit_time,
                         trade_type="SELL",
                         token_mint=position.token_mint,
                         token_symbol=position.token_symbol,
-                        price=position.exit_price,
-                        amount_sol=position.exit_amount_sol,
+                        price=exit_price,
+                        amount_sol=exit_amount_sol,
                         amount_tokens=position.entry_amount_tokens,
                         reason=reason
                     ))
@@ -379,25 +385,26 @@ class BacktestEngine:
         total_pnl = ending_capital - starting_capital
         total_return = (total_pnl / starting_capital) * 100
 
-        winners = [p for p in positions if p.pnl_sol > 0]
-        losers = [p for p in positions if p.pnl_sol <= 0]
+        # Closed positions always have pnl/hold fields populated by _simulate_sell.
+        winners = [p for p in positions if cast(float, p.pnl_sol) > 0]
+        losers = [p for p in positions if cast(float, p.pnl_sol) <= 0]
 
         win_rate = len(winners) / len(positions) * 100
 
-        avg_win = statistics.mean([p.pnl_pct for p in winners]) if winners else 0
-        avg_loss = statistics.mean([p.pnl_pct for p in losers]) if losers else 0
+        avg_win = statistics.mean([cast(float, p.pnl_pct) for p in winners]) if winners else 0
+        avg_loss = statistics.mean([cast(float, p.pnl_pct) for p in losers]) if losers else 0
 
-        largest_win = max((p.pnl_pct for p in positions), default=0)
-        largest_loss = min((p.pnl_pct for p in positions), default=0)
+        largest_win = max((cast(float, p.pnl_pct) for p in positions), default=0)
+        largest_loss = min((cast(float, p.pnl_pct) for p in positions), default=0)
 
-        returns = [p.pnl_pct / 100 for p in positions]
+        returns = [cast(float, p.pnl_pct) / 100 for p in positions]
         sharpe = self._calculate_sharpe(returns)
 
         profit_factor = abs(avg_win / avg_loss) if avg_loss != 0 else 0
 
         max_dd = self._calculate_max_drawdown(positions, starting_capital)
 
-        avg_hold_time = statistics.mean([p.hold_time_minutes for p in positions])
+        avg_hold_time = statistics.mean([cast(int, p.hold_time_minutes) for p in positions])
 
         return BacktestResults(
             config=config, start_date=start_date, end_date=end_date,
@@ -428,8 +435,8 @@ class BacktestEngine:
         peak = capital
         max_dd = 0
 
-        for p in sorted(positions, key=lambda x: x.exit_time):
-            capital += p.pnl_sol
+        for p in sorted(positions, key=lambda x: cast(datetime, x.exit_time)):
+            capital += cast(float, p.pnl_sol)
             if capital > peak:
                 peak = capital
             dd = (peak - capital) / peak * 100

@@ -92,3 +92,11 @@ warn_unused_configs = true
 disallow_untyped_defs = false
 check_untyped_defs = true
 ignore_missing_imports = true
+
+[tool.pyright]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+# solders ships type stubs but no Pyright-resolvable source module (compiled
+# Rust extension); the missing-source notice is noise, not a real problem.
+reportMissingModuleSource = "none"

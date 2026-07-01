@@ -565,6 +565,10 @@ class FENRIRSocialMixin:
                 # proceed with entry logic
     """
 
+    # Provided by the host strategy class when composed; guarded via hasattr
+    # before use. Declared here (annotation only, no assignment) for typing.
+    event_bus: Any
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._social = SocialSignalAdapter()

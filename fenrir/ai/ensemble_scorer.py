@@ -248,6 +248,7 @@ class EnsembleScorer:
         """POST to OpenRouter and parse the score JSON."""
         if not self._session:
             await self.initialize()
+        assert self._session is not None
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",

@@ -415,8 +415,10 @@ class HistoricalDataFeed:
         return lambda mint: self._liq_now.get(mint, 50.0)
 
     def _get_onchain_at(
-        self, mint: str, ts: datetime
+        self, mint: str, ts: datetime | None
     ) -> OnChainSnapshot | None:
+        if ts is None:
+            return None
         df = self._onchain.get(mint)
         if df is None or df.is_empty():
             return None

@@ -15,8 +15,10 @@ v2 additions (inspired by OpenFang patterns):
 import asyncio
 import json
 import os
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 from fenrir.ai.brain import ClaudeBrain
 from fenrir.ai.market_geometry import MarketGeometryAnalyzer
@@ -190,7 +192,9 @@ class FenrirBot:
         for sid in strategy_ids:
             cls = STRATEGY_REGISTRY.get(sid)
             if cls:
-                strategy = cls(self.config)
+                # Concrete strategies accept the bot config; the abstract base's
+                # __init__ signature doesn't reflect that, so narrow the type.
+                strategy = cast(Callable[[BotConfig], TradingStrategy], cls)(self.config)
                 self.strategies.append(strategy)
                 self.logger.info(
                     f"Strategy loaded: {strategy.display_name} ({strategy.strategy_id})"
@@ -435,7 +439,7 @@ class FenrirBot:
                             return_exceptions=True,
                         )
                         for addr, result in zip(feed_addrs, results, strict=False):
-                            if isinstance(result, Exception) or not result:
+                            if isinstance(result, BaseException) or not result:
                                 continue
                             prices[addr] = result.price
 

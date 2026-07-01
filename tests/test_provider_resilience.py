@@ -14,6 +14,7 @@ Covers the §3 harness port (browser-use/terminal → FENRIR):
 """
 
 from types import SimpleNamespace
+from typing import cast
 
 import aiohttp
 import pytest
@@ -85,7 +86,9 @@ def _no_real_sleep(monkeypatch):
 
 def make_caller(outcomes, breaker=None):
     session = FakeSession(outcomes)
-    caller = ProviderResilientCaller(api_key="k", session=session, breaker=breaker)  # noqa: S106
+    caller = ProviderResilientCaller(  # noqa: S106
+        api_key="k", session=cast(aiohttp.ClientSession, session), breaker=breaker
+    )
     return caller, session
 
 

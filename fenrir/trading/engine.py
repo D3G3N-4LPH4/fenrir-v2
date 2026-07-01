@@ -214,7 +214,7 @@ class TradingEngine:
                 blockhash,
             )
             transaction = Transaction.new_unsigned(message)
-            transaction.sign([self.wallet.keypair])
+            transaction.sign([self.wallet.keypair], blockhash)
 
             # 10. Simulate first
             sim_ok = await self.client.simulate_transaction(transaction)
@@ -377,7 +377,7 @@ class TradingEngine:
                 blockhash,
             )
             transaction = Transaction.new_unsigned(message)
-            transaction.sign([self.wallet.keypair])
+            transaction.sign([self.wallet.keypair], blockhash)
 
             # 10. Simulate first
             sim_ok = await self.client.simulate_transaction(transaction)
