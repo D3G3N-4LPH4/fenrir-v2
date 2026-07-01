@@ -31,6 +31,7 @@ logs/
 
 # Database files
 *.db
+*.db-*
 *.sqlite3
 
 # Secrets & credentials
@@ -42,6 +43,11 @@ credentials.json
 
 # Config overrides (keep example)
 config/local.json
+# Local runtime config (may hold real API keys) — use config/default.json as the
+# tracked template and .env for secrets
+/config.json
+# Stray root-level editor settings (belongs in .vscode/, which is ignored)
+/settings.json
 
 # Node modules (if frontend exists)
 node_modules/
