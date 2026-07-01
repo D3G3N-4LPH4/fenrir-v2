@@ -101,6 +101,7 @@ class LocalAITradingAnalyst(AITradingAnalyst):
 
         if not self.session:
             await self.initialize()
+        assert self.session is not None
 
         # Local servers use the same OpenAI wire format but don't need auth
         headers = {

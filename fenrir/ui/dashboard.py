@@ -238,6 +238,8 @@ class Dashboard:
 
         for trade in recent_trades:
             try:
+                if trade.timestamp is None or trade.trade_type is None or trade.token_mint is None:
+                    continue
                 time_str = trade.timestamp.strftime("%H:%M:%S")
                 type_color = "green" if trade.trade_type == "BUY" else "red"
                 symbol = trade.token_symbol or f"{trade.token_mint[:4]}...{trade.token_mint[-4:]}"

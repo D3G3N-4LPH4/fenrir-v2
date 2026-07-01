@@ -66,7 +66,7 @@ class HistoricalMemory:
         self.conn.row_factory = sqlite3.Row
 
         # Individual outcome records
-        self.conn.execute("""
+        self._conn().execute("""
             CREATE TABLE IF NOT EXISTS historical_outcomes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT,
@@ -90,7 +90,7 @@ class HistoricalMemory:
         """)
 
         # Aggregated creator statistics
-        self.conn.execute("""
+        self._conn().execute("""
             CREATE TABLE IF NOT EXISTS creator_stats (
                 creator_address TEXT PRIMARY KEY,
                 total_launches INTEGER DEFAULT 0,
@@ -108,24 +108,30 @@ class HistoricalMemory:
         """)
 
         # Indexes
-        self.conn.execute("""
+        self._conn().execute("""
             CREATE INDEX IF NOT EXISTS idx_hist_creator
             ON historical_outcomes (creator_address)
         """)
-        self.conn.execute("""
+        self._conn().execute("""
             CREATE INDEX IF NOT EXISTS idx_hist_token
             ON historical_outcomes (token_address)
         """)
-        self.conn.execute("""
+        self._conn().execute("""
             CREATE INDEX IF NOT EXISTS idx_hist_timestamp
             ON historical_outcomes (timestamp)
         """)
-        self.conn.execute("""
+        self._conn().execute("""
             CREATE INDEX IF NOT EXISTS idx_hist_bought
             ON historical_outcomes (was_bought)
         """)
 
-        self.conn.commit()
+        self._conn().commit()
+
+    def _conn(self) -> sqlite3.Connection:
+        """Return the active connection or raise if the database is closed."""
+        if self.conn is None:
+            raise RuntimeError("Historical memory database connection is not open")
+        return self.conn
 
     def record_outcome(
         self,
@@ -154,7 +160,7 @@ class HistoricalMemory:
         now = datetime.now()
         hour = now.hour
 
-        self.conn.execute(
+        self._conn().execute(
             """
             INSERT INTO historical_outcomes
                 (session_id, timestamp, token_address, token_symbol,
@@ -191,7 +197,7 @@ class HistoricalMemory:
                 creator_address, was_bought, pnl_pct, pnl_sol, hold_time_minutes, now
             )
 
-        self.conn.commit()
+        self._conn().commit()
 
     def _update_creator_stats(
         self,
@@ -203,7 +209,7 @@ class HistoricalMemory:
         now: datetime,
     ) -> None:
         """Update aggregate stats for a creator."""
-        existing = self.conn.execute(
+        existing = self._conn().execute(
             "SELECT * FROM creator_stats WHERE creator_address = ?",
             (creator_address,),
         ).fetchone()
@@ -211,7 +217,7 @@ class HistoricalMemory:
         now_str = now.isoformat()
 
         if not existing:
-            self.conn.execute(
+            self._conn().execute(
                 """
                 INSERT INTO creator_stats
                     (creator_address, total_launches, tokens_bought,
@@ -268,7 +274,7 @@ class HistoricalMemory:
             else:
                 new_hold = old_hold
 
-            self.conn.execute(
+            self._conn().execute(
                 """
                 UPDATE creator_stats SET
                     total_launches = ?,
@@ -336,7 +342,7 @@ class HistoricalMemory:
 
     def _get_creator_context(self, creator_address: str) -> str:
         """Get creator's historical track record."""
-        row = self.conn.execute(
+        row = self._conn().execute(
             "SELECT * FROM creator_stats WHERE creator_address = ?",
             (creator_address,),
         ).fetchone()
@@ -369,7 +375,7 @@ class HistoricalMemory:
         low = liquidity_sol * 0.5
         high = liquidity_sol * 1.5
 
-        row = self.conn.execute(
+        row = self._conn().execute(
             """
             SELECT
                 COUNT(*) as total,
@@ -401,7 +407,7 @@ class HistoricalMemory:
         """Get performance for current hour of day."""
         hour = datetime.now().hour
 
-        row = self.conn.execute(
+        row = self._conn().execute(
             """
             SELECT
                 COUNT(*) as total,
@@ -430,7 +436,7 @@ class HistoricalMemory:
 
     def _get_overall_context(self) -> str:
         """Get overall historical performance summary."""
-        row = self.conn.execute(
+        row = self._conn().execute(
             """
             SELECT
                 COUNT(*) as total,
@@ -462,7 +468,7 @@ class HistoricalMemory:
 
     def get_creator_profile(self, creator_address: str) -> dict | None:
         """Get full creator stats as a dict."""
-        row = self.conn.execute(
+        row = self._conn().execute(
             "SELECT * FROM creator_stats WHERE creator_address = ?",
             (creator_address,),
         ).fetchone()
@@ -470,7 +476,7 @@ class HistoricalMemory:
 
     def get_strategy_performance(self, strategy_id: str) -> dict:
         """Get performance breakdown for a specific strategy."""
-        row = self.conn.execute(
+        row = self._conn().execute(
             """
             SELECT
                 COUNT(*) as total,
@@ -498,7 +504,7 @@ class HistoricalMemory:
 
     def get_total_outcomes(self) -> int:
         """Total number of recorded outcomes."""
-        row = self.conn.execute(
+        row = self._conn().execute(
             "SELECT COUNT(*) as c FROM historical_outcomes"
         ).fetchone()
         return row["c"] if row else 0

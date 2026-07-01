@@ -315,6 +315,7 @@ class TestHistoricalMemory:
             "T1", creator_address="RUGGER", was_bought=True, pnl_pct=-90.0
         )
         profile = mem.get_creator_profile("RUGGER")
+        assert profile is not None
         assert profile["rug_count"] == 1
         mem.close()
 
@@ -324,6 +325,7 @@ class TestHistoricalMemory:
         mem.record_outcome("T2", creator_address="C1", was_bought=True, pnl_pct=50.0)
         mem.record_outcome("T3", creator_address="C1", was_bought=True, pnl_pct=-20.0)
         profile = mem.get_creator_profile("C1")
+        assert profile is not None
         assert profile["total_launches"] == 3
         assert profile["tokens_bought"] == 3
         assert profile["tokens_profitable"] == 2

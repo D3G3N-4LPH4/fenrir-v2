@@ -26,16 +26,16 @@ class Trade:
     """Individual trade record."""
 
     id: int | None = None
-    timestamp: datetime = None
-    trade_type: str = None  # "BUY" or "SELL"
-    token_mint: str = None
-    token_symbol: str = None
-    amount_sol: float = None
-    amount_tokens: float = None
-    price_per_token: float = None
-    slippage_pct: float = None
-    gas_fee_sol: float = None
-    signature: str = None
+    timestamp: datetime | None = None
+    trade_type: str | None = None  # "BUY" or "SELL"
+    token_mint: str | None = None
+    token_symbol: str | None = None
+    amount_sol: float | None = None
+    amount_tokens: float | None = None
+    price_per_token: float | None = None
+    slippage_pct: float | None = None
+    gas_fee_sol: float | None = None
+    signature: str | None = None
     position_id: int | None = None
     notes: str = ""
 
@@ -49,16 +49,16 @@ class PositionRecord:
     """Position lifecycle tracking."""
 
     id: int | None = None
-    token_mint: str = None
-    token_symbol: str = None
-    open_time: datetime = None
+    token_mint: str | None = None
+    token_symbol: str | None = None
+    open_time: datetime | None = None
     close_time: datetime | None = None
 
     # Entry
-    entry_price: float = None
-    entry_amount_tokens: float = None
-    entry_amount_sol: float = None
-    entry_signature: str = None
+    entry_price: float | None = None
+    entry_amount_tokens: float | None = None
+    entry_amount_sol: float | None = None
+    entry_signature: str | None = None
 
     # Exit
     exit_price: float | None = None
@@ -71,7 +71,7 @@ class PositionRecord:
     pnl_sol: float | None = None
     pnl_pct: float | None = None
     hold_time_minutes: int | None = None
-    peak_price: float = None
+    peak_price: float | None = None
     max_drawdown_pct: float | None = None
 
     # Metadata
@@ -128,7 +128,7 @@ class TradeDatabase:
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row  # Access columns by name
 
-        cursor = self.conn.cursor()
+        cursor = self._conn().cursor()
 
         # Trades table
         cursor.execute("""
@@ -231,7 +231,13 @@ class TradeDatabase:
             ON positions (close_time)
         """)
 
-        self.conn.commit()
+        self._conn().commit()
+
+    def _conn(self) -> sqlite3.Connection:
+        """Return the active connection or raise if the database is closed."""
+        if self.conn is None:
+            raise RuntimeError("Database connection is not open")
+        return self.conn
 
     # ═══════════════════════════════════════════════════════════════════════
     #                           TRADE OPERATIONS
@@ -242,7 +248,10 @@ class TradeDatabase:
         Record a trade in the database.
         Returns the trade ID.
         """
-        cursor = self.conn.cursor()
+        cursor = self._conn().cursor()
+
+        # timestamp is guaranteed non-None by Trade.__post_init__
+        timestamp = trade.timestamp if trade.timestamp is not None else datetime.now()
 
         cursor.execute(
             """
@@ -254,7 +263,7 @@ class TradeDatabase:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
-                trade.timestamp.isoformat(),
+                timestamp.isoformat(),
                 trade.trade_type,
                 trade.token_mint,
                 trade.token_symbol,
@@ -269,12 +278,12 @@ class TradeDatabase:
             ),
         )
 
-        self.conn.commit()
-        return cursor.lastrowid
+        self._conn().commit()
+        return cursor.lastrowid or 0
 
     def get_recent_trades(self, limit: int = 50) -> list[Trade]:
         """Get most recent trades."""
-        cursor = self.conn.cursor()
+        cursor = self._conn().cursor()
         cursor.execute(
             """
             SELECT * FROM trades
@@ -296,7 +305,10 @@ class TradeDatabase:
         Open a new position.
         Returns the position ID.
         """
-        cursor = self.conn.cursor()
+        cursor = self._conn().cursor()
+
+        # open_time is guaranteed non-None by PositionRecord.__post_init__
+        open_time = position.open_time if position.open_time is not None else datetime.now()
 
         cursor.execute(
             """
@@ -309,7 +321,7 @@ class TradeDatabase:
             (
                 position.token_mint,
                 position.token_symbol,
-                position.open_time.isoformat(),
+                open_time.isoformat(),
                 position.entry_price,
                 position.entry_amount_tokens,
                 position.entry_amount_sol,
@@ -320,8 +332,8 @@ class TradeDatabase:
             ),
         )
 
-        self.conn.commit()
-        return cursor.lastrowid
+        self._conn().commit()
+        return cursor.lastrowid or 0
 
     def close_position(
         self,
@@ -333,7 +345,7 @@ class TradeDatabase:
         exit_reason: str,
     ):
         """Close an existing position and calculate P&L."""
-        cursor = self.conn.cursor()
+        cursor = self._conn().cursor()
 
         # Get position details
         cursor.execute("SELECT * FROM positions WHERE id = ?", (position_id,))
@@ -385,11 +397,11 @@ class TradeDatabase:
             ),
         )
 
-        self.conn.commit()
+        self._conn().commit()
 
     def update_position_peak_price(self, position_id: int, new_peak: float):
         """Update peak price for trailing stop calculations."""
-        cursor = self.conn.cursor()
+        cursor = self._conn().cursor()
         cursor.execute(
             """
             UPDATE positions SET peak_price = ?
@@ -397,11 +409,11 @@ class TradeDatabase:
         """,
             (new_peak, position_id, new_peak),
         )
-        self.conn.commit()
+        self._conn().commit()
 
     def get_open_positions(self) -> list[PositionRecord]:
         """Get all currently open positions."""
-        cursor = self.conn.cursor()
+        cursor = self._conn().cursor()
         cursor.execute("""
             SELECT * FROM positions
             WHERE close_time IS NULL
@@ -415,7 +427,7 @@ class TradeDatabase:
         self, start_date: datetime | None = None, end_date: datetime | None = None
     ) -> list[PositionRecord]:
         """Get closed positions within date range."""
-        cursor = self.conn.cursor()
+        cursor = self._conn().cursor()
 
         query = "SELECT * FROM positions WHERE close_time IS NOT NULL"
         params = []
@@ -461,30 +473,34 @@ class TradeDatabase:
                 "sharpe_ratio": 0,
             }
 
-        # Calculate metrics
+        # Calculate metrics (closed positions always have P&L fields populated)
         total_trades = len(positions)
-        winning_trades = [p for p in positions if p.pnl_sol > 0]
-        losing_trades = [p for p in positions if p.pnl_sol <= 0]
+        winning_trades = [p for p in positions if (p.pnl_sol or 0.0) > 0]
+        losing_trades = [p for p in positions if (p.pnl_sol or 0.0) <= 0]
 
         win_rate = len(winning_trades) / total_trades * 100 if total_trades > 0 else 0
 
-        total_pnl_sol = sum(p.pnl_sol for p in positions)
-        avg_pnl_pct = sum(p.pnl_pct for p in positions) / total_trades
+        total_pnl_sol = sum(p.pnl_sol or 0.0 for p in positions)
+        avg_pnl_pct = sum(p.pnl_pct or 0.0 for p in positions) / total_trades
 
         avg_win_pct = (
-            sum(p.pnl_pct for p in winning_trades) / len(winning_trades) if winning_trades else 0
+            sum(p.pnl_pct or 0.0 for p in winning_trades) / len(winning_trades)
+            if winning_trades
+            else 0
         )
         avg_loss_pct = (
-            sum(p.pnl_pct for p in losing_trades) / len(losing_trades) if losing_trades else 0
+            sum(p.pnl_pct or 0.0 for p in losing_trades) / len(losing_trades)
+            if losing_trades
+            else 0
         )
 
-        largest_win_pct = max((p.pnl_pct for p in positions), default=0)
-        largest_loss_pct = min((p.pnl_pct for p in positions), default=0)
+        largest_win_pct = max((p.pnl_pct or 0.0 for p in positions), default=0)
+        largest_loss_pct = min((p.pnl_pct or 0.0 for p in positions), default=0)
 
-        avg_hold_time = sum(p.hold_time_minutes for p in positions) / total_trades
+        avg_hold_time = sum(p.hold_time_minutes or 0 for p in positions) / total_trades
 
         # Sharpe ratio (simplified: return / std_dev)
-        returns = [p.pnl_pct for p in positions]
+        returns = [p.pnl_pct or 0.0 for p in positions]
         avg_return = sum(returns) / len(returns)
         variance = sum((r - avg_return) ** 2 for r in returns) / len(returns)
         std_dev = variance**0.5
@@ -512,7 +528,7 @@ class TradeDatabase:
         """
         import pandas as pd
 
-        cursor = self.conn.cursor()
+        cursor = self._conn().cursor()
 
         start_date = f"{year}-01-01"
         end_date = f"{year}-12-31"
@@ -561,7 +577,7 @@ class TradeDatabase:
 
     def get_best_performing_tokens(self, limit: int = 10) -> list[dict]:
         """Get tokens with highest average returns."""
-        cursor = self.conn.cursor()
+        cursor = self._conn().cursor()
 
         cursor.execute(
             """

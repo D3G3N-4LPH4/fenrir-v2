@@ -18,7 +18,7 @@ Features:
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -185,6 +185,7 @@ class PriceFeedManager:
         """
         if not self.session:
             await self.initialize()
+        assert self.session is not None
 
         try:
             url = f"{self.JUPITER_API}/price"
@@ -264,6 +265,7 @@ class PriceFeedManager:
         """
         if not self.session:
             await self.initialize()
+        assert self.session is not None
 
         try:
             url = f"{self.DEXSCREENER_API}/tokens/{token_mint}"
@@ -325,7 +327,7 @@ class PriceFeedManager:
         return AggregatedPrice(price=weighted_price, quotes=fresh_quotes)
 
     async def subscribe_to_price_updates(
-        self, token_mint: str, callback: Callable[[AggregatedPrice], None]
+        self, token_mint: str, callback: Callable[[AggregatedPrice], Awaitable[None] | None]
     ):
         """
         Subscribe to real-time price updates for a token.

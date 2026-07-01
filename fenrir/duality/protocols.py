@@ -260,7 +260,7 @@ class ExecutionRecorder(Protocol):
         decision:  ClaudeDecision,
         order:     OrderResult | None,
         context:   dict,          # on_chain + social + smc at decision time
-        outcome:   dict | None,   # filled in retrospectively during backtest
+        outcome:   dict | None = None,  # filled in retrospectively during backtest
     ) -> None:
         ...
 

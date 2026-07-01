@@ -160,6 +160,7 @@ class JitoMEVProtection:
         """
         if not self.session:
             await self.initialize()
+        assert self.session is not None
 
         if len(transactions) > 5:
             raise ValueError("Jito bundles limited to 5 transactions")
@@ -239,6 +240,7 @@ class JitoMEVProtection:
         """
         if not self.session:
             await self.initialize()
+        assert self.session is not None
 
         try:
             url = f"{self.block_engine_url}/api/v1/bundles"
@@ -291,7 +293,7 @@ class JitoMEVProtection:
         """
         # Build tip transaction
         tip_tx = self.build_tip_transaction(payer, recent_blockhash, tip_lamports)
-        tip_tx.sign([payer])
+        tip_tx.sign([payer], tip_tx.message.recent_blockhash)
 
         # Send as bundle
         return await self.send_bundle([transaction, tip_tx])
@@ -323,6 +325,7 @@ class JitoOptimizer:
         """
         current_tip = initial_tip or self.jito.tip_lamports
 
+        result: BundleResult | None = None
         for attempt in range(max_attempts):
             # Update tip amount for retry
             self.jito.tip_lamports = current_tip
@@ -342,6 +345,8 @@ class JitoOptimizer:
             if attempt < max_attempts - 1:
                 await asyncio.sleep(2**attempt)  # Exponential backoff
 
+        if result is None:
+            raise ValueError("send_with_retry requires max_attempts >= 1")
         return result
 
     def get_optimal_tip(self) -> int:

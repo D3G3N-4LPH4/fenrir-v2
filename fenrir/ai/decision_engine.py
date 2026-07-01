@@ -346,6 +346,7 @@ Remember: You're trading REAL money. Be conservative. Most memecoins go to zero.
         """
         if not self._caller:
             await self.initialize()
+        assert self._caller is not None
 
         temperature = sampling_params.temperature if sampling_params else self.temperature
         payload = {
@@ -531,6 +532,7 @@ Respond with JSON:
         """
         if not self._caller:
             await self.initialize()
+        assert self.session is not None
 
         # Build base analysis prompt
         base_prompt = self._build_analysis_prompt(token_metadata, market_conditions)
@@ -620,6 +622,7 @@ Respond with JSON:
         """
         if not self._caller:
             await self.initialize()
+        assert self.session is not None
 
         drawdown_pct = ((peak_price - current_price) / peak_price * 100) if peak_price > 0 else 0.0
 
@@ -731,6 +734,7 @@ exit_plan MUST encode:
         """
         if not self._caller:
             await self.initialize()
+        assert self.session is not None
 
         # Build a schema locked to the exact token addresses in this batch
         batch_schema = {

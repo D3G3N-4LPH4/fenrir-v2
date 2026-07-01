@@ -13,34 +13,48 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from enum import Enum
 from logging.handlers import RotatingFileHandler
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-# Import Fenrir bot components
-try:
-    from fenrir import (  # noqa: F401
+# Import Fenrir bot components. The real symbols are imported unconditionally
+# for type checking; at runtime they may be absent, in which case fallbacks are
+# used so the module still imports.
+if TYPE_CHECKING:
+    from fenrir import (
         BotConfig,
         FenrirBot,
-        FenrirLogger,
-        JupiterSwapEngine,
-        PositionManager,
-        PumpFunMonitor,
-        SolanaClient,
-        TradingEngine,
         TradingMode,
-        WalletManager,
     )
     from fenrir.events.bus import EventListener
     from fenrir.events.types import TradeEvent
-except ImportError:
-    print("Warning: fenrir package not found.")
-    print("   Make sure the fenrir/ package is in your Python path.")
-    EventListener = object  # type: ignore[assignment,misc]
-    TradeEvent = object  # type: ignore[assignment,misc]
+else:
+    try:
+        from fenrir import (  # noqa: F401
+            BotConfig,
+            FenrirBot,
+            FenrirLogger,
+            JupiterSwapEngine,
+            PositionManager,
+            PumpFunMonitor,
+            SolanaClient,
+            TradingEngine,
+            TradingMode,
+            WalletManager,
+        )
+        from fenrir.events.bus import EventListener
+        from fenrir.events.types import TradeEvent
+    except ImportError:
+        print("Warning: fenrir package not found.")
+        print("   Make sure the fenrir/ package is in your Python path.")
+        BotConfig = None
+        FenrirBot = None
+        TradingMode = None
+        EventListener = object
+        TradeEvent = object
 
 # Configure logging with file handler for post-mortem analysis
 LOG_DIR = os.getenv("FENRIR_LOG_DIR", "logs")

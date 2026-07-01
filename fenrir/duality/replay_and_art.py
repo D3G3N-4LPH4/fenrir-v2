@@ -31,11 +31,14 @@ import logging
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
 from .backtest_impls import BacktestRecorder, SimulatedRouter, HistoricalDataFeed
+
+if TYPE_CHECKING:
+    from .protocols import ClaudeDecision, OrderResult
 
 logger = logging.getLogger("fenrir.art")
 

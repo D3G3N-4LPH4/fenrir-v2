@@ -23,6 +23,7 @@ Usage:
 import asyncio
 from collections import deque
 from datetime import datetime
+from typing import cast
 
 from fenrir.ai.context_builder import apply_exit_plan_to_position, build_batched_exit_context
 from fenrir.ai.decision_engine import (
@@ -476,7 +477,7 @@ class ClaudeBrain:
     # ──────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _sanitize_metadata_field(value: str, max_length: int = 200) -> str:
+    def _sanitize_metadata_field(value: str | None, max_length: int = 200) -> str | None:
         """Sanitize user-controlled metadata to prevent prompt injection."""
         if not value:
             return value
@@ -493,8 +494,8 @@ class ClaudeBrain:
         curve_state = token_data.get("bonding_curve_state")
         return TokenMetadata(
             token_mint=token_data["token_address"],
-            name=self._sanitize_metadata_field(token_data.get("name", "Unknown"), max_length=100),
-            symbol=self._sanitize_metadata_field(token_data.get("symbol", "???"), max_length=20),
+            name=cast(str, self._sanitize_metadata_field(token_data.get("name", "Unknown"), max_length=100)),
+            symbol=cast(str, self._sanitize_metadata_field(token_data.get("symbol", "???"), max_length=20)),
             description=self._sanitize_metadata_field(
                 token_data.get("description"), max_length=500
             ),
