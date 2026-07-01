@@ -36,7 +36,11 @@ PUMP_EVENT_AUTHORITY = Pubkey.from_string("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7
 TOKEN_PROGRAM = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
 
 # Instruction discriminators (Anchor-style: sha256("global:<method>")[:8])
+# pump.fun migrated token creation from `create` to `create_v2`; accept both so
+# detection survives the upgrade and any lingering legacy launches.
 INITIALIZE_DISCRIMINATOR = hashlib.sha256(b"global:create").digest()[:8]
+CREATE_V2_DISCRIMINATOR = hashlib.sha256(b"global:create_v2").digest()[:8]
+CREATE_DISCRIMINATORS = frozenset({INITIALIZE_DISCRIMINATOR, CREATE_V2_DISCRIMINATOR})
 BUY_DISCRIMINATOR = hashlib.sha256(b"global:buy").digest()[:8]
 SELL_DISCRIMINATOR = hashlib.sha256(b"global:sell").digest()[:8]
 
@@ -312,8 +316,7 @@ class TokenLaunchDetector:
         """Check if instruction is a token creation."""
         if len(instruction_data) < 8:
             return False
-        discriminator = instruction_data[:8]
-        return discriminator == INITIALIZE_DISCRIMINATOR
+        return instruction_data[:8] in CREATE_DISCRIMINATORS
 
     def parse_create_event(self, instruction_data: bytes, accounts: list) -> dict | None:
         """

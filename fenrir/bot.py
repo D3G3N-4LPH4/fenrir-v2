@@ -409,34 +409,56 @@ class FenrirBot:
                 # Phase 1: Update prices
                 open_addrs = list(self.positions.positions.keys())
                 if open_addrs:
-                    results = await asyncio.gather(
-                        *[self.price_feed.get_price(addr) for addr in open_addrs],
-                        return_exceptions=True,
-                    )
-                    for addr, result in zip(open_addrs, results, strict=False):
-                        if isinstance(result, Exception):
-                            continue
-                        elif result:
-                            pos = self.positions.positions.get(addr)
-                            if pos:
-                                pos.update_price(result.price)
+                    # Pre-migration, the pump.fun bonding curve is the
+                    # authoritative price (and the only source for freshly
+                    # launched tokens). Mark against it for BOTH sim and live so
+                    # entry and current price share one scale — PnL then tracks
+                    # the price ratio. Fall back to the external feed only for
+                    # migrated/uncurved tokens (external feeds return wrong-scale
+                    # or no data for fresh launches, which produced absurd PnL).
+                    prices: dict[str, float] = {}
+                    feed_addrs: list[str] = []
+                    for addr in open_addrs:
+                        curve = await self.trading_engine.fetch_curve_state(addr)
+                        if curve and not curve.complete:
+                            price = curve.get_price()
+                            if price > 0:
+                                prices[addr] = price
+                                continue
+                        feed_addrs.append(addr)
 
-                                # Ouroboros detection: dump → fake recovery → second dump
-                                alert = self.dump_detector.update(
-                                    addr, pos.current_price, pos.entry_price
+                    if feed_addrs:
+                        results = await asyncio.gather(
+                            *[self.price_feed.get_price(addr) for addr in feed_addrs],
+                            return_exceptions=True,
+                        )
+                        for addr, result in zip(feed_addrs, results, strict=False):
+                            if isinstance(result, Exception) or not result:
+                                continue
+                            prices[addr] = result.price
+
+                    for addr, new_price in prices.items():
+                        pos = self.positions.positions.get(addr)
+                        if not pos:
+                            continue
+                        pos.update_price(new_price)
+
+                        # Ouroboros detection: dump → fake recovery → second dump
+                        alert = self.dump_detector.update(
+                            addr, pos.current_price, pos.entry_price
+                        )
+                        if alert.ouroboros_detected:
+                            # Tighten trailing stop on the Position object
+                            if hasattr(pos, "trailing_stop_override_pct"):
+                                pos.trailing_stop_override_pct = alert.tightened_trailing_stop_pct
+                            await self.event_bus.emit(
+                                ouroboros_detected_event(
+                                    addr,
+                                    alert,
+                                    symbol=pos.token_symbol,
+                                    strategy_id=pos.strategy_id,
                                 )
-                                if alert.ouroboros_detected:
-                                    # Tighten trailing stop on the Position object
-                                    if hasattr(pos, "trailing_stop_override_pct"):
-                                        pos.trailing_stop_override_pct = alert.tightened_trailing_stop_pct
-                                    await self.event_bus.emit(
-                                        ouroboros_detected_event(
-                                            addr,
-                                            alert,
-                                            symbol=pos.token_symbol,
-                                            strategy_id=pos.strategy_id,
-                                        )
-                                    )
+                            )
 
                 # Phase 2: Mechanical exit conditions
                 mechanical_exits = self.positions.check_exit_conditions()
@@ -708,6 +730,30 @@ Environment Variables (or use .env file):
     )
 
     args = parser.parse_args()
+
+    # ── Single-instance guard ───────────────────────────────────
+    # Prevent duplicate/orphaned bots (e.g. left over from an interrupted
+    # restart) from trading concurrently against the same DB and doubling
+    # RPC/AI load. Hold an exclusive loopback port as the lock; the OS frees
+    # it automatically when this process exits, so stale locks can't linger.
+    import socket as _socket
+    import sys as _sys
+
+    _lock_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    if hasattr(_socket, "SO_EXCLUSIVEADDRUSE"):  # Windows: enforce exclusivity
+        _lock_sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_EXCLUSIVEADDRUSE, 1)
+    try:
+        _lock_sock.bind(("127.0.0.1", 47653))
+    except OSError:
+        print(
+            "FENRIR is already running (single-instance lock 127.0.0.1:47653). "
+            "Stop the existing instance first, or check for an orphaned "
+            "'python -m fenrir' process.",
+            file=_sys.stderr,
+        )
+        return
+    # Keep a reference alive for the whole process so the lock is held.
+    globals()["_FENRIR_SINGLETON_LOCK"] = _lock_sock
 
     # Load config
     if args.config and Path(args.config).exists():
