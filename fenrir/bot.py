@@ -762,8 +762,11 @@ Environment Variables (or use .env file):
     import sys as _sys
 
     _lock_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
-    if hasattr(_socket, "SO_EXCLUSIVEADDRUSE"):  # Windows: enforce exclusivity
-        _lock_sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_EXCLUSIVEADDRUSE, 1)
+    # SO_EXCLUSIVEADDRUSE is Windows-only; fetch via getattr so type checkers on
+    # other platforms (e.g. CI on Linux) don't flag a missing socket attribute.
+    _exclusive_opt = getattr(_socket, "SO_EXCLUSIVEADDRUSE", None)
+    if _exclusive_opt is not None:
+        _lock_sock.setsockopt(_socket.SOL_SOCKET, _exclusive_opt, 1)
     try:
         _lock_sock.bind(("127.0.0.1", 47653))
     except OSError:

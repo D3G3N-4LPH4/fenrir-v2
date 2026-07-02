@@ -21,7 +21,10 @@ class TestBotConfig:
 
     def test_default_config_valid(self):
         """Default config should be valid in simulation mode."""
-        config = BotConfig()
+        # AI is enabled by default and requires a key; supply a dummy so the
+        # check is deterministic regardless of the ambient environment / .env
+        # (CI has no OPENROUTER_API_KEY).
+        config = BotConfig(ai_api_key="test-key")
         errors = config.validate()
         assert len(errors) == 0, f"Validation errors: {errors}"
 
@@ -211,8 +214,11 @@ class TestTradingPresets:
     """Test mode-specific configuration presets."""
 
     def test_conservative_preset_valid(self):
-        # Non-simulation modes require a private key; supply a dummy for validation
-        config = BotConfig.from_mode(TradingMode.CONSERVATIVE, private_key="dummykey")
+        # Non-simulation modes require a private key; AI (enabled by default)
+        # requires a key too — supply dummies so validation is env-independent.
+        config = BotConfig.from_mode(
+            TradingMode.CONSERVATIVE, private_key="dummykey", ai_api_key="dummy"
+        )
         errors = config.validate()
         assert len(errors) == 0, f"Validation errors: {errors}"
         assert config.mode == TradingMode.CONSERVATIVE
@@ -222,7 +228,9 @@ class TestTradingPresets:
         assert config.ai_min_confidence_to_buy == 0.75
 
     def test_aggressive_preset_valid(self):
-        config = BotConfig.from_mode(TradingMode.AGGRESSIVE, private_key="dummykey")
+        config = BotConfig.from_mode(
+            TradingMode.AGGRESSIVE, private_key="dummykey", ai_api_key="dummy"
+        )
         errors = config.validate()
         assert len(errors) == 0, f"Validation errors: {errors}"
         assert config.mode == TradingMode.AGGRESSIVE
@@ -230,7 +238,9 @@ class TestTradingPresets:
         assert config.priority_fee_lamports == 1_000_000
 
     def test_degen_preset_valid(self):
-        config = BotConfig.from_mode(TradingMode.DEGEN, private_key="dummykey")
+        config = BotConfig.from_mode(
+            TradingMode.DEGEN, private_key="dummykey", ai_api_key="dummy"
+        )
         errors = config.validate()
         assert len(errors) == 0, f"Validation errors: {errors}"
         assert config.mode == TradingMode.DEGEN
@@ -238,7 +248,7 @@ class TestTradingPresets:
         assert config.take_profit_pct == 500.0
 
     def test_simulation_preset_valid(self):
-        config = BotConfig.from_mode(TradingMode.SIMULATION)
+        config = BotConfig.from_mode(TradingMode.SIMULATION, ai_api_key="dummy")
         errors = config.validate()
         assert len(errors) == 0, f"Validation errors: {errors}"
 
