@@ -238,9 +238,7 @@ class TestTradingPresets:
         assert config.priority_fee_lamports == 1_000_000
 
     def test_degen_preset_valid(self):
-        config = BotConfig.from_mode(
-            TradingMode.DEGEN, private_key="dummykey", ai_api_key="dummy"
-        )
+        config = BotConfig.from_mode(TradingMode.DEGEN, private_key="dummykey", ai_api_key="dummy")
         errors = config.validate()
         assert len(errors) == 0, f"Validation errors: {errors}"
         assert config.mode == TradingMode.DEGEN
