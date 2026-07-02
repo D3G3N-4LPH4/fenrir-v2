@@ -14,7 +14,7 @@ import random
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 
 import aiohttp
 
@@ -335,8 +335,11 @@ class JupiterClient:
             "slippageBps": str(slippage_bps),
             **{k: str(v) for k, v in kwargs.items()},
         }
-        return await self._with_retry(
-            self._get, "/swap/v2/order", params=params, timeout=self.QUOTE_TIMEOUT
+        return cast(
+            "dict[Any, Any]",
+            await self._with_retry(
+                self._get, "/swap/v2/order", params=params, timeout=self.QUOTE_TIMEOUT
+            ),
         )
 
     async def execute_swap(
@@ -349,11 +352,14 @@ class JupiterClient:
         Idempotent for up to 2 min with same signedTransaction + requestId.
         Always log requestId for audit chain correlation.
         """
-        return await self._with_retry(
-            self._post,
-            "/swap/v2/execute",
-            json={"signedTransaction": signed_transaction, "requestId": request_id},
-            timeout=self.EXECUTE_TIMEOUT,
+        return cast(
+            "dict[Any, Any]",
+            await self._with_retry(
+                self._post,
+                "/swap/v2/execute",
+                json={"signedTransaction": signed_transaction, "requestId": request_id},
+                timeout=self.EXECUTE_TIMEOUT,
+            ),
         )
 
 

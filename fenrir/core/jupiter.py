@@ -6,6 +6,8 @@ Jupiter aggregator integration.
 Finding the best price is an art form.
 """
 
+from typing import Any, cast
+
 import aiohttp
 
 from fenrir.config import BotConfig
@@ -52,18 +54,18 @@ class JupiterSwapEngine:
 
         try:
             url = f"{self.JUPITER_API}/quote"
-            params = {
-                "inputMint": input_mint,
-                "outputMint": output_mint,
-                "amount": amount,
-                "slippageBps": slippage_bps,
+            params: dict[str, str] = {
+                "inputMint": str(input_mint),
+                "outputMint": str(output_mint),
+                "amount": str(amount),
+                "slippageBps": str(slippage_bps),
             }
 
             async with self.session.get(url, params=params) as response:
                 if response.status == 200:
                     if self._breaker:
                         self._breaker.record_success()
-                    return await response.json()
+                    return cast("dict[Any, Any]", await response.json())
                 else:
                     if self._breaker:
                         self._breaker.record_failure(f"HTTP {response.status}")
@@ -106,7 +108,7 @@ class JupiterSwapEngine:
                     if self._breaker:
                         self._breaker.record_success()
                     data = await response.json()
-                    return data.get("swapTransaction")
+                    return cast("str | None", data.get("swapTransaction"))
                 else:
                     if self._breaker:
                         self._breaker.record_failure(f"HTTP {response.status}")

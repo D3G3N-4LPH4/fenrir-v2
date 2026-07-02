@@ -330,7 +330,7 @@ class BacktestEngine:
         price_history = launch.get("price_history", [])
 
         if not price_history:
-            return launch.get("initial_price", 0.000001)
+            return cast(Optional[float], launch.get("initial_price", 0.000001))
 
         # Build sorted timestamps list for binary search (O(log n))
         timestamps = [datetime.fromisoformat(p["time"]) for p in price_history]
@@ -344,10 +344,10 @@ class BacktestEngine:
             candidates.append(idx)
 
         if not candidates:
-            return price_history[0]["price"]
+            return cast(Optional[float], price_history[0]["price"])
 
         best_idx = min(candidates, key=lambda i: abs((timestamps[i] - target_time).total_seconds()))
-        return price_history[best_idx]["price"]
+        return cast(Optional[float], price_history[best_idx]["price"])
 
     def _filter_by_date(
         self, start_date: Optional[datetime], end_date: Optional[datetime]
@@ -426,14 +426,14 @@ class BacktestEngine:
         std_dev = statistics.stdev(returns)
         if std_dev == 0:
             return 0
-        return (avg_return * 252) / (std_dev * (252 ** 0.5))
+        return float((avg_return * 252) / (std_dev * (252 ** 0.5)))
 
     def _calculate_max_drawdown(
         self, positions: List[BacktestPosition], starting_capital: float
     ) -> float:
         capital = starting_capital
         peak = capital
-        max_dd = 0
+        max_dd = 0.0
 
         for p in sorted(positions, key=lambda x: cast(datetime, x.exit_time)):
             capital += cast(float, p.pnl_sol)

@@ -44,6 +44,7 @@ Usage:
 """
 
 import logging
+from typing import cast
 
 from fenrir.ai.decision_engine import AITradingAnalyst
 
@@ -145,7 +146,7 @@ class LocalAITradingAnalyst(AITradingAnalyst):
 
                 content = data["choices"][0]["message"]["content"]
                 logger.debug(f"Local model response ({len(content)} chars)")
-                return content
+                return cast(str, content)
 
         except aiohttp.ClientConnectorError:
             logger.error(

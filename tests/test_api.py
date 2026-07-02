@@ -11,6 +11,7 @@ Run with: pytest tests/test_api.py -v
 
 import asyncio
 from datetime import datetime
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -485,7 +486,9 @@ class TestStopBot:
         mock_task.cancel()  # Pre-cancel so await raises CancelledError
 
         server_module.bot_instance = mock_bot
-        server_module.bot_task = mock_task
+        # A Future is awaitable/cancelable like a Task; cast to satisfy the
+        # bot_task type annotation without changing runtime behavior.
+        server_module.bot_task = cast("asyncio.Task[Any]", mock_task)
         server_module.bot_state["status"] = "running"
         server_module.bot_state["start_time"] = datetime.now()
 

@@ -191,7 +191,7 @@ class PerformanceAnalyzer:
         annualized_std = std_dev * (252**0.5)
 
         sharpe = (annualized_return - risk_free_rate) / annualized_std
-        return sharpe
+        return float(sharpe)
 
     def _calculate_sortino_ratio(
         self, positions: list[PositionRecord], risk_free_rate: float = 0.05
@@ -226,7 +226,7 @@ class PerformanceAnalyzer:
         annualized_downside = downside_dev * (252**0.5)
 
         sortino = (annualized_return - risk_free_rate) / annualized_downside
-        return sortino
+        return float(sortino)
 
     def _calculate_max_drawdown(self, positions: list[PositionRecord]) -> float:
         """

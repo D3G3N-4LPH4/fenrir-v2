@@ -569,7 +569,7 @@ class TelegramAdapterV2:
     async def _poll_once(self) -> None:
         if not self._session:
             return
-        params = {
+        params: dict[str, int | list[str]] = {
             "offset": self._last_update_id + 1,
             "timeout": 0,
             "limit": 10,
@@ -727,7 +727,7 @@ class TelegramAdapterV2:
             if elapsed < config["cooldown_s"]:
                 return False
         recent_count = sum(1 for r in self._alert_history if r.tier == tier and r.timestamp > now - 3600)
-        return recent_count < config["max_per_hour"]
+        return bool(recent_count < config["max_per_hour"])
 
     def _record_alert(self, tier: str, headline: str) -> None:
         self._alert_history.append(_AlertRecord(tier=tier, timestamp=time.time(), headline=headline))

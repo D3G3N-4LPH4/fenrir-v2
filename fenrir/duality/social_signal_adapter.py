@@ -33,7 +33,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger("fenrir.social_signal")
 
@@ -264,7 +264,7 @@ class TwitterCLIRunner:
             if isinstance(data, dict):
                 for key in ("data", "tweets", "results"):
                     if key in data and isinstance(data[key], list):
-                        return data[key]
+                        return cast("list[dict[Any, Any]]", data[key])
                 return [data]
             return []
         except json.JSONDecodeError as e:
