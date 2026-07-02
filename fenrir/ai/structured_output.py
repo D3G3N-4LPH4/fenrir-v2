@@ -45,8 +45,12 @@ ENTRY_ANALYSIS_SCHEMA: dict = {
         "timing_score": {"type": ["number", "null"]},
     },
     "required": [
-        "decision", "confidence", "risk_score", "reasoning",
-        "red_flags", "green_flags",
+        "decision",
+        "confidence",
+        "risk_score",
+        "reasoning",
+        "red_flags",
+        "green_flags",
     ],
     "additionalProperties": False,
 }
@@ -86,9 +90,7 @@ BATCHED_EXIT_SCHEMA: dict = {
                     # May include "cooldown_until: <ISO>" to suppress re-evaluation.
                     "exit_plan": {"type": "string"},
                 },
-                "required": [
-                    "token_address", "action", "reasoning", "urgency", "exit_plan"
-                ],
+                "required": ["token_address", "action", "reasoning", "urgency", "exit_plan"],
                 "additionalProperties": False,
             },
         },
@@ -101,6 +103,7 @@ BATCHED_EXIT_SCHEMA: dict = {
 # ─────────────────────────────────────────────────────────────────────────────
 #  Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def build_response_format(schema_name: str, schema: dict) -> dict:
     """Build an OpenRouter response_format dict for strict structured output."""
@@ -153,6 +156,7 @@ def extract_json(raw: str) -> Any:
 # ─────────────────────────────────────────────────────────────────────────────
 #  Sanitizer fallback
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def sanitize_with_llm(
     raw_content: str,
@@ -219,6 +223,7 @@ async def sanitize_with_llm(
 #  Two-stage parse pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 async def parse_or_sanitize(
     message: dict,
     schema: dict,
@@ -258,8 +263,7 @@ async def parse_or_sanitize(
 
     # Stage 3: sanitizer fallback
     logger.warning(
-        "Primary JSON parse failed; calling sanitizer for schema '%s'. "
-        "Content preview: %.120s",
+        "Primary JSON parse failed; calling sanitizer for schema '%s'. " "Content preview: %.120s",
         schema_name,
         content,
     )

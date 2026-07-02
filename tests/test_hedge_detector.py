@@ -18,7 +18,6 @@ import pytest
 
 from fenrir.ai.hedge_detector import HedgeDetector
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 #  FIXTURES
 # ═══════════════════════════════════════════════════════════════════════════
@@ -59,24 +58,34 @@ class TestBasicContract:
 
 
 class TestEpistemicHedges:
-    @pytest.mark.parametrize("phrase,expected_count", [
-        ("I think this token is a good buy.", 1),
-        ("I believe the confidence is high.", 1),
-        ("Perhaps the liquidity is sufficient.", 1),
-        ("maybe this will pump.", 1),
-        ("It seems like a solid project.", 1),
-        ("This is potentially profitable.", 1),
-        ("The token might perform well.", 1),
-        ("This could be a good entry.", 1),
-        ("The confidence is approximately 0.75.", 1),
-    ])
+    @pytest.mark.parametrize(
+        "phrase,expected_count",
+        [
+            ("I think this token is a good buy.", 1),
+            ("I believe the confidence is high.", 1),
+            ("Perhaps the liquidity is sufficient.", 1),
+            ("maybe this will pump.", 1),
+            ("It seems like a solid project.", 1),
+            ("This is potentially profitable.", 1),
+            ("The token might perform well.", 1),
+            ("This could be a good entry.", 1),
+            ("The confidence is approximately 0.75.", 1),
+        ],
+    )
     def test_single_hedge_removed(self, det, phrase, expected_count):
         cleaned, count = det.process(phrase)
         assert count == expected_count
         # The phrase itself should be removed or altered
         hedge_words = [
-            "I think", "I believe", "Perhaps", "maybe", "It seems",
-            "potentially", "might", "could be", "approximately"
+            "I think",
+            "I believe",
+            "Perhaps",
+            "maybe",
+            "It seems",
+            "potentially",
+            "might",
+            "could be",
+            "approximately",
         ]
         for hw in hedge_words:
             if hw.lower() in phrase.lower():
@@ -107,12 +116,15 @@ class TestEpistemicHedges:
 
 
 class TestPreambleStripping:
-    @pytest.mark.parametrize("preamble", [
-        "Based on the analysis, the token looks strong.",
-        "Looking at the metrics, I recommend a buy.",
-        "Given the liquidity, this seems promising.",
-        "Considering that the holder count is 500, this is worth buying.",
-    ])
+    @pytest.mark.parametrize(
+        "preamble",
+        [
+            "Based on the analysis, the token looks strong.",
+            "Looking at the metrics, I recommend a buy.",
+            "Given the liquidity, this seems promising.",
+            "Considering that the holder count is 500, this is worth buying.",
+        ],
+    )
     def test_preamble_removed(self, det, preamble):
         cleaned, count = det.process(preamble)
         assert count >= 1
@@ -127,7 +139,7 @@ class TestPreambleStripping:
     def test_midline_based_on_not_stripped(self, det):
         # "based on" mid-sentence is less clearly a preamble; patterns are
         # line-start anchored (^) with re.M, so mid-sentence is safe
-        text = 'The decision is based on multiple factors.'
+        text = "The decision is based on multiple factors."
         cleaned, count = det.process(text)
         # Mid-sentence "based on" should not be stripped by line-start pattern
         # (it's not at the start of a line)
@@ -172,7 +184,7 @@ class TestRollingHedgeRate:
 
     def test_avg_hedge_count(self, det):
         det.process("I think maybe perhaps.")  # 3 hedges
-        det.process("Clean.")                  # 0 hedges
+        det.process("Clean.")  # 0 hedges
         avg = det.get_rolling_avg_hedge_count()
         assert avg == pytest.approx(1.5, abs=0.5)
 
@@ -258,11 +270,12 @@ class TestStateManagement:
 class TestOutputQuality:
     def test_json_still_parseable_after_cleaning(self, det):
         import json
+
         response = (
-            'I think the analysis shows:\n'
-            '```json\n'
+            "I think the analysis shows:\n"
+            "```json\n"
             '{"score": 75, "decision": "BUY", "reasoning": "Good fundamentals."}\n'
-            '```'
+            "```"
         )
         cleaned, count = det.process(response)
         # JSON block should still be findable

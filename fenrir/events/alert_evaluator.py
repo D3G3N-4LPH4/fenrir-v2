@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -29,19 +28,19 @@ logger = logging.getLogger(__name__)
 
 TIER_CONFIG: dict[str, dict] = {
     "FLASH": {
-        "cooldown_s": 300,       # 5 minutes
+        "cooldown_s": 300,  # 5 minutes
         "max_per_hour": 6,
         "emoji": "🚨",
         "label": "FLASH ALERT",
     },
     "PRIORITY": {
-        "cooldown_s": 1800,      # 30 minutes
+        "cooldown_s": 1800,  # 30 minutes
         "max_per_hour": 4,
         "emoji": "⚡",
         "label": "PRIORITY ALERT",
     },
     "ROUTINE": {
-        "cooldown_s": 3600,      # 60 minutes
+        "cooldown_s": 3600,  # 60 minutes
         "max_per_hour": 2,
         "emoji": "📊",
         "label": "ROUTINE UPDATE",
@@ -50,39 +49,43 @@ TIER_CONFIG: dict[str, dict] = {
 
 # ─── Data classes ──────────────────────────────────────────────────────────────
 
+
 @dataclass
 class Signal:
     """A single trading signal for alert evaluation."""
+
     key: str
     label: str
-    severity: str = "moderate"    # "critical" | "high" | "moderate" | "low"
-    direction: str = "new"        # "new" | "escalating" | "improving" | "resolving"
-    value: Any = None             # Current value
-    prev_value: Any = None        # Previous value
+    severity: str = "moderate"  # "critical" | "high" | "moderate" | "low"
+    direction: str = "new"  # "new" | "escalating" | "improving" | "resolving"
+    value: Any = None  # Current value
+    prev_value: Any = None  # Previous value
     pct_change: float | None = None
-    text: str | None = None       # Free-text description (for social/news signals)
+    text: str | None = None  # Free-text description (for social/news signals)
     token_address: str | None = None
-    source: str | None = None     # "on_chain" | "social" | "smc" | "system"
+    source: str | None = None  # "on_chain" | "social" | "smc" | "system"
     extra: dict = field(default_factory=dict)
 
 
 @dataclass
 class AlertEvaluation:
     """Result of alert evaluation — whether to alert and how."""
+
     should_alert: bool
-    tier: str                     # "FLASH" | "PRIORITY" | "ROUTINE"
+    tier: str  # "FLASH" | "PRIORITY" | "ROUTINE"
     headline: str
     reason: str
-    confidence: str = "MEDIUM"   # "HIGH" | "MEDIUM" | "LOW"
+    confidence: str = "MEDIUM"  # "HIGH" | "MEDIUM" | "LOW"
     actionable: str = "Monitor"
     cross_correlation: str | None = None
     suppress_reason: str | None = None
     signals: list[str] = field(default_factory=list)
     token_address: str | None = None
-    source: str = "rules"         # "rules" | "llm"
+    source: str = "rules"  # "rules" | "llm"
 
 
 # ─── Rule-based evaluator ──────────────────────────────────────────────────────
+
 
 class RuleBasedEvaluator:
     """
@@ -97,10 +100,21 @@ class RuleBasedEvaluator:
     """
 
     # Safety keywords that warrant immediate FLASH alert
-    SAFETY_KEYWORDS = frozenset([
-        "rug", "rugpull", "scam", "honeypot", "dump", "dumping",
-        "dev sold", "dev dumped", "exit liquidity", "bundled", "bundle",
-    ])
+    SAFETY_KEYWORDS = frozenset(
+        [
+            "rug",
+            "rugpull",
+            "scam",
+            "honeypot",
+            "dump",
+            "dumping",
+            "dev sold",
+            "dev dumped",
+            "exit liquidity",
+            "bundled",
+            "bundle",
+        ]
+    )
 
     def evaluate(
         self,
@@ -218,6 +232,7 @@ class RuleBasedEvaluator:
 
 # ─── LLM prompt builder ───────────────────────────────────────────────────────
 
+
 class LLMEvaluationPrompt:
     """
     Builds system + user prompts for LLM-based alert evaluation.
@@ -280,6 +295,7 @@ class LLMEvaluationPrompt:
 
 
 # ─── LLM response parsing ─────────────────────────────────────────────────────
+
 
 def parse_llm_json(text: str | None) -> dict | None:
     """

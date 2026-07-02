@@ -194,10 +194,12 @@ class BudgetTracker:
         net = self._global_sol_spent - returned_sol
         if net < -0.001:
             import logging as _log
+
             _log.getLogger(__name__).warning(
                 "BudgetTracker: sell returned %.4f SOL but only %.4f SOL tracked "
                 "as spent — accounting mismatch (clamping to 0)",
-                returned_sol, self._global_sol_spent,
+                returned_sol,
+                self._global_sol_spent,
             )
         self._global_sol_spent = max(0.0, net)
 

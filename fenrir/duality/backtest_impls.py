@@ -20,19 +20,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import random
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone, timedelta
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, AsyncIterator
 
 import polars as pl
 
 from .protocols import (
-    DataFeed, OrderRouter, ContextProvider, ExecutionRecorder,
-    TokenInfo, Position, OrderResult, OrderSide,
-    OnChainSnapshot, SocialSnapshot, ClaudeDecision,
+    ClaudeDecision,
+    OnChainSnapshot,
+    OrderResult,
+    OrderSide,
+    Position,
+    SocialSnapshot,
+    TokenInfo,
 )
 
 logger = logging.getLogger("fenrir.backtest")
@@ -42,6 +44,7 @@ logger = logging.getLogger("fenrir.backtest")
 # Slippage models
 # ---------------------------------------------------------------------------
 
+
 class SlippageModel:
     """
     Base class. Override apply_buy / apply_sell with your distribution.
@@ -50,8 +53,8 @@ class SlippageModel:
 
     def __init__(
         self,
-        base_slippage: float = 0.02,   # 2% base
-        vol_multiplier: float = 0.5,   # scales with volume ratio
+        base_slippage: float = 0.02,  # 2% base
+        vol_multiplier: float = 0.5,  # scales with volume ratio
         seed: int | None = None,
     ):
         self.base = base_slippage
@@ -68,7 +71,7 @@ class SlippageModel:
         # Market impact grows with order size relative to liquidity
         impact = (sol_amount / max(liquidity_sol, 1.0)) * self.vol_mult
         slippage = self.base + impact + self._rng.gauss(0, 0.005)
-        slippage = max(0.001, min(slippage, 0.30))   # cap at 30%
+        slippage = max(0.001, min(slippage, 0.30))  # cap at 30%
         effective = price * (1 + slippage)
         return effective, slippage
 
@@ -101,6 +104,7 @@ class ZeroSlippageModel(SlippageModel):
 # Simulated Order Router
 # ---------------------------------------------------------------------------
 
+
 class SimulatedRouter:
     """
     Backtest implementation of OrderRouter.
@@ -108,7 +112,7 @@ class SimulatedRouter:
     Records every trade for ART export.
     """
 
-    SOLANA_BLOCK_MS = 400   # realistic Solana block time
+    SOLANA_BLOCK_MS = 400  # realistic Solana block time
 
     def __init__(
         self,
@@ -116,16 +120,16 @@ class SimulatedRouter:
         slippage: SlippageModel | None = None,
         simulate_latency: bool = True,
     ):
-        self.balance        = initial_sol
-        self.initial_sol    = initial_sol
-        self.slippage       = slippage or SlippageModel(seed=42)
+        self.balance = initial_sol
+        self.initial_sol = initial_sol
+        self.slippage = slippage or SlippageModel(seed=42)
         self.simulate_latency = simulate_latency
 
-        self._positions: dict[str, Position]  = {}
-        self.trade_log:  list[OrderResult]    = []
+        self._positions: dict[str, Position] = {}
+        self.trade_log: list[OrderResult] = []
 
         # Live price feed injected by HistoricalDataFeed during replay
-        self._price_fn:     Callable[[str], float] | None = None
+        self._price_fn: Callable[[str], float] | None = None
         self._liquidity_fn: Callable[[str], float] | None = None
 
     def _set_price_fn(self, fn: Callable[[str], float]) -> None:
@@ -142,7 +146,7 @@ class SimulatedRouter:
     def _current_liquidity(self, mint: str) -> float:
         if self._liquidity_fn:
             return self._liquidity_fn(mint)
-        return 100.0   # default fallback
+        return 100.0  # default fallback
 
     async def buy(
         self,
@@ -158,50 +162,60 @@ class SimulatedRouter:
         if sol_amount <= 0:
             return OrderResult.failed(mint, OrderSide.BUY, "Invalid sol_amount <= 0")
 
-        price     = self._current_price(mint)
+        price = self._current_price(mint)
         liquidity = self._current_liquidity(mint)
-        t0        = datetime.now(timezone.utc)
+        t0 = datetime.now(UTC)
 
-        effective_price, slippage = self.slippage.apply_buy(
-            price, sol_amount, liquidity
-        )
+        effective_price, slippage = self.slippage.apply_buy(price, sol_amount, liquidity)
 
         if slippage > max_slippage_pct:
             return OrderResult.failed(
-                mint, OrderSide.BUY,
-                f"Slippage {slippage:.2%} exceeds max {max_slippage_pct:.2%}"
+                mint, OrderSide.BUY, f"Slippage {slippage:.2%} exceeds max {max_slippage_pct:.2%}"
             )
 
         tokens_received = sol_amount / effective_price
-        self.balance   -= sol_amount
+        self.balance -= sol_amount
 
         # Merge with existing position if any
         existing = self._positions.get(mint)
         if existing:
             total_tokens = existing.tokens + tokens_received
-            total_sol    = existing.sol_invested + sol_amount
-            avg_entry    = total_sol / total_tokens
+            total_sol = existing.sol_invested + sol_amount
+            avg_entry = total_sol / total_tokens
             self._positions[mint] = Position(
-                mint=mint, tokens=total_tokens, entry_price=avg_entry,
-                entry_ts=existing.entry_ts, sol_invested=total_sol,
+                mint=mint,
+                tokens=total_tokens,
+                entry_price=avg_entry,
+                entry_ts=existing.entry_ts,
+                sol_invested=total_sol,
                 current_price=effective_price,
             )
         else:
             self._positions[mint] = Position(
-                mint=mint, tokens=tokens_received, entry_price=effective_price,
-                entry_ts=t0, sol_invested=sol_amount, current_price=effective_price,
+                mint=mint,
+                tokens=tokens_received,
+                entry_price=effective_price,
+                entry_ts=t0,
+                sol_invested=sol_amount,
+                current_price=effective_price,
             )
 
         result = OrderResult(
-            success=True, side=OrderSide.BUY, mint=mint,
-            sol_amount=sol_amount, tokens=tokens_received,
-            effective_price=effective_price, slippage_pct=slippage,
+            success=True,
+            side=OrderSide.BUY,
+            mint=mint,
+            sol_amount=sol_amount,
+            tokens=tokens_received,
+            effective_price=effective_price,
+            slippage_pct=slippage,
             latency_ms=self.SOLANA_BLOCK_MS if self.simulate_latency else 0,
             tx_signature=f"SIM_BUY_{mint[:8]}_{int(t0.timestamp())}",
             timestamp=t0,
         )
         self.trade_log.append(result)
-        logger.debug(f"SIM BUY {mint[:8]} {sol_amount:.3f}SOL @ {effective_price:.6f} slip={slippage:.2%}")
+        logger.debug(
+            f"SIM BUY {mint[:8]} {sol_amount:.3f}SOL @ {effective_price:.6f} slip={slippage:.2%}"
+        )
         return result
 
     async def sell(
@@ -217,14 +231,12 @@ class SimulatedRouter:
         if not pos or pos.tokens <= 0:
             return OrderResult.failed(mint, OrderSide.SELL, "No position to sell")
 
-        price     = self._current_price(mint)
+        price = self._current_price(mint)
         liquidity = self._current_liquidity(mint)
-        t0        = datetime.now(timezone.utc)
+        t0 = datetime.now(UTC)
 
         tokens_to_sell = pos.tokens * sell_pct
-        effective_price, slippage = self.slippage.apply_sell(
-            price, tokens_to_sell, liquidity
-        )
+        effective_price, slippage = self.slippage.apply_sell(price, tokens_to_sell, liquidity)
 
         if slippage > max_slippage_pct:
             # On EXIT decisions we force through regardless
@@ -238,16 +250,22 @@ class SimulatedRouter:
         else:
             remaining = pos.tokens * (1 - sell_pct)
             self._positions[mint] = Position(
-                mint=mint, tokens=remaining, entry_price=pos.entry_price,
+                mint=mint,
+                tokens=remaining,
+                entry_price=pos.entry_price,
                 entry_ts=pos.entry_ts,
                 sol_invested=pos.sol_invested * (1 - sell_pct),
                 current_price=effective_price,
             )
 
         result = OrderResult(
-            success=True, side=OrderSide.SELL, mint=mint,
-            sol_amount=sol_received, tokens=tokens_to_sell,
-            effective_price=effective_price, slippage_pct=slippage,
+            success=True,
+            side=OrderSide.SELL,
+            mint=mint,
+            sol_amount=sol_received,
+            tokens=tokens_to_sell,
+            effective_price=effective_price,
+            slippage_pct=slippage,
             latency_ms=self.SOLANA_BLOCK_MS if self.simulate_latency else 0,
             tx_signature=f"SIM_SELL_{mint[:8]}_{int(t0.timestamp())}",
             timestamp=t0,
@@ -263,8 +281,11 @@ class SimulatedRouter:
             price = self._current_price(mint)
             # Return with updated current_price
             return Position(
-                mint=pos.mint, tokens=pos.tokens, entry_price=pos.entry_price,
-                entry_ts=pos.entry_ts, sol_invested=pos.sol_invested,
+                mint=pos.mint,
+                tokens=pos.tokens,
+                entry_price=pos.entry_price,
+                entry_ts=pos.entry_ts,
+                sol_invested=pos.sol_invested,
                 current_price=price,
             )
         return None
@@ -275,8 +296,11 @@ class SimulatedRouter:
     async def get_all_positions(self) -> dict[str, Position]:
         return {
             mint: Position(
-                mint=p.mint, tokens=p.tokens, entry_price=p.entry_price,
-                entry_ts=p.entry_ts, sol_invested=p.sol_invested,
+                mint=p.mint,
+                tokens=p.tokens,
+                entry_price=p.entry_price,
+                entry_ts=p.entry_ts,
+                sol_invested=p.sol_invested,
                 current_price=self._current_price(mint),
             )
             for mint, p in self._positions.items()
@@ -284,25 +308,25 @@ class SimulatedRouter:
 
     def summary(self) -> dict:
         """Call at end of backtest for performance metrics."""
-        total_trades  = len(self.trade_log)
-        buys          = [t for t in self.trade_log if t.side == OrderSide.BUY]
-        sells         = [t for t in self.trade_log if t.side == OrderSide.SELL]
-        total_sol_in  = sum(t.sol_amount for t in buys)
+        total_trades = len(self.trade_log)
+        buys = [t for t in self.trade_log if t.side == OrderSide.BUY]
+        sells = [t for t in self.trade_log if t.side == OrderSide.SELL]
+        total_sol_in = sum(t.sol_amount for t in buys)
         total_sol_out = sum(t.sol_amount for t in sells)
-        pnl_sol       = (self.balance - self.initial_sol)
-        pnl_pct       = pnl_sol / self.initial_sol * 100
+        pnl_sol = self.balance - self.initial_sol
+        pnl_pct = pnl_sol / self.initial_sol * 100
 
         return {
-            "initial_sol":    self.initial_sol,
-            "final_sol":      self.balance,
-            "pnl_sol":        round(pnl_sol, 4),
-            "pnl_pct":        round(pnl_pct, 2),
-            "total_trades":   total_trades,
-            "buys":           len(buys),
-            "sells":          len(sells),
-            "total_sol_in":   round(total_sol_in, 4),
-            "total_sol_out":  round(total_sol_out, 4),
-            "avg_slippage":   round(
+            "initial_sol": self.initial_sol,
+            "final_sol": self.balance,
+            "pnl_sol": round(pnl_sol, 4),
+            "pnl_pct": round(pnl_pct, 2),
+            "total_trades": total_trades,
+            "buys": len(buys),
+            "sells": len(sells),
+            "total_sol_in": round(total_sol_in, 4),
+            "total_sol_out": round(total_sol_out, 4),
+            "avg_slippage": round(
                 sum(t.slippage_pct for t in self.trade_log) / max(total_trades, 1), 4
             ),
         }
@@ -311,6 +335,7 @@ class SimulatedRouter:
 # ---------------------------------------------------------------------------
 # Historical Data Feed
 # ---------------------------------------------------------------------------
+
 
 class HistoricalDataFeed:
     """
@@ -330,15 +355,15 @@ class HistoricalDataFeed:
     """
 
     def __init__(self, data_dir: str | Path):
-        self.data_dir     = Path(data_dir)
-        self._candles:    dict[str, pl.DataFrame] = {}
-        self._onchain:    dict[str, pl.DataFrame] = {}
-        self._social:     dict[str, pl.DataFrame] = {}
-        self._tokens:     dict[str, TokenInfo]    = {}
-        self._current_ts: datetime | None         = None
+        self.data_dir = Path(data_dir)
+        self._candles: dict[str, pl.DataFrame] = {}
+        self._onchain: dict[str, pl.DataFrame] = {}
+        self._social: dict[str, pl.DataFrame] = {}
+        self._tokens: dict[str, TokenInfo] = {}
+        self._current_ts: datetime | None = None
         # Current candle index per mint — used by router price_fn
-        self._price_now:  dict[str, float]        = {}
-        self._liq_now:    dict[str, float]        = {}
+        self._price_now: dict[str, float] = {}
+        self._liq_now: dict[str, float] = {}
 
     def load(self, mints: list[str]) -> None:
         """Pre-load all data for the specified mints."""
@@ -369,11 +394,16 @@ class HistoricalDataFeed:
     async def get_ohlcv(self, mint: str, lookback: int = 100) -> pl.DataFrame:
         df = self._candles.get(mint)
         if df is None:
-            return pl.DataFrame(schema={
-                "timestamp": pl.Datetime, "open": pl.Float64,
-                "high": pl.Float64, "low": pl.Float64,
-                "close": pl.Float64, "volume": pl.Float64,
-            })
+            return pl.DataFrame(
+                schema={
+                    "timestamp": pl.Datetime,
+                    "open": pl.Float64,
+                    "high": pl.Float64,
+                    "low": pl.Float64,
+                    "close": pl.Float64,
+                    "volume": pl.Float64,
+                }
+            )
 
         if self._current_ts:
             df = df.filter(pl.col("timestamp") <= self._current_ts)
@@ -398,8 +428,8 @@ class HistoricalDataFeed:
 
         logger.info(f"Replaying {len(df)} candles for {mint[:8]}")
         for row in df.iter_rows(named=True):
-            self._current_ts         = row["timestamp"]
-            self._price_now[mint]    = row["close"]
+            self._current_ts = row["timestamp"]
+            self._price_now[mint] = row["close"]
 
             # Update liquidity estimate from on-chain snapshot
             oc = self._get_onchain_at(mint, self._current_ts)
@@ -414,9 +444,7 @@ class HistoricalDataFeed:
     def get_liquidity_fn(self) -> Callable[[str], float]:
         return lambda mint: self._liq_now.get(mint, 50.0)
 
-    def _get_onchain_at(
-        self, mint: str, ts: datetime | None
-    ) -> OnChainSnapshot | None:
+    def _get_onchain_at(self, mint: str, ts: datetime | None) -> OnChainSnapshot | None:
         if ts is None:
             return None
         df = self._onchain.get(mint)
@@ -451,40 +479,45 @@ class HistoricalDataFeed:
         """
         rows = []
         for row in candle_df.iter_rows(named=True):
-            price  = row["close"]
-            vol    = row["volume"]
-            mcap   = price * 1_000_000_000   # assume 1B supply
-            liq    = max(vol * 0.1, 5.0)
-            rows.append({
-                "timestamp":       row["timestamp"],
-                "price_sol":       price,
-                "market_cap_sol":  mcap,
-                "liquidity_sol":   liq,
-                "holder_count":    random.randint(50, 500),
-                "top10_pct":       random.uniform(0.3, 0.7),
-                "creator_holdings": random.uniform(0.0, 0.15),
-                "bonding_progress": min(mcap / 1000, 1.0),
-                "volume_5m":       vol,
-                "volume_1h":       vol * 12,
-                "buy_sell_ratio":  random.uniform(0.3, 0.7),
-            })
+            price = row["close"]
+            vol = row["volume"]
+            mcap = price * 1_000_000_000  # assume 1B supply
+            liq = max(vol * 0.1, 5.0)
+            rows.append(
+                {
+                    "timestamp": row["timestamp"],
+                    "price_sol": price,
+                    "market_cap_sol": mcap,
+                    "liquidity_sol": liq,
+                    "holder_count": random.randint(50, 500),
+                    "top10_pct": random.uniform(0.3, 0.7),
+                    "creator_holdings": random.uniform(0.0, 0.15),
+                    "bonding_progress": min(mcap / 1000, 1.0),
+                    "volume_5m": vol,
+                    "volume_1h": vol * 12,
+                    "buy_sell_ratio": random.uniform(0.3, 0.7),
+                }
+            )
         return pl.DataFrame(rows)
 
     @staticmethod
     def _synthetic_social() -> pl.DataFrame:
         """Empty social snapshot frame — safe default when no data exists."""
-        return pl.DataFrame(schema={
-            "timestamp":      pl.Datetime,
-            "sentiment_score": pl.Float64,
-            "tweet_count":    pl.Int64,
-            "bull_count":     pl.Int64,
-            "bear_count":     pl.Int64,
-        })
+        return pl.DataFrame(
+            schema={
+                "timestamp": pl.Datetime,
+                "sentiment_score": pl.Float64,
+                "tweet_count": pl.Int64,
+                "bull_count": pl.Int64,
+                "bear_count": pl.Int64,
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
 # Backtest Context Provider
 # ---------------------------------------------------------------------------
+
 
 class BacktestContextProvider:
     """
@@ -503,14 +536,21 @@ class BacktestContextProvider:
         # Return a neutral snapshot if no social data
         df = self._feed._social.get(mint, pl.DataFrame())
         if df.is_empty() or self._feed._current_ts is None:
-            return SocialSnapshot(mint=mint, ticker="?", tweet_count=0,
-                                  sentiment_score=0.0, bull_count=0, bear_count=0)
+            return SocialSnapshot(
+                mint=mint,
+                ticker="?",
+                tweet_count=0,
+                sentiment_score=0.0,
+                bull_count=0,
+                bear_count=0,
+            )
         filtered = df.filter(pl.col("timestamp") <= self._feed._current_ts)
         if filtered.is_empty():
             return None
         row = filtered.tail(1).to_dicts()[0]
         return SocialSnapshot(
-            mint=mint, ticker=row.get("ticker", "?"),
+            mint=mint,
+            ticker=row.get("ticker", "?"),
             tweet_count=row.get("tweet_count", 0),
             sentiment_score=row.get("sentiment_score", 0.0),
             bull_count=row.get("bull_count", 0),
@@ -523,15 +563,15 @@ class BacktestContextProvider:
             return "[SMC] Insufficient data"
         # Lightweight SMC summary without full adapter overhead
         close = ohlcv["close"].to_list()
-        high  = ohlcv["high"].to_list()
-        low   = ohlcv["low"].to_list()
+        high = ohlcv["high"].to_list()
+        low = ohlcv["low"].to_list()
         if len(close) < 10:
             return "[SMC] Insufficient candles"
-        recent_high  = max(high[-10:])
-        recent_low   = min(low[-10:])
-        current      = close[-1]
+        recent_high = max(high[-10:])
+        recent_low = min(low[-10:])
+        current = close[-1]
         pos_in_range = (current - recent_low) / max(recent_high - recent_low, 1e-10)
-        trend        = "BULLISH" if close[-1] > close[-5] else "BEARISH"
+        trend = "BULLISH" if close[-1] > close[-5] else "BEARISH"
         return (
             f"[SMC BACKTEST] Trend={trend} | "
             f"Range=[{recent_low:.6f}–{recent_high:.6f}] | "
@@ -543,6 +583,7 @@ class BacktestContextProvider:
 # Backtest Execution Recorder
 # ---------------------------------------------------------------------------
 
+
 class BacktestRecorder:
     """
     Backtest implementation of ExecutionRecorder.
@@ -552,7 +593,7 @@ class BacktestRecorder:
 
     def __init__(self, output_path: Path | None = None):
         self.output_path = output_path
-        self._events:    list[dict] = []
+        self._events: list[dict] = []
         self._file = None
 
         if output_path:
@@ -561,18 +602,18 @@ class BacktestRecorder:
 
     async def record(
         self,
-        mint:     str,
+        mint: str,
         decision: ClaudeDecision,
-        order:    OrderResult | None,
-        context:  dict,
-        outcome:  dict | None = None,
+        order: OrderResult | None,
+        context: dict,
+        outcome: dict | None = None,
     ) -> None:
         event = {
-            "mint":     mint,
+            "mint": mint,
             "decision": decision.to_dict(),
-            "order":    order.to_dict() if order else None,
-            "context":  context,
-            "outcome":  outcome,
+            "order": order.to_dict() if order else None,
+            "context": context,
+            "outcome": outcome,
         }
         self._events.append(event)
         if self._file:
@@ -597,38 +638,36 @@ class BacktestRecorder:
             trade_map.setdefault(trade.mint, []).append(trade)
 
         for event in self._events:
-            mint      = event["mint"]
+            mint = event["mint"]
             dec_ts_str = event["decision"].get("timestamp", "")
             try:
                 dec_ts = datetime.fromisoformat(dec_ts_str)
-            except Exception:
+            except Exception:  # noqa: S112 - skip events with malformed/missing timestamps
                 continue
 
             # Find the sell that closed this position after this decision
             sells = [
-                t for t in trade_map.get(mint, [])
+                t
+                for t in trade_map.get(mint, [])
                 if t.side == OrderSide.SELL and t.timestamp > dec_ts
             ]
             buys = [
-                t for t in trade_map.get(mint, [])
+                t
+                for t in trade_map.get(mint, [])
                 if t.side == OrderSide.BUY and t.timestamp <= dec_ts
             ]
             if sells and buys:
-                last_buy  = buys[-1]
+                last_buy = buys[-1]
                 first_sell = sells[0]
-                pnl_pct   = (
-                    (first_sell.effective_price / last_buy.effective_price) - 1
-                ) * 100
-                hold_secs = (
-                    first_sell.timestamp - last_buy.timestamp
-                ).total_seconds()
+                pnl_pct = ((first_sell.effective_price / last_buy.effective_price) - 1) * 100
+                hold_secs = (first_sell.timestamp - last_buy.timestamp).total_seconds()
                 event["outcome"] = {
-                    "pnl_pct":       round(pnl_pct, 2),
-                    "hold_secs":     round(hold_secs, 1),
-                    "exit_price":    first_sell.effective_price,
+                    "pnl_pct": round(pnl_pct, 2),
+                    "hold_secs": round(hold_secs, 1),
+                    "exit_price": first_sell.effective_price,
                     "exit_slippage": first_sell.slippage_pct,
-                    "exit_ts":       first_sell.timestamp.isoformat(),
-                    "label":         self._label(pnl_pct, event["decision"]["action"]),
+                    "exit_ts": first_sell.timestamp.isoformat(),
+                    "label": self._label(pnl_pct, event["decision"]["action"]),
                 }
 
     @staticmethod
@@ -638,17 +677,24 @@ class BacktestRecorder:
         Converts outcome into a quality signal for the decision.
         """
         if action == "BUY":
-            if pnl_pct > 20:   return "GOOD_BUY"
-            if pnl_pct > 5:    return "OK_BUY"
-            if pnl_pct > -5:   return "BREAK_EVEN_BUY"
+            if pnl_pct > 20:
+                return "GOOD_BUY"
+            if pnl_pct > 5:
+                return "OK_BUY"
+            if pnl_pct > -5:
+                return "BREAK_EVEN_BUY"
             return "BAD_BUY"
         if action in ("SELL", "EXIT"):
-            if pnl_pct > 20:   return "EARLY_SELL"   # left money on table
-            if pnl_pct > 0:    return "GOOD_SELL"
+            if pnl_pct > 20:
+                return "EARLY_SELL"  # left money on table
+            if pnl_pct > 0:
+                return "GOOD_SELL"
             return "LOSS_SELL"
         if action == "HOLD":
-            if pnl_pct > 10:   return "GOOD_HOLD"
-            if pnl_pct < -10:  return "BAD_HOLD"     # should have exited
+            if pnl_pct > 10:
+                return "GOOD_HOLD"
+            if pnl_pct < -10:
+                return "BAD_HOLD"  # should have exited
             return "OK_HOLD"
         return "UNKNOWN"
 

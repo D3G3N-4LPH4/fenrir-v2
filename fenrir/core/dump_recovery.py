@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 #                           CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class OuroborosConfig:
     """
@@ -82,6 +83,7 @@ class OuroborosConfig:
 #                           DETECTION RESULT
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class OuroborosAlert:
     """Result of an Ouroboros check for a single price update."""
@@ -92,8 +94,8 @@ class OuroborosAlert:
     entry_price: float = 0.0
     dump_low: float = 0.0
     recovery_high: float = 0.0
-    dump_pct: float = 0.0        # How far it dropped from peak
-    recovery_pct: float = 0.0   # How much it bounced from the low
+    dump_pct: float = 0.0  # How far it dropped from peak
+    recovery_pct: float = 0.0  # How much it bounced from the low
 
     # Recommended response
     tightened_trailing_stop_pct: float = 8.0
@@ -118,9 +120,11 @@ class OuroborosAlert:
 #                           DETECTOR
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class _PositionState:
     """Internal state tracked per position."""
+
     price_history: deque = field(default_factory=lambda: deque(maxlen=50))
     peak_price: float = 0.0
     dump_low: float = float("inf")
@@ -194,9 +198,7 @@ class PostDumpRecoveryDetector:
         cfg = self.config
 
         # ── Phase 1 Detection: Is there a significant dump from peak? ──
-        drawdown_from_peak = (
-            (state.peak_price - current_price) / state.peak_price
-        ) * 100
+        drawdown_from_peak = ((state.peak_price - current_price) / state.peak_price) * 100
 
         if drawdown_from_peak >= cfg.dump_threshold_pct:
             # We're in a dump phase — track the low
@@ -206,9 +208,7 @@ class PostDumpRecoveryDetector:
 
         # ── Phase 2 Detection: Is there a recovery from the dump low? ──
         if state.in_dump_phase and state.dump_low < float("inf"):
-            recovery_from_low = (
-                (current_price - state.dump_low) / state.dump_low
-            ) * 100
+            recovery_from_low = ((current_price - state.dump_low) / state.dump_low) * 100
 
             if (
                 recovery_from_low >= cfg.recovery_threshold_pct
@@ -217,9 +217,7 @@ class PostDumpRecoveryDetector:
                 # Pattern confirmed: significant dump + partial recovery
                 # This is the Ouroboros setup — second dump likely incoming
 
-                dump_pct = (
-                    (state.peak_price - state.dump_low) / state.peak_price
-                ) * 100
+                dump_pct = ((state.peak_price - state.dump_low) / state.peak_price) * 100
 
                 state.triggered = True
                 state.cooldown_remaining = cfg.cooldown_ticks
@@ -259,9 +257,7 @@ class PostDumpRecoveryDetector:
         return {
             "positions_tracked": len(self._states),
             "total_detections": self._detections_total,
-            "currently_triggered": sum(
-                1 for s in self._states.values() if s.triggered
-            ),
+            "currently_triggered": sum(1 for s in self._states.values() if s.triggered),
         }
 
     def reset_for_position(self, token_address: str) -> None:
@@ -280,6 +276,7 @@ class PostDumpRecoveryDetector:
 # ═══════════════════════════════════════════════════════════════════════════
 #                           EVENT FACTORY
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def ouroboros_detected_event(
     token_address: str,

@@ -5,10 +5,10 @@ External API adapter layer for FENRIR v2.
 """
 
 from fenrir.adapters.jupiter_client import (
+    RETRYABLE_SWAP_CODES,
     JupiterClient,
     JupiterError,
     JupiterErrorCode,
-    RETRYABLE_SWAP_CODES,
     TokenInfo,
     TokenPrice,
     WalletPosition,

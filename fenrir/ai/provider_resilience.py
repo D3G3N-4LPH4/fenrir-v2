@@ -29,7 +29,7 @@ from typing import Any, cast
 
 import aiohttp
 
-from fenrir.core.circuit_breaker import CircuitBreaker, CircuitOpen
+from fenrir.core.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
 
@@ -42,23 +42,46 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # Without that ordering a permanently-failing request would burn the whole
 # transient budget hammering something that can never succeed.
 TERMINAL_MARKERS = (
-    "incorrect api key", "invalid api key", "401", "403",
-    "content was flagged", "content_policy", "invalid_request_error",
-    "context_length_exceeded", "schema", "unsupported",
+    "incorrect api key",
+    "invalid api key",
+    "401",
+    "403",
+    "content was flagged",
+    "content_policy",
+    "invalid_request_error",
+    "context_length_exceeded",
+    "schema",
+    "unsupported",
 )
 TRANSIENT_MARKERS = (
-    "timed out", "timeout", "connection reset", "connection closed",
-    "connection aborted", "overloaded", "rate limit", "too many requests",
-    "eof", "502", "503", "504", "gateway", "stream disconnected",
-    "server error", "temporarily unavailable",
+    "timed out",
+    "timeout",
+    "connection reset",
+    "connection closed",
+    "connection aborted",
+    "overloaded",
+    "rate limit",
+    "too many requests",
+    "eof",
+    "502",
+    "503",
+    "504",
+    "gateway",
+    "stream disconnected",
+    "server error",
+    "temporarily unavailable",
 )
 # Overflow is terminal-with-a-special-name. browser-use/terminal routes it to
 # compaction; FENRIR's prompt is bounded by construction (≤ai_memory_size
 # decisions + one token), so there is no compaction path — we treat overflow as
 # non-retryable and surface it loudly rather than silently looping.
 OVERFLOW_MARKERS = (
-    "context length", "context window", "maximum context",
-    "too many tokens", "token limit", "input too long",
+    "context length",
+    "context window",
+    "maximum context",
+    "too many tokens",
+    "token limit",
+    "input too long",
 )
 
 # Status codes that are unambiguous on their own (body string is the fallback).
@@ -227,7 +250,7 @@ class ProviderResilientCaller:
                     error_text = await resp.text()
                     req_info = resp.request_info
                     history = resp.history
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            except (TimeoutError, aiohttp.ClientError) as exc:
                 # Network-level failure: no HTTP response (timeout, reset, …).
                 # We raise ClientResponseError ourselves only AFTER the loop, so
                 # the only ClientErrors caught here are genuine transport faults.
@@ -262,9 +285,7 @@ class ProviderResilientCaller:
                 and self._sleep_fits(start, transient_attempts + 1, deadline_s)
             ):
                 transient_attempts += 1
-                await self._backoff_sleep(
-                    transient_attempts, transient_retries, f"HTTP {status}"
-                )
+                await self._backoff_sleep(transient_attempts, transient_retries, f"HTTP {status}")
                 continue
 
             # Terminal, overflow, or transient budget exhausted → give up.
@@ -304,7 +325,10 @@ class ProviderResilientCaller:
         delay = backoff_delay(attempt)
         logger.warning(
             "Provider transient failure (%s); retry %s/%s after %.0fms",
-            reason, attempt, budget, delay * 1000,
+            reason,
+            attempt,
+            budget,
+            delay * 1000,
         )
         await asyncio.sleep(delay)
 

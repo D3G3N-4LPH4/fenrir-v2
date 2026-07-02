@@ -44,21 +44,21 @@ Usage
 
 import json
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Cooldown helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
+        return dt.replace(tzinfo=UTC)
     return dt
 
 
@@ -81,7 +81,7 @@ def parse_cooldown_from_exit_plan(exit_plan: str | None) -> datetime | None:
     if idx == -1:
         return None
     # Grab the first token after the colon
-    raw_ts = exit_plan[idx + len(marker):].strip().split()[0].rstrip(",;.")
+    raw_ts = exit_plan[idx + len(marker) :].strip().split()[0].rstrip(",;.")
     try:
         # Normalise trailing Z → +00:00
         if raw_ts.endswith("Z"):
@@ -121,6 +121,7 @@ def apply_exit_plan_to_position(position: Any, exit_plan: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 #  Context builder
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def build_batched_exit_context(
     positions: dict[str, Any],
@@ -165,16 +166,12 @@ def build_batched_exit_context(
 
         # Hold time since entry
         entry_time = getattr(pos, "entry_time", _now_utc())
-        hold_minutes = int(
-            (_now_utc() - _ensure_utc(entry_time)).total_seconds() / 60
-        )
+        hold_minutes = int((_now_utc() - _ensure_utc(entry_time)).total_seconds() / 60)
 
         # Peak and drawdown
         peak_price = getattr(pos, "peak_price", pos.entry_price) or pos.entry_price
         drawdown_pct = (
-            (peak_price - pos.current_price) / peak_price * 100
-            if peak_price > 0
-            else 0.0
+            (peak_price - pos.current_price) / peak_price * 100 if peak_price > 0 else 0.0
         )
 
         section: dict = {
@@ -209,36 +206,42 @@ def build_batched_exit_context(
         position_sections.append(section)
         active_addresses.append(addr)
 
-    payload = OrderedDict([
-        ("current_time", now_iso),
-        ("account", {
-            "wallet_balance_sol": round(wallet_balance_sol, 4),
-            "num_positions": portfolio_summary.get("num_positions", len(positions)),
-            "total_invested_sol": round(
-                portfolio_summary.get("total_invested_sol", 0.0), 4
+    payload = OrderedDict(
+        [
+            ("current_time", now_iso),
+            (
+                "account",
+                {
+                    "wallet_balance_sol": round(wallet_balance_sol, 4),
+                    "num_positions": portfolio_summary.get("num_positions", len(positions)),
+                    "total_invested_sol": round(
+                        portfolio_summary.get("total_invested_sol", 0.0), 4
+                    ),
+                    "current_value_sol": round(portfolio_summary.get("current_value_sol", 0.0), 4),
+                    "total_pnl_sol": round(portfolio_summary.get("total_pnl_sol", 0.0), 4),
+                    "total_pnl_pct": round(portfolio_summary.get("total_pnl_pct", 0.0), 2),
+                },
             ),
-            "current_value_sol": round(
-                portfolio_summary.get("current_value_sol", 0.0), 4
+            ("positions", position_sections),
+            ("session_context", session_memory_block or ""),
+            ("recent_diary", (recent_diary or [])[-10:]),
+            (
+                "instructions",
+                {
+                    "task": "Evaluate exit actions for all listed positions.",
+                    "token_addresses": active_addresses,
+                    "requirement": (
+                        "Return one exit_decision per token_address in the order listed. "
+                        "For each, write an exit_plan that encodes your hold conditions and "
+                        "any self-imposed cooldown using the format: "
+                        "'cooldown_until: <ISO timestamp UTC>'. "
+                        "If a mechanical_trigger_fired is present, you may OVERRIDE_HOLD to "
+                        "keep the position open — explain clearly why the trigger is premature. "
+                        "Respect prior_ai_exit_plan unless its conditions have been invalidated."
+                    ),
+                },
             ),
-            "total_pnl_sol": round(portfolio_summary.get("total_pnl_sol", 0.0), 4),
-            "total_pnl_pct": round(portfolio_summary.get("total_pnl_pct", 0.0), 2),
-        }),
-        ("positions", position_sections),
-        ("session_context", session_memory_block or ""),
-        ("recent_diary", (recent_diary or [])[-10:]),
-        ("instructions", {
-            "task": "Evaluate exit actions for all listed positions.",
-            "token_addresses": active_addresses,
-            "requirement": (
-                "Return one exit_decision per token_address in the order listed. "
-                "For each, write an exit_plan that encodes your hold conditions and "
-                "any self-imposed cooldown using the format: "
-                "'cooldown_until: <ISO timestamp UTC>'. "
-                "If a mechanical_trigger_fired is present, you may OVERRIDE_HOLD to "
-                "keep the position open — explain clearly why the trigger is premature. "
-                "Respect prior_ai_exit_plan unless its conditions have been invalidated."
-            ),
-        }),
-    ])
+        ]
+    )
 
     return json.dumps(payload, default=str), active_addresses

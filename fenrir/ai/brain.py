@@ -121,7 +121,9 @@ class ClaudeBrain:
             healthy, status_msg = await self.analyst.health_check()
             if not healthy:
                 self.logger.warning(f"🦙 Local model health check FAILED: {status_msg}")
-                self.logger.warning("   Falling back to cloud API. Fix local server to use abliterated model.")
+                self.logger.warning(
+                    "   Falling back to cloud API. Fix local server to use abliterated model."
+                )
                 # Fall back to cloud analyst
                 self.analyst = AITradingAnalyst(
                     api_key=self.config.ai_api_key,
@@ -132,7 +134,9 @@ class ClaudeBrain:
                     db_path=self._db_path,
                 )
                 await self.analyst.initialize()
-                self.logger.info(f"🧠 AI Brain: ONLINE (cloud fallback, model={self.config.ai_model})")
+                self.logger.info(
+                    f"🧠 AI Brain: ONLINE (cloud fallback, model={self.config.ai_model})"
+                )
             else:
                 self.logger.info(
                     f"🦙 AI Brain: LOCAL ONLINE (model={self.config.ai_local_model_name}, "
@@ -495,8 +499,13 @@ class ClaudeBrain:
         curve_state = token_data.get("bonding_curve_state")
         return TokenMetadata(
             token_mint=token_data["token_address"],
-            name=cast(str, self._sanitize_metadata_field(token_data.get("name", "Unknown"), max_length=100)),
-            symbol=cast(str, self._sanitize_metadata_field(token_data.get("symbol", "???"), max_length=20)),
+            name=cast(
+                str,
+                self._sanitize_metadata_field(token_data.get("name", "Unknown"), max_length=100),
+            ),
+            symbol=cast(
+                str, self._sanitize_metadata_field(token_data.get("symbol", "???"), max_length=20)
+            ),
             description=self._sanitize_metadata_field(
                 token_data.get("description"), max_length=500
             ),

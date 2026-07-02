@@ -19,14 +19,13 @@ import hashlib
 import logging
 import re
 import time
-from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from dataclasses import dataclass
+from typing import Any
 
 import aiohttp
 
 from fenrir.core.circuit_breaker import CircuitBreaker, CircuitOpen
-from fenrir.events.bus import EventListener
-from fenrir.events.types import EventSeverity, TradeEvent
 from fenrir.events.alert_evaluator import (
     TIER_CONFIG,
     AlertEvaluation,
@@ -36,6 +35,8 @@ from fenrir.events.alert_evaluator import (
     llm_response_to_evaluation,
     parse_llm_json,
 )
+from fenrir.events.bus import EventListener
+from fenrir.events.types import EventSeverity, TradeEvent
 
 logger = logging.getLogger(__name__)
 
@@ -166,9 +167,7 @@ class TelegramAdapter(EventListener):
     async def _send_message(self, text: str) -> None:
         """Send a message via Telegram Bot API."""
         if not self._session:
-            self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=10)
-            )
+            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
 
         if self._breaker:
             try:
@@ -208,6 +207,7 @@ class TelegramAdapter(EventListener):
 
 # ─── Internal records for v2 ──────────────────────────────────────────────────
 
+
 @dataclass
 class _AlertRecord:
     tier: str
@@ -216,6 +216,7 @@ class _AlertRecord:
 
 
 # ─── TelegramAdapterV2 ────────────────────────────────────────────────────────
+
 
 class TelegramAdapterV2:
     """
@@ -244,18 +245,18 @@ class TelegramAdapterV2:
     """
 
     BUILTIN_COMMANDS = {
-        "/help":   "Show available commands",
-        "/mute":   "Mute alerts for 1h (or /mute 2h)",
+        "/help": "Show available commands",
+        "/mute": "Mute alerts for 1h (or /mute 2h)",
         "/unmute": "Resume alerts",
         "/alerts": "Show recent alert history",
     }
 
     KNOWN_COMMANDS = {
-        "/status":    "System health, last sweep time, source status",
-        "/sweep":     "Trigger a manual scoring sweep",
-        "/brief":     "Compact summary of the latest intelligence",
+        "/status": "System health, last sweep time, source status",
+        "/sweep": "Trigger a manual scoring sweep",
+        "/brief": "Compact summary of the latest intelligence",
         "/positions": "Current open positions and P&L",
-        "/budget":    "Budget tracker status and exposure",
+        "/budget": "Budget tracker status and exposure",
         **BUILTIN_COMMANDS,
     }
 
@@ -332,11 +333,11 @@ class TelegramAdapterV2:
 
     def _wire_event_bus(self) -> None:
         bus = self.event_bus
-        bus.subscribe("ALERT_REQUESTED",  self._on_alert_requested)
-        bus.subscribe("POSITION_OPENED",  self._on_position_opened)
-        bus.subscribe("POSITION_CLOSED",  self._on_position_closed)
-        bus.subscribe("BUDGET_ALERT",     self._on_budget_alert)
-        bus.subscribe("SYSTEM_HEALTH",    self._on_system_health)
+        bus.subscribe("ALERT_REQUESTED", self._on_alert_requested)
+        bus.subscribe("POSITION_OPENED", self._on_position_opened)
+        bus.subscribe("POSITION_CLOSED", self._on_position_closed)
+        bus.subscribe("BUDGET_ALERT", self._on_budget_alert)
+        bus.subscribe("SYSTEM_HEALTH", self._on_system_health)
 
     async def _on_alert_requested(self, payload: dict) -> None:
         try:
@@ -365,9 +366,7 @@ class TelegramAdapterV2:
         reason = payload.get("reason", "unknown")
         emoji = "✅" if pnl >= 0 else "🔴"
         msg = (
-            f"{emoji} *Position Closed*\n\n"
-            f"`{token}`\n"
-            f"P&L: `{'%+.2f' % pnl}%` | Reason: {reason}"
+            f"{emoji} *Position Closed*\n\n" f"`{token}`\n" f"P&L: `{pnl:+.2f}%` | Reason: {reason}"
         )
         await self.send_message(msg)
 
@@ -412,7 +411,9 @@ class TelegramAdapterV2:
             return False
 
         if not self._check_rate_limit(evaluation.tier):
-            await self._publish("TELEGRAM_SUPPRESSED", {"reason": f"rate_limited:{evaluation.tier}"})
+            await self._publish(
+                "TELEGRAM_SUPPRESSED", {"reason": f"rate_limited:{evaluation.tier}"}
+            )
             return False
 
         message = self._format_tiered_alert(evaluation, delta_direction)
@@ -422,12 +423,15 @@ class TelegramAdapterV2:
             for sig in fresh_signals:
                 self._record_content_hash(sig)
             self._record_alert(evaluation.tier, evaluation.headline)
-            await self._publish("TELEGRAM_SENT", {
-                "tier": evaluation.tier,
-                "headline": evaluation.headline,
-                "message_id": result.get("message_id"),
-                "token_address": token_address,
-            })
+            await self._publish(
+                "TELEGRAM_SENT",
+                {
+                    "tier": evaluation.tier,
+                    "headline": evaluation.headline,
+                    "message_id": result.get("message_id"),
+                    "token_address": token_address,
+                },
+            )
             logger.info("[Telegram v2] %s alert sent: %s", evaluation.tier, evaluation.headline)
             return True
 
@@ -597,7 +601,7 @@ class TelegramAdapterV2:
                     continue
                 await self._handle_message(msg)
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         except Exception as exc:
             if "aborted" not in str(exc).lower():
@@ -618,13 +622,19 @@ class TelegramAdapterV2:
         message_id = msg.get("message_id")
 
         if command == "/help":
-            all_commands = {**self.KNOWN_COMMANDS, **{
-                cmd: "Custom command" for cmd in self._command_handlers
-                if cmd not in self.KNOWN_COMMANDS
-            }}
+            all_commands = {
+                **self.KNOWN_COMMANDS,
+                **{
+                    cmd: "Custom command"
+                    for cmd in self._command_handlers
+                    if cmd not in self.KNOWN_COMMANDS
+                },
+            }
             lines = [f"{cmd} — {desc}" for cmd, desc in all_commands.items()]
             await self.send_message(
-                f"🐺 *FENRIR COMMANDS*\n\n" + "\n".join(lines) + "\n\n_Commands are case-insensitive_",
+                "🐺 *FENRIR COMMANDS*\n\n"
+                + "\n".join(lines)
+                + "\n\n_Commands are case-insensitive_",
                 chat_id=reply_chat_id,
                 reply_to_message_id=message_id,
             )
@@ -643,13 +653,17 @@ class TelegramAdapterV2:
 
         if command == "/unmute":
             self._mute_until = None
-            await self.send_message("🔔 Alerts resumed.", chat_id=reply_chat_id, reply_to_message_id=message_id)
+            await self.send_message(
+                "🔔 Alerts resumed.", chat_id=reply_chat_id, reply_to_message_id=message_id
+            )
             return
 
         if command == "/alerts":
             recent = self._alert_history[-10:]
             if not recent:
-                await self.send_message("No recent alerts.", chat_id=reply_chat_id, reply_to_message_id=message_id)
+                await self.send_message(
+                    "No recent alerts.", chat_id=reply_chat_id, reply_to_message_id=message_id
+                )
                 return
             lines = [
                 f"{TIER_CONFIG[r.tier]['emoji']} {r.tier} — "
@@ -669,10 +683,16 @@ class TelegramAdapterV2:
             try:
                 response = await handler(args, message_id)
                 if response:
-                    await self.send_message(response, chat_id=reply_chat_id, reply_to_message_id=message_id)
+                    await self.send_message(
+                        response, chat_id=reply_chat_id, reply_to_message_id=message_id
+                    )
             except Exception as exc:
                 logger.error("[Telegram v2] Command %s error: %s", command, exc)
-                await self.send_message(f"❌ Command failed: {exc}", chat_id=reply_chat_id, reply_to_message_id=message_id)
+                await self.send_message(
+                    f"❌ Command failed: {exc}",
+                    chat_id=reply_chat_id,
+                    reply_to_message_id=message_id,
+                )
 
     def _normalize_command(self, raw: str) -> str | None:
         if not raw.startswith("/"):
@@ -681,7 +701,7 @@ class TelegramAdapterV2:
         if at_idx == -1:
             return raw
         command = raw[:at_idx]
-        mentioned_bot = raw[at_idx + 1:].lower()
+        mentioned_bot = raw[at_idx + 1 :].lower()
         if not self._bot_username or mentioned_bot == self._bot_username:
             return command
         return None
@@ -726,11 +746,15 @@ class TelegramAdapterV2:
             elapsed = now - same_tier[-1].timestamp
             if elapsed < config["cooldown_s"]:
                 return False
-        recent_count = sum(1 for r in self._alert_history if r.tier == tier and r.timestamp > now - 3600)
+        recent_count = sum(
+            1 for r in self._alert_history if r.tier == tier and r.timestamp > now - 3600
+        )
         return bool(recent_count < config["max_per_hour"])
 
     def _record_alert(self, tier: str, headline: str) -> None:
-        self._alert_history.append(_AlertRecord(tier=tier, timestamp=time.time(), headline=headline))
+        self._alert_history.append(
+            _AlertRecord(tier=tier, timestamp=time.time(), headline=headline)
+        )
         if len(self._alert_history) > 50:
             self._alert_history = self._alert_history[-50:]
 
@@ -746,7 +770,9 @@ class TelegramAdapterV2:
 
     def _format_tiered_alert(self, evaluation: AlertEvaluation, direction: str) -> str:
         tc = TIER_CONFIG.get(evaluation.tier, TIER_CONFIG["ROUTINE"])
-        confidence_emoji = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "⚪"}.get(evaluation.confidence, "⚪")
+        confidence_emoji = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "⚪"}.get(
+            evaluation.confidence, "⚪"
+        )
 
         lines = [
             f"{tc['emoji']} *FENRIR {tc['label']}*",
@@ -770,7 +796,10 @@ class TelegramAdapterV2:
             for sig in evaluation.signals:
                 lines.append(f"• {_escape_md(sig)}")
 
-        lines += ["", f"_{time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())} · {evaluation.source}_"]
+        lines += [
+            "",
+            f"_{time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())} · {evaluation.source}_",
+        ]
         return "\n".join(lines)
 
     # ─── Bot Setup ────────────────────────────────────────────────────────────
@@ -841,6 +870,7 @@ class TelegramAdapterV2:
 
 
 # ─── Utilities ────────────────────────────────────────────────────────────────
+
 
 def _escape_md(text: str) -> str:
     """Escape legacy Markdown special characters for Telegram."""

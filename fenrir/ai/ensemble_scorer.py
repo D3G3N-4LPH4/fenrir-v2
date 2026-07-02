@@ -82,8 +82,8 @@ class ModelScore:
     """Score returned by a single model in the ensemble."""
 
     model: str
-    score: float          # 0–100 (confidence * 100 normalised)
-    decision: str         # "BUY" or "SKIP"
+    score: float  # 0–100 (confidence * 100 normalised)
+    decision: str  # "BUY" or "SKIP"
     reasoning: str
     failed: bool = False
     error: str | None = None
@@ -100,19 +100,23 @@ class EnsembleResult:
 
     conviction: ConvictionLevel
     primary: ModelScore
-    secondary: ModelScore | None   # None when sol_amount < sol_threshold
-    position_multiplier: float     # 1.0 | 0.5 | 0.0
-    final_score: float             # Consensus score (avg if both, primary if solo)
+    secondary: ModelScore | None  # None when sol_amount < sol_threshold
+    position_multiplier: float  # 1.0 | 0.5 | 0.0
+    final_score: float  # Consensus score (avg if both, primary if solo)
     disagreement_reason: str | None = None
 
     @property
     def should_trade(self) -> bool:
         """True for HIGH_CONVICTION, LOW_CONVICTION, and DEGRADED (with caveat)."""
-        return self.conviction in (
-            ConvictionLevel.HIGH_CONVICTION,
-            ConvictionLevel.LOW_CONVICTION,
-            ConvictionLevel.DEGRADED,
-        ) and self.position_multiplier > 0.0
+        return (
+            self.conviction
+            in (
+                ConvictionLevel.HIGH_CONVICTION,
+                ConvictionLevel.LOW_CONVICTION,
+                ConvictionLevel.DEGRADED,
+            )
+            and self.position_multiplier > 0.0
+        )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -160,8 +164,8 @@ class EnsembleScorer:
     def __init__(
         self,
         api_key: str,
-        sol_threshold: float = 0.5,         # Below → primary only
-        score_threshold: float = 70.0,       # BUY vs SKIP cutoff
+        sol_threshold: float = 0.5,  # Below → primary only
+        score_threshold: float = 70.0,  # BUY vs SKIP cutoff
         divergence_threshold: float = 20.0,  # Score gap → LOW_CONVICTION
         timeout_seconds: float = 10.0,
     ):
@@ -175,9 +179,7 @@ class EnsembleScorer:
     async def initialize(self) -> None:
         """Open the shared aiohttp session."""
         if not self._session:
-            self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=self.timeout)
-            )
+            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout))
 
     async def close(self) -> None:
         """Close the aiohttp session."""
@@ -280,7 +282,7 @@ class EnsembleScorer:
                 content = data["choices"][0]["message"]["content"]
                 return self._parse(model, content)
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("EnsembleScorer %s: timeout after %.1fs", model, self.timeout)
             return ModelScore(
                 model=model,
@@ -395,8 +397,8 @@ class EnsembleScorer:
         divergence = abs(p_score - s_score)
         avg_score = (p_score + s_score) / 2.0
 
-        both_buy = (p_score >= self.score_threshold and s_score >= self.score_threshold)
-        both_skip = (p_score < self.score_threshold and s_score < self.score_threshold)
+        both_buy = p_score >= self.score_threshold and s_score >= self.score_threshold
+        both_skip = p_score < self.score_threshold and s_score < self.score_threshold
 
         if both_buy:
             return EnsembleResult(

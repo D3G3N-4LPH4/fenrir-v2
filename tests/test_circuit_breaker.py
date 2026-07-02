@@ -26,10 +26,10 @@ from fenrir.core.circuit_breaker import (
     ServiceBreakers,
 )
 
-
 # ═══════════════════════════════════════════════════════════════════
 #  Helpers
 # ═══════════════════════════════════════════════════════════════════
+
 
 def fast_cfg(
     failure_threshold: int = 3,
@@ -57,6 +57,7 @@ def trip(cb: CircuitBreaker, n: int, reason: str = "err") -> None:
 # ═══════════════════════════════════════════════════════════════════
 #  CLOSED state
 # ═══════════════════════════════════════════════════════════════════
+
 
 class TestClosed:
     def test_starts_closed(self):
@@ -105,6 +106,7 @@ class TestClosed:
 # ═══════════════════════════════════════════════════════════════════
 #  OPEN state
 # ═══════════════════════════════════════════════════════════════════
+
 
 class TestOpen:
     def test_check_raises_when_open(self):
@@ -157,6 +159,7 @@ class TestOpen:
 #  HALF_OPEN state
 # ═══════════════════════════════════════════════════════════════════
 
+
 class TestHalfOpen:
     def _make_half_open(self, **kwargs) -> CircuitBreaker:
         cb = make_cb(failure_threshold=1, recovery_timeout_s=0.0, **kwargs)
@@ -206,6 +209,7 @@ class TestHalfOpen:
 # ═══════════════════════════════════════════════════════════════════
 #  guard() context manager
 # ═══════════════════════════════════════════════════════════════════
+
 
 class TestGuard:
     @pytest.mark.asyncio
@@ -279,6 +283,7 @@ class TestGuard:
 #  Stats
 # ═══════════════════════════════════════════════════════════════════
 
+
 class TestStats:
     def test_stats_shape(self):
         cb = make_cb()
@@ -312,6 +317,7 @@ class TestStats:
 #  Manual reset
 # ═══════════════════════════════════════════════════════════════════
 
+
 class TestReset:
     def test_reset_closes_open_breaker(self):
         cb = make_cb(failure_threshold=1)
@@ -331,6 +337,7 @@ class TestReset:
 # ═══════════════════════════════════════════════════════════════════
 #  on_state_change callback
 # ═══════════════════════════════════════════════════════════════════
+
 
 class TestCallback:
     def test_callback_receives_transition_args(self):
@@ -353,6 +360,7 @@ class TestCallback:
 # ═══════════════════════════════════════════════════════════════════
 #  ServiceBreakers registry
 # ═══════════════════════════════════════════════════════════════════
+
 
 class TestServiceBreakers:
     def test_all_four_services_exist(self):

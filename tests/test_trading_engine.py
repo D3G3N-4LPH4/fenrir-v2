@@ -9,7 +9,7 @@ Run with: pytest tests/test_trading_engine.py -v
 """
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,7 +17,7 @@ import pytest
 from fenrir.config import BotConfig, TradingMode
 from fenrir.core.positions import Position, PositionManager
 from fenrir.protocol.pumpfun import BondingCurveState
-from fenrir.trading.engine import LAMPORTS_PER_SOL, TradingEngine
+from fenrir.trading.engine import TradingEngine
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -44,7 +44,7 @@ MIGRATED_CURVE = BondingCurveState(
 )
 
 
-def _make_token_data(curve: Optional[BondingCurveState] = None) -> dict:
+def _make_token_data(curve: BondingCurveState | None = None) -> dict:
     data: dict[str, Any] = {"token_address": FAKE_TOKEN}
     if curve is not None:
         data["bonding_curve_state"] = curve

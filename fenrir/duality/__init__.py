@@ -70,39 +70,76 @@ RULES FOR STRATEGY AUTHORS
   - Skip recorder.record() — you lose incident replay capability
 """
 
-from .protocols import (
-    DataFeed, OrderRouter, ContextProvider, ExecutionRecorder,
-    TokenInfo, Position, OrderResult, OrderSide,
-    ClaudeDecision, DecisionAction,
-    OnChainSnapshot, SocialSnapshot,
-)
 from .backtest_impls import (
-    HistoricalDataFeed, SimulatedRouter, BacktestContextProvider,
-    BacktestRecorder, SlippageModel, ZeroSlippageModel,
-)
-from .replay_and_art import (
-    ARTExporter, ARTSample, PreferencePair,
-    IncidentReplayer, LiveExecutionRecorder,
-    REWARD_MAP,
+    BacktestContextProvider,
+    BacktestRecorder,
+    HistoricalDataFeed,
+    SimulatedRouter,
+    SlippageModel,
+    ZeroSlippageModel,
 )
 from .execution_engine import (
-    run_backtest, run_live, BacktestResult, PromptTester,
+    BacktestResult,
     ExampleSniperStrategy,
+    PromptTester,
+    run_backtest,
+    run_live,
+)
+from .protocols import (
+    ClaudeDecision,
+    ContextProvider,
+    DataFeed,
+    DecisionAction,
+    ExecutionRecorder,
+    OnChainSnapshot,
+    OrderResult,
+    OrderRouter,
+    OrderSide,
+    Position,
+    SocialSnapshot,
+    TokenInfo,
+)
+from .replay_and_art import (
+    REWARD_MAP,
+    ARTExporter,
+    ARTSample,
+    IncidentReplayer,
+    LiveExecutionRecorder,
+    PreferencePair,
 )
 
 __all__ = [
     # Protocols
-    "DataFeed", "OrderRouter", "ContextProvider", "ExecutionRecorder",
-    "TokenInfo", "Position", "OrderResult", "OrderSide",
-    "ClaudeDecision", "DecisionAction",
-    "OnChainSnapshot", "SocialSnapshot",
+    "DataFeed",
+    "OrderRouter",
+    "ContextProvider",
+    "ExecutionRecorder",
+    "TokenInfo",
+    "Position",
+    "OrderResult",
+    "OrderSide",
+    "ClaudeDecision",
+    "DecisionAction",
+    "OnChainSnapshot",
+    "SocialSnapshot",
     # Backtest
-    "HistoricalDataFeed", "SimulatedRouter", "BacktestContextProvider",
-    "BacktestRecorder", "SlippageModel", "ZeroSlippageModel",
+    "HistoricalDataFeed",
+    "SimulatedRouter",
+    "BacktestContextProvider",
+    "BacktestRecorder",
+    "SlippageModel",
+    "ZeroSlippageModel",
     # ART
-    "ARTExporter", "ARTSample", "PreferencePair",
-    "IncidentReplayer", "LiveExecutionRecorder", "REWARD_MAP",
+    "ARTExporter",
+    "ARTSample",
+    "PreferencePair",
+    "IncidentReplayer",
+    "LiveExecutionRecorder",
+    "REWARD_MAP",
     # Engine
-    "run_backtest", "run_live", "BacktestResult", "PromptTester",
+    "run_backtest",
+    "run_live",
+    "BacktestResult",
+    "PromptTester",
     "ExampleSniperStrategy",
 ]

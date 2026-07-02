@@ -93,8 +93,8 @@ class TradingStrategy(ABC):
     description: str = ""
 
     # ── Limits ────────────────────────────────────────────────
-    budget_sol: float = 1.0                # Daily SOL budget
-    max_concurrent_positions: int = 3       # Max open positions at once
+    budget_sol: float = 1.0  # Daily SOL budget
+    max_concurrent_positions: int = 3  # Max open positions at once
 
     # ── State ─────────────────────────────────────────────────
     state: StrategyState = field(default_factory=StrategyState)
@@ -102,7 +102,7 @@ class TradingStrategy(ABC):
     def __init_subclass__(cls, **kwargs):
         """Ensure subclasses have required class attributes."""
         super().__init_subclass__(**kwargs)
-        if not hasattr(cls, 'strategy_id') or cls.strategy_id == "base":
+        if not hasattr(cls, "strategy_id") or cls.strategy_id == "base":
             if cls.__name__ != "TradingStrategy":
                 pass  # Allow abstract subclasses
 

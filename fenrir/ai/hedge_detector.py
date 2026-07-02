@@ -45,36 +45,36 @@ from collections import deque
 # Epistemic hedge phrases — stripped from response text.
 # Ordered from most to least specific to avoid partial-match side-effects.
 _HEDGE_PATTERNS: list[re.Pattern] = [
-    re.compile(r"\bI\s+think\b",          re.I),
-    re.compile(r"\bI\s+believe\b",        re.I),
-    re.compile(r"\bI\s+feel\b",           re.I),
-    re.compile(r"\bI\s+suspect\b",        re.I),
-    re.compile(r"\bperhaps\b",            re.I),
-    re.compile(r"\bmaybe\b",              re.I),
-    re.compile(r"\bit\s+seems?\b",        re.I),
-    re.compile(r"\bseems?\s+to\b",        re.I),
-    re.compile(r"\bpotentially\b",        re.I),
-    re.compile(r"\bmight\b",              re.I),
-    re.compile(r"\bcould\s+be\b",         re.I),
-    re.compile(r"\bapproximately\b",      re.I),
-    re.compile(r"\bsomewhat\b",           re.I),
-    re.compile(r"\brather\b",             re.I),
-    re.compile(r"\bfairly\b",             re.I),
-    re.compile(r"\bsort\s+of\b",          re.I),
-    re.compile(r"\bkind\s+of\b",          re.I),
-    re.compile(r"\baround\b",             re.I),  # "around 0.7"
-    re.compile(r"\babout\b",              re.I),  # "about 75 score"
+    re.compile(r"\bI\s+think\b", re.I),
+    re.compile(r"\bI\s+believe\b", re.I),
+    re.compile(r"\bI\s+feel\b", re.I),
+    re.compile(r"\bI\s+suspect\b", re.I),
+    re.compile(r"\bperhaps\b", re.I),
+    re.compile(r"\bmaybe\b", re.I),
+    re.compile(r"\bit\s+seems?\b", re.I),
+    re.compile(r"\bseems?\s+to\b", re.I),
+    re.compile(r"\bpotentially\b", re.I),
+    re.compile(r"\bmight\b", re.I),
+    re.compile(r"\bcould\s+be\b", re.I),
+    re.compile(r"\bapproximately\b", re.I),
+    re.compile(r"\bsomewhat\b", re.I),
+    re.compile(r"\brather\b", re.I),
+    re.compile(r"\bfairly\b", re.I),
+    re.compile(r"\bsort\s+of\b", re.I),
+    re.compile(r"\bkind\s+of\b", re.I),
+    re.compile(r"\baround\b", re.I),  # "around 0.7"
+    re.compile(r"\babout\b", re.I),  # "about 75 score"
 ]
 
 # Preamble phrases that precede the actual analysis.
 # These are typically sentence-initial and safe to remove entirely.
 _PREAMBLE_PATTERNS: list[re.Pattern] = [
-    re.compile(r"^Based\s+on\b[^,\n]*,?\s*",        re.I | re.M),
-    re.compile(r"^Looking\s+at\b[^,\n]*,?\s*",       re.I | re.M),
-    re.compile(r"^Given\s+the\b[^,\n]*,?\s*",        re.I | re.M),
+    re.compile(r"^Based\s+on\b[^,\n]*,?\s*", re.I | re.M),
+    re.compile(r"^Looking\s+at\b[^,\n]*,?\s*", re.I | re.M),
+    re.compile(r"^Given\s+the\b[^,\n]*,?\s*", re.I | re.M),
     re.compile(r"^Considering\s+that\b[^,\n]*,?\s*", re.I | re.M),
-    re.compile(r"^Analyzing\s+the\b[^,\n]*,?\s*",    re.I | re.M),
-    re.compile(r"^From\s+the\b[^,\n]*,?\s*",         re.I | re.M),
+    re.compile(r"^Analyzing\s+the\b[^,\n]*,?\s*", re.I | re.M),
+    re.compile(r"^From\s+the\b[^,\n]*,?\s*", re.I | re.M),
     re.compile(r"^Taking\s+into\s+account\b[^,\n]*,?\s*", re.I | re.M),
     re.compile(r"^After\s+(reviewing|analyzing|considering)\b[^,\n]*,?\s*", re.I | re.M),
 ]

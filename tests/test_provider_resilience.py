@@ -26,16 +26,18 @@ from fenrir.ai.provider_resilience import (
 )
 from fenrir.core.circuit_breaker import CircuitBreaker, CircuitBreakerConfig
 
-
 # ═══════════════════════════════════════════════════════════════════
 #  Fakes — minimal aiohttp session/response doubles
 # ═══════════════════════════════════════════════════════════════════
+
 
 class FakeResp:
     def __init__(self, status, body="", json_data=None):
         self.status = status
         self._body = body
-        self._json = json_data if json_data is not None else {"choices": [{"message": {"content": "{}"}}]}
+        self._json = (
+            json_data if json_data is not None else {"choices": [{"message": {"content": "{}"}}]}
+        )
         self.request_info = SimpleNamespace(real_url="http://test", method="POST")
         self.history = ()
 
@@ -78,6 +80,7 @@ class FakeSession:
 @pytest.fixture(autouse=True)
 def _no_real_sleep(monkeypatch):
     """Make backoff instantaneous so tests don't actually wait."""
+
     async def fake_sleep(_seconds):
         return None
 
@@ -98,6 +101,7 @@ BASE_PAYLOAD = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
 # ═══════════════════════════════════════════════════════════════════
 #  classify_error
 # ═══════════════════════════════════════════════════════════════════
+
 
 def test_classify_terminal_status():
     assert classify_error(401, "") == "terminal"
@@ -135,6 +139,7 @@ def test_classify_unknown_defaults_terminal():
 #  backoff_delay
 # ═══════════════════════════════════════════════════════════════════
 
+
 def test_backoff_schedule():
     assert backoff_delay(1) == pytest.approx(0.200)
     assert backoff_delay(2) == pytest.approx(0.400)
@@ -150,6 +155,7 @@ def test_backoff_capped():
 #  post() — transient retry
 # ═══════════════════════════════════════════════════════════════════
 
+
 async def test_transient_503_then_success():
     ok = FakeResp(200, json_data={"choices": [{"message": {"content": "ok"}}]})
     caller, session = make_caller([FakeResp(503, "overloaded"), ok])
@@ -162,9 +168,7 @@ async def test_transient_503_then_success():
 
 async def test_network_error_then_success():
     ok = FakeResp(200, json_data={"choices": [{"message": {"content": "ok"}}]})
-    caller, session = make_caller(
-        [aiohttp.ClientConnectionError("connection reset"), ok]
-    )
+    caller, session = make_caller([aiohttp.ClientConnectionError("connection reset"), ok])
 
     result = await caller.post(payload=BASE_PAYLOAD)
 
@@ -186,6 +190,7 @@ async def test_transient_budget_exhausted_raises():
 # ═══════════════════════════════════════════════════════════════════
 #  post() — terminal / overflow are NOT retried
 # ═══════════════════════════════════════════════════════════════════
+
 
 async def test_terminal_401_not_retried():
     caller, session = make_caller([FakeResp(401, "incorrect api key")])
@@ -209,6 +214,7 @@ async def test_overflow_not_retried():
 #  post() — capability degradation still works
 # ═══════════════════════════════════════════════════════════════════
 
+
 async def test_structured_output_degradation():
     err_body = '{"error": {"message": "response_format not supported"}}'
     ok = FakeResp(200, json_data={"choices": [{"message": {"content": "ok"}}]})
@@ -226,6 +232,7 @@ async def test_structured_output_degradation():
 #  post() — deadline guard
 # ═══════════════════════════════════════════════════════════════════
 
+
 async def test_deadline_skips_retry():
     # deadline_s=0 → no backoff sleep can ever fit → first transient error
     # is raised immediately without retrying.
@@ -241,14 +248,13 @@ async def test_deadline_skips_retry():
 #  CircuitBreaker interaction — one failure per call, not per attempt
 # ═══════════════════════════════════════════════════════════════════
 
+
 async def test_breaker_records_single_failure_per_call():
     breaker = CircuitBreaker(
         "TEST", CircuitBreakerConfig(failure_threshold=3, recovery_timeout_s=60.0)
     )
     # 3 transient failures within ONE post() call (initial + 2 retries).
-    caller, session = make_caller(
-        [FakeResp(503, "overloaded")] * 3, breaker=breaker
-    )
+    caller, session = make_caller([FakeResp(503, "overloaded")] * 3, breaker=breaker)
 
     with pytest.raises(aiohttp.ClientResponseError):
         await caller.post(payload=BASE_PAYLOAD, transient_retries=2)

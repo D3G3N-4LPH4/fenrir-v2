@@ -317,7 +317,9 @@ class PriceFeedManager:
         if not fresh_quotes:
             # Warn and fall back to stale quotes rather than returning nothing
             stale_ages = [f"{q.source.value}:{q.age_seconds():.0f}s" for q in quotes]
-            logger.warning("All price quotes are stale (%s) — using stale data", ", ".join(stale_ages))
+            logger.warning(
+                "All price quotes are stale (%s) — using stale data", ", ".join(stale_ages)
+            )
             fresh_quotes = quotes
 
         # Calculate weighted average

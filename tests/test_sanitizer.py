@@ -17,7 +17,6 @@ import pytest
 
 from fenrir.data.sanitizer import InputSanitizer, SanitizedInput, security_event
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 #  FIXTURES
 # ═══════════════════════════════════════════════════════════════════════════
@@ -321,6 +320,7 @@ class TestSanitizeTokenMetadata:
 class TestSecurityEventFactory:
     def test_returns_trade_event(self):
         from fenrir.events.types import TradeEvent
+
         event = security_event(
             token_address="ABC123",
             field_name="description",
@@ -334,6 +334,7 @@ class TestSecurityEventFactory:
 
     def test_event_severity_critical(self):
         from fenrir.events.types import EventSeverity
+
         event = security_event("addr", "name", 0.9, ["score_assignment"])
         assert event.severity == EventSeverity.CRITICAL
 

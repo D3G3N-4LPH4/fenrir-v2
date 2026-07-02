@@ -81,8 +81,8 @@ class SamplingParams:
     Pass as kwargs to the LLM API payload.
     """
 
-    temperature: float = 0.3       # [0.1, 0.9]
-    top_p: float = 0.9             # [0.1, 1.0]
+    temperature: float = 0.3  # [0.1, 0.9]
+    top_p: float = 0.9  # [0.1, 1.0]
     frequency_penalty: float = 0.0  # [0.0, 2.0]
 
     def clamp(self) -> SamplingParams:
@@ -114,12 +114,12 @@ class SamplingParams:
 
 _DEFAULTS: dict[MarketRegime, SamplingParams] = {
     MarketRegime.SNIPE: SamplingParams(
-        temperature=0.3,   # Decisive, fast
+        temperature=0.3,  # Decisive, fast
         top_p=0.90,
         frequency_penalty=0.0,
     ),
     MarketRegime.GRADUATION: SamplingParams(
-        temperature=0.2,   # Conservative, calculated
+        temperature=0.2,  # Conservative, calculated
         top_p=0.85,
         frequency_penalty=0.1,  # Penalise repetitive hedging
     ),
@@ -129,12 +129,12 @@ _DEFAULTS: dict[MarketRegime, SamplingParams] = {
         frequency_penalty=0.0,
     ),
     MarketRegime.HIGH_VOLATILITY: SamplingParams(
-        temperature=0.5,   # More exploratory under uncertainty
+        temperature=0.5,  # More exploratory under uncertainty
         top_p=0.95,
         frequency_penalty=0.0,
     ),
     MarketRegime.LOW_LIQUIDITY: SamplingParams(
-        temperature=0.4,   # Higher caution
+        temperature=0.4,  # Higher caution
         top_p=0.90,
         frequency_penalty=0.2,  # Penalise token repetition in thin markets
     ),
@@ -198,8 +198,7 @@ class SamplingTuner:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 rows = conn.execute(
-                    f"SELECT regime, temperature, top_p, frequency_penalty, trade_count "
-                    f"FROM {self._TABLE}"
+                    f"SELECT regime, temperature, top_p, frequency_penalty, trade_count FROM {self._TABLE}"  # noqa: S608 - _TABLE is a fixed internal constant, not user input
                 ).fetchall()
         except sqlite3.Error:
             return
@@ -262,8 +261,7 @@ class SamplingTuner:
         new_params = SamplingParams(
             temperature=current.temperature
             + effective_alpha * (target.temperature - current.temperature),
-            top_p=current.top_p
-            + effective_alpha * (target.top_p - current.top_p),
+            top_p=current.top_p + effective_alpha * (target.top_p - current.top_p),
             frequency_penalty=current.frequency_penalty
             + effective_alpha * (target.frequency_penalty - current.frequency_penalty),
         ).clamp()
@@ -279,9 +277,7 @@ class SamplingTuner:
                 **params.to_dict(),
                 "default": _DEFAULTS[regime].to_dict(),
                 "trade_count": self._trade_counts.get(regime, 0),
-                "delta_temperature": round(
-                    params.temperature - _DEFAULTS[regime].temperature, 4
-                ),
+                "delta_temperature": round(params.temperature - _DEFAULTS[regime].temperature, 4),
             }
             for regime, params in self._params.items()
         }
@@ -322,9 +318,7 @@ class SamplingTuner:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(
-                    f"INSERT OR REPLACE INTO {self._TABLE} "
-                    f"(regime, temperature, top_p, frequency_penalty, trade_count, updated_at) "
-                    f"VALUES (?, ?, ?, ?, ?, ?)",
+                    f"INSERT OR REPLACE INTO {self._TABLE} (regime, temperature, top_p, frequency_penalty, trade_count, updated_at) VALUES (?, ?, ?, ?, ?, ?)",  # noqa: S608 - _TABLE is a fixed internal constant, not user input
                     (
                         regime.value,
                         params.temperature,

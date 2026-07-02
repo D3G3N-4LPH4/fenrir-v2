@@ -6,16 +6,12 @@ Covers: BudgetTracker, AuditChain, HistoricalMemory,
         EventBus, TradingStrategy, AIHealthMonitor
 """
 
-import asyncio
-import tempfile
-from datetime import datetime
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
-from fenrir.config import BotConfig, TradingMode
-from fenrir.core.budget import BudgetTracker, TradeAuthorization
+from fenrir.config import BotConfig
+from fenrir.core.budget import BudgetTracker
 from fenrir.data.audit import AuditChain, AuditEventType
 from fenrir.data.historical_memory import HistoricalMemory
 from fenrir.events.adapters.health import AIHealthMonitor, DriftType, HealthMonitorConfig
@@ -24,16 +20,11 @@ from fenrir.events.types import (
     EventCategory,
     EventSeverity,
     TradeEvent,
-    ai_decision_event,
-    buy_executed_event,
-    sell_executed_event,
     token_detected_event,
 )
 from fenrir.strategies import STRATEGY_REGISTRY, SniperStrategy
-from fenrir.strategies.base import StrategyState, TradingStrategy
 from fenrir.strategies.graduation import GraduationStrategy
-from fenrir.strategies.sniper import ConservativeSniperStrategy, DegenSniperStrategy
-
+from fenrir.strategies.sniper import ConservativeSniperStrategy
 
 # ═══════════════════════════════════════════════════════════════════
 #  FIXTURES
@@ -299,9 +290,7 @@ class TestHistoricalMemory:
 
     def test_creator_stats_created_on_first_outcome(self, tmp_db):
         mem = HistoricalMemory(db_path=tmp_db)
-        mem.record_outcome(
-            "T1", creator_address="C1", was_bought=True, pnl_pct=50.0, pnl_sol=0.05
-        )
+        mem.record_outcome("T1", creator_address="C1", was_bought=True, pnl_pct=50.0, pnl_sol=0.05)
         profile = mem.get_creator_profile("C1")
         assert profile is not None
         assert profile["total_launches"] == 1
@@ -311,9 +300,7 @@ class TestHistoricalMemory:
 
     def test_creator_rug_detection(self, tmp_db):
         mem = HistoricalMemory(db_path=tmp_db)
-        mem.record_outcome(
-            "T1", creator_address="RUGGER", was_bought=True, pnl_pct=-90.0
-        )
+        mem.record_outcome("T1", creator_address="RUGGER", was_bought=True, pnl_pct=-90.0)
         profile = mem.get_creator_profile("RUGGER")
         assert profile is not None
         assert profile["rug_count"] == 1
@@ -349,9 +336,7 @@ class TestHistoricalMemory:
         mem = HistoricalMemory(db_path=tmp_db)
         # Only 2 trades — below the minimum of 3
         for i in range(2):
-            mem.record_outcome(
-                f"T{i}", was_bought=True, pnl_pct=10.0, initial_liquidity_sol=5.0
-            )
+            mem.record_outcome(f"T{i}", was_bought=True, pnl_pct=10.0, initial_liquidity_sol=5.0)
         ctx = mem.build_historical_context(initial_liquidity_sol=5.0)
         assert ctx == ""
         mem.close()
@@ -716,14 +701,21 @@ class TestAIHealthMonitor:
             response_time_min_samples=5,
             response_time_drift_factor=2.0,
             loss_cascade_threshold=3,
-            trade_outcome_window=8,   # Small window so decay shows quickly
+            trade_outcome_window=8,  # Small window so decay shows quickly
             win_rate_min_trades=4,
             win_rate_decay_threshold=0.15,
             alert_cooldown_seconds=300.0,  # Default; _overall_status looks back 600s
         )
         return AIHealthMonitor(config=cfg)
 
-    def _make_ai_event(self, confidence=0.65, decision="BUY", reasoning="looks good", elapsed_ms=500.0, strategy_id=None):
+    def _make_ai_event(
+        self,
+        confidence=0.65,
+        decision="BUY",
+        reasoning="looks good",
+        elapsed_ms=500.0,
+        strategy_id=None,
+    ):
         return TradeEvent(
             event_type="AI_DECISION",
             category=EventCategory.AI,
@@ -750,10 +742,12 @@ class TestAIHealthMonitor:
     async def test_no_alerts_on_healthy_data(self, monitor):
         # Feed varied confidences and unique reasoning
         for i in range(10):
-            await monitor.on_event(self._make_ai_event(
-                confidence=0.4 + i * 0.06,
-                reasoning=f"unique reasoning {i} about this specific token",
-            ))
+            await monitor.on_event(
+                self._make_ai_event(
+                    confidence=0.4 + i * 0.06,
+                    reasoning=f"unique reasoning {i} about this specific token",
+                )
+            )
         assert monitor._alerts == []
 
     @pytest.mark.asyncio
@@ -776,11 +770,13 @@ class TestAIHealthMonitor:
     async def test_skip_streak_detected(self, monitor):
         # Lots of tokens + lots of skips
         for _ in range(6):
-            await monitor.on_event(TradeEvent(
-                event_type="TOKEN_DETECTED",
-                category=EventCategory.DETECTION,
-                message="",
-            ))
+            await monitor.on_event(
+                TradeEvent(
+                    event_type="TOKEN_DETECTED",
+                    category=EventCategory.DETECTION,
+                    message="",
+                )
+            )
         for _ in range(6):
             await monitor.on_event(self._make_ai_event(decision="SKIP", confidence=0.3))
         alerts = [a for a in monitor._alerts if a.drift_type == DriftType.SKIP_STREAK]
@@ -798,16 +794,22 @@ class TestAIHealthMonitor:
     async def test_skip_streak_resets_on_buy(self, monitor):
         # Accumulate skips
         for _ in range(4):
-            await monitor.on_event(TradeEvent(
-                event_type="TOKEN_DETECTED", category=EventCategory.DETECTION, message=""
-            ))
+            await monitor.on_event(
+                TradeEvent(
+                    event_type="TOKEN_DETECTED", category=EventCategory.DETECTION, message=""
+                )
+            )
             await monitor.on_event(self._make_ai_event(decision="SKIP"))
 
         # Buy resets the streak
-        await monitor.on_event(TradeEvent(
-            event_type="BUY_EXECUTED", category=EventCategory.TRADING, message="",
-            data={},
-        ))
+        await monitor.on_event(
+            TradeEvent(
+                event_type="BUY_EXECUTED",
+                category=EventCategory.TRADING,
+                message="",
+                data={},
+            )
+        )
         state = monitor._get_state(None)
         assert state.consecutive_skips == 0
         assert state.tokens_seen_since_last_buy == 0
@@ -876,11 +878,15 @@ class TestAIHealthMonitor:
         # Trip confidence clustering
         for _ in range(20):
             await monitor.on_event(self._make_ai_event(confidence=0.61))
-        first_count = len([a for a in monitor._alerts if a.drift_type == DriftType.CONFIDENCE_CLUSTERING])
+        first_count = len(
+            [a for a in monitor._alerts if a.drift_type == DriftType.CONFIDENCE_CLUSTERING]
+        )
         # Try to trip it again immediately
         for _ in range(20):
             await monitor.on_event(self._make_ai_event(confidence=0.61))
-        second_count = len([a for a in monitor._alerts if a.drift_type == DriftType.CONFIDENCE_CLUSTERING])
+        second_count = len(
+            [a for a in monitor._alerts if a.drift_type == DriftType.CONFIDENCE_CLUSTERING]
+        )
         assert first_count == second_count  # No new alert during cooldown
 
     @pytest.mark.asyncio

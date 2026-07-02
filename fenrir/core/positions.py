@@ -5,7 +5,7 @@ FENRIR - Position Tracking
 Position management and portfolio tracking.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from fenrir.config import BotConfig
@@ -153,7 +153,9 @@ class PositionManager:
                     else self.config.trailing_stop_pct
                 )
                 if position.should_trailing_stop(trailing_pct):
-                    exits.append((token_address, f"Trailing Stop: {position.get_pnl_percent():+.1f}%"))
+                    exits.append(
+                        (token_address, f"Trailing Stop: {position.get_pnl_percent():+.1f}%")
+                    )
 
                 # Time-based exit
                 elif position.is_expired(self.config.max_position_age_minutes):
@@ -177,15 +179,8 @@ class PositionManager:
 
     def get_by_strategy(self, strategy_id: str) -> dict[str, Position]:
         """Get all positions opened by a specific strategy."""
-        return {
-            addr: pos
-            for addr, pos in self.positions.items()
-            if pos.strategy_id == strategy_id
-        }
+        return {addr: pos for addr, pos in self.positions.items() if pos.strategy_id == strategy_id}
 
     def count_by_strategy(self, strategy_id: str) -> int:
         """Count open positions for a strategy."""
-        return sum(
-            1 for pos in self.positions.values()
-            if pos.strategy_id == strategy_id
-        )
+        return sum(1 for pos in self.positions.values() if pos.strategy_id == strategy_id)

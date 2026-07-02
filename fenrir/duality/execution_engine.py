@@ -19,21 +19,25 @@ is at risk.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Type
 
-from .protocols import (
-    DataFeed, OrderRouter, ContextProvider, ExecutionRecorder,
-    ClaudeDecision, DecisionAction,
-)
 from .backtest_impls import (
-    HistoricalDataFeed, SimulatedRouter, BacktestContextProvider,
-    BacktestRecorder, SlippageModel,
+    BacktestContextProvider,
+    BacktestRecorder,
+    HistoricalDataFeed,
+    SimulatedRouter,
+    SlippageModel,
+)
+from .protocols import (
+    ClaudeDecision,
+    ContextProvider,
+    DataFeed,
+    DecisionAction,
+    ExecutionRecorder,
+    OrderRouter,
 )
 from .replay_and_art import ARTExporter, LiveExecutionRecorder
 
@@ -44,15 +48,16 @@ logger = logging.getLogger("fenrir.engine")
 # Result containers
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class BacktestResult:
-    config:          dict
-    performance:     dict   # from SimulatedRouter.summary()
-    art_summary:     dict   # from ARTExporter.export()
-    recorder_path:   Path
-    duration_secs:   float
+    config: dict
+    performance: dict  # from SimulatedRouter.summary()
+    art_summary: dict  # from ARTExporter.export()
+    recorder_path: Path
+    duration_secs: float
     candles_replayed: int
-    decisions_made:  int
+    decisions_made: int
 
     def print_summary(self) -> None:
         p = self.performance
@@ -62,13 +67,13 @@ class BacktestResult:
         print(f"  Duration:     {self.duration_secs:.1f}s")
         print(f"  Candles:      {self.candles_replayed:,}")
         print(f"  Decisions:    {self.decisions_made}")
-        print(f"  ─────────────────────────────────────")
+        print("  ─────────────────────────────────────")
         print(f"  Initial SOL:  {p['initial_sol']:.4f}")
         print(f"  Final SOL:    {p['final_sol']:.4f}")
         print(f"  PnL:          {p['pnl_sol']:+.4f} SOL ({p['pnl_pct']:+.2f}%)")
         print(f"  Trades:       {p['buys']} buys / {p['sells']} sells")
         print(f"  Avg slippage: {p['avg_slippage']:.2%}")
-        print(f"  ─────────────────────────────────────")
+        print("  ─────────────────────────────────────")
         a = self.art_summary
         print(f"  ART samples:  {a.get('exportable_samples', 0)}")
         print(f"  DPO pairs:    {a.get('preference_pairs', 0)}")
@@ -80,13 +85,14 @@ class BacktestResult:
 # Backtest runner
 # ---------------------------------------------------------------------------
 
+
 async def run_backtest(
     strategy_cls,
-    mints:      list[str],
-    data_dir:   str | Path,
-    config:     dict | None = None,
+    mints: list[str],
+    data_dir: str | Path,
+    config: dict | None = None,
     output_dir: str | Path | None = None,
-    slippage:   SlippageModel | None = None,
+    slippage: SlippageModel | None = None,
 ) -> BacktestResult:
     """
     Wire up backtest implementations and run strategy over historical data.
@@ -106,19 +112,19 @@ async def run_backtest(
     slippage : SlippageModel
         Pluggable slippage model. Defaults to calibrated pump.fun model.
     """
-    config     = config or {}
-    data_dir   = Path(data_dir)
+    config = config or {}
+    data_dir = Path(data_dir)
     output_dir = Path(output_dir) if output_dir else data_dir / "runs" / _run_id()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    t0 = datetime.now(timezone.utc)
+    t0 = datetime.now(UTC)
     logger.info(f"Starting backtest | mints={len(mints)} | output={output_dir}")
 
     # ── Build concrete implementations ────────────────────────────────────
-    feed     = HistoricalDataFeed(data_dir)
+    feed = HistoricalDataFeed(data_dir)
     feed.load(mints)
 
-    router   = SimulatedRouter(
+    router = SimulatedRouter(
         initial_sol=config.get("initial_sol", 10.0),
         slippage=slippage or SlippageModel(seed=config.get("seed", 42)),
         simulate_latency=config.get("simulate_latency", True),
@@ -127,7 +133,7 @@ async def run_backtest(
     router._set_price_fn(lambda mint: feed._price_now.get(mint, 0.0))
     router._set_liquidity_fn(feed.get_liquidity_fn())
 
-    context  = BacktestContextProvider(feed)
+    context = BacktestContextProvider(feed)
     recorder = BacktestRecorder(output_path=output_dir / "events.jsonl")
 
     # ── Instantiate strategy with injected dependencies ────────────────────
@@ -140,7 +146,7 @@ async def run_backtest(
     )
 
     # ── Replay loop ────────────────────────────────────────────────────────
-    candles_total  = 0
+    candles_total = 0
     decisions_total = 0
 
     async def candle_callback(mint: str, candle: dict) -> None:
@@ -162,12 +168,12 @@ async def run_backtest(
     recorder.close()
 
     # ── Export ART data ────────────────────────────────────────────────────
-    exporter   = ARTExporter(recorder)
+    exporter = ARTExporter(recorder)
     art_summary = exporter.export(output_dir / "art")
 
     # ── Performance summary ────────────────────────────────────────────────
-    duration = (datetime.now(timezone.utc) - t0).total_seconds()
-    result   = BacktestResult(
+    duration = (datetime.now(UTC) - t0).total_seconds()
+    result = BacktestResult(
         config=config,
         performance=router.summary(),
         art_summary=art_summary,
@@ -184,25 +190,24 @@ async def run_backtest(
 # Live runner
 # ---------------------------------------------------------------------------
 
+
 async def run_live(
     strategy_cls,
-    live_data:    DataFeed,        # HeliusLiveFeed or your WebSocket feed
-    live_router:  OrderRouter,     # JupiterRouter with real wallet
-    live_context: ContextProvider, # LiveContextProvider
-    log_dir:      str | Path,
-    config:       dict | None = None,
+    live_data: DataFeed,  # HeliusLiveFeed or your WebSocket feed
+    live_router: OrderRouter,  # JupiterRouter with real wallet
+    live_context: ContextProvider,  # LiveContextProvider
+    log_dir: str | Path,
+    config: dict | None = None,
 ) -> None:
     """
     Wire up live implementations and run strategy indefinitely.
     Identical strategy code to run_backtest — only the implementations differ.
     """
-    config  = config or {}
+    config = config or {}
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    recorder = LiveExecutionRecorder(
-        log_path=log_dir / f"live_events_{_run_id()}.jsonl"
-    )
+    recorder = LiveExecutionRecorder(log_path=log_dir / f"live_events_{_run_id()}.jsonl")
 
     strategy = strategy_cls(
         data=live_data,
@@ -214,7 +219,7 @@ async def run_live(
 
     logger.info("FENRIR live mode starting — strategy running")
     try:
-        await strategy.run()   # strategy owns its own loop in live mode
+        await strategy.run()  # strategy owns its own loop in live mode
     except KeyboardInterrupt:
         logger.info("Live mode stopped by user")
     except Exception as e:
@@ -228,6 +233,7 @@ async def run_live(
 # ---------------------------------------------------------------------------
 # Prompt Tester — grade Claude decisions before spending SOL
 # ---------------------------------------------------------------------------
+
 
 class PromptTester:
     """
@@ -245,20 +251,20 @@ class PromptTester:
 
     def __init__(self, strategy_cls, data_dir: str | Path, config: dict | None = None):
         self.strategy_cls = strategy_cls
-        self.data_dir     = Path(data_dir)
-        self.config       = config or {}
+        self.data_dir = Path(data_dir)
+        self.config = config or {}
 
     async def run(
         self,
-        mints:     list[str],
+        mints: list[str],
         scenarios: int = 50,
         output_dir: str | Path | None = None,
     ) -> dict:
         """
         Run backtest and return prompt quality report.
         """
-        run_output = Path(output_dir) if output_dir else (
-            self.data_dir / "prompt_tests" / _run_id()
+        run_output = (
+            Path(output_dir) if output_dir else (self.data_dir / "prompt_tests" / _run_id())
         )
 
         result = await run_backtest(
@@ -272,25 +278,24 @@ class PromptTester:
         art = result.art_summary
         dist = art.get("label_distribution", {})
 
-        bad_decisions = sum(
-            dist.get(l, 0) for l in ["BAD_BUY", "BAD_HOLD", "LOSS_SELL"]
-        )
+        bad_decisions = sum(dist.get(label, 0) for label in ["BAD_BUY", "BAD_HOLD", "LOSS_SELL"])
         good_decisions = sum(
-            dist.get(l, 0) for l in ["GOOD_BUY", "GOOD_SELL", "GOOD_HOLD", "OK_BUY", "OK_HOLD"]
+            dist.get(label, 0)
+            for label in ["GOOD_BUY", "GOOD_SELL", "GOOD_HOLD", "OK_BUY", "OK_HOLD"]
         )
         total = max(art.get("exportable_samples", 1), 1)
 
         report = {
-            "avg_reward":       art.get("avg_reward", 0),
-            "avg_pnl_pct":      art.get("avg_pnl_pct", 0),
-            "pnl_pct":          result.performance.get("pnl_pct", 0),
-            "good_rate":        round(good_decisions / total, 3),
-            "bad_rate":         round(bad_decisions / total, 3),
-            "total_decisions":  total,
-            "label_dist":       dist,
-            "deploy_recommended": art.get("avg_reward", 0) > 0.3 and
-                                  result.performance.get("pnl_pct", -999) > 0,
-            "output_dir":       str(run_output),
+            "avg_reward": art.get("avg_reward", 0),
+            "avg_pnl_pct": art.get("avg_pnl_pct", 0),
+            "pnl_pct": result.performance.get("pnl_pct", 0),
+            "good_rate": round(good_decisions / total, 3),
+            "bad_rate": round(bad_decisions / total, 3),
+            "total_decisions": total,
+            "label_dist": dist,
+            "deploy_recommended": art.get("avg_reward", 0) > 0.3
+            and result.performance.get("pnl_pct", -999) > 0,
+            "output_dir": str(run_output),
         }
 
         self._print_prompt_report(report)
@@ -314,6 +319,7 @@ class PromptTester:
 # Example strategy skeleton — shows exactly what a strategy must look like
 # ---------------------------------------------------------------------------
 
+
 class ExampleSniperStrategy:
     """
     Minimal strategy skeleton that satisfies the duality contract.
@@ -323,17 +329,17 @@ class ExampleSniperStrategy:
 
     def __init__(
         self,
-        data:     DataFeed,
-        router:   OrderRouter,
-        context:  ContextProvider,
+        data: DataFeed,
+        router: OrderRouter,
+        context: ContextProvider,
         recorder: ExecutionRecorder,
-        config:   dict,
+        config: dict,
     ):
-        self.data     = data
-        self.router   = router
-        self.context  = context
+        self.data = data
+        self.router = router
+        self.context = context
         self.recorder = recorder
-        self.config   = config
+        self.config = config
         self._candle_count: dict[str, int] = {}
 
     async def on_candle(self, mint: str, candle: dict) -> int:
@@ -349,11 +355,11 @@ class ExampleSniperStrategy:
         if count < self.config.get("min_candles", 30):
             return 0
 
-        ohlcv    = await self.data.get_ohlcv(mint, lookback=100)
-        price    = await self.data.get_current_price(mint)
+        ohlcv = await self.data.get_ohlcv(mint, lookback=100)
+        price = await self.data.get_current_price(mint)
         on_chain = await self.context.get_on_chain(mint)
-        social   = await self.context.get_social(mint)
-        smc_ctx  = await self.context.get_smc_context(mint)
+        social = await self.context.get_social(mint)
+        smc_ctx = await self.context.get_smc_context(mint)
 
         # ── Build Claude prompt (same in backtest and live) ──────────────
         prompt = self._build_prompt(mint, price, ohlcv, on_chain, social, smc_ctx)
@@ -379,9 +385,9 @@ class ExampleSniperStrategy:
         # ── Record (mandatory — this feeds ART and incident replay) ──────
         context_snapshot = {
             "on_chain": on_chain.__dict__ if on_chain else {},
-            "social":   social.__dict__   if social   else {},
-            "smc":      smc_ctx,
-            "candle":   candle,
+            "social": social.__dict__ if social else {},
+            "smc": smc_ctx,
+            "candle": candle,
         }
         await self.recorder.record(
             mint=mint,
@@ -417,5 +423,6 @@ Respond with JSON: {{"action": "...", "confidence": 0.0-1.0, "reasoning": "..."}
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _run_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return datetime.now(UTC).strftime("%Y%m%d_%H%M%S")

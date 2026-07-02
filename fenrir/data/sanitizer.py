@@ -52,27 +52,30 @@ from fenrir.events.types import EventCategory, EventSeverity, TradeEvent
 # ─────────────────────────────────────────────────────────────
 
 # Zero-width / invisible Unicode codepoints used for obfuscation
-_ZERO_WIDTH = re.compile(
-    r"[\u200b\u200c\u200d\u00ad\ufeff\u2060\u2061\u2062\u2063]"
-)
+_ZERO_WIDTH = re.compile(r"[\u200b\u200c\u200d\u00ad\ufeff\u2060\u2061\u2062\u2063]")
 
 # Injection-shaped keyword patterns (order matters: most specific first)
 _INJECTION_PATTERNS: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"score\s*=\s*\d+", re.I),                       "score_assignment"),
+    (re.compile(r"score\s*=\s*\d+", re.I), "score_assignment"),
     (re.compile(r"ignore\s+(previous|prior|above|all|instructions)", re.I), "ignore_previous"),
-    (re.compile(r"disregard\s+(all|previous|above|instructions)",  re.I), "disregard_instructions"),
-    (re.compile(r"\bsystem\s*:",                                   re.I), "system_role_injection"),
-    (re.compile(r"\bassistant\s*:",                                re.I), "assistant_role_injection"),
-    (re.compile(r"\buser\s*:",                                     re.I), "user_role_injection"),
-    (re.compile(r'"decision"\s*:\s*"(BUY|STRONG_BUY)"',           re.I), "json_decision_override"),
-    (re.compile(r'"confidence"\s*:\s*[01]\.\d+',                  re.I), "json_confidence_injection"),
-    (re.compile(r"\bSCORE\s+IS\b",                                re.I), "score_statement"),
-    (re.compile(r"\bOVERRIDE\b",                                   re.I), "override_keyword"),
-    (re.compile(r"\bFORCE\s+BUY\b",                               re.I), "force_buy"),
-    (re.compile(r"\bCONFIRM\s+BUY\b|\bBUY\s+CONFIRM\b",          re.I), "confirm_buy"),
-    (re.compile(r"<\s*(system|assistant|user)\s*>",                re.I), "xml_role_tag"),
-    (re.compile(r"\[INST\]|\[/INST\]",                                  ), "llama_control_token"),
-    (re.compile(r"###\s*(System|Instruction|Assistant)",           re.I), "markdown_role_header"),
+    (re.compile(r"disregard\s+(all|previous|above|instructions)", re.I), "disregard_instructions"),
+    (re.compile(r"\bsystem\s*:", re.I), "system_role_injection"),
+    (re.compile(r"\bassistant\s*:", re.I), "assistant_role_injection"),
+    (re.compile(r"\buser\s*:", re.I), "user_role_injection"),
+    (re.compile(r'"decision"\s*:\s*"(BUY|STRONG_BUY)"', re.I), "json_decision_override"),
+    (re.compile(r'"confidence"\s*:\s*[01]\.\d+', re.I), "json_confidence_injection"),
+    (re.compile(r"\bSCORE\s+IS\b", re.I), "score_statement"),
+    (re.compile(r"\bOVERRIDE\b", re.I), "override_keyword"),
+    (re.compile(r"\bFORCE\s+BUY\b", re.I), "force_buy"),
+    (re.compile(r"\bCONFIRM\s+BUY\b|\bBUY\s+CONFIRM\b", re.I), "confirm_buy"),
+    (re.compile(r"<\s*(system|assistant|user)\s*>", re.I), "xml_role_tag"),
+    (
+        re.compile(
+            r"\[INST\]|\[/INST\]",
+        ),
+        "llama_control_token",
+    ),
+    (re.compile(r"###\s*(System|Instruction|Assistant)", re.I), "markdown_role_header"),
 ]
 
 # Standalone imperative verbs associated with prompt injection attacks.
@@ -223,9 +226,7 @@ class InputSanitizer:
             flags=flags,
         )
 
-    def sanitize_token_metadata(
-        self, token_data: dict
-    ) -> tuple[dict, list[SanitizedInput]]:
+    def sanitize_token_metadata(self, token_data: dict) -> tuple[dict, list[SanitizedInput]]:
         """
         Sanitize all attacker-controlled string fields in a token metadata dict.
 

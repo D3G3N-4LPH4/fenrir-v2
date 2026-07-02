@@ -15,20 +15,16 @@ Covers:
 Run with: pytest tests/test_sampling_tuner.py -v
 """
 
-import os
 import sqlite3
-import tempfile
 
 import pytest
 
 from fenrir.ai.sampling_tuner import (
-    EMA_ALPHA,
+    _DEFAULTS,
     MarketRegime,
     SamplingParams,
     SamplingTuner,
-    _DEFAULTS,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  FIXTURES
@@ -194,7 +190,7 @@ class TestTradeCount:
     def test_trade_count_increments(self, tuner):
         regime = MarketRegime.SNIPE
         params = tuner.get_params(regime)
-        for i in range(5):
+        for _i in range(5):
             tuner.record_outcome(regime, params, pnl_pct=10.0)
         all_params = tuner.get_all_params()
         assert all_params[regime.value]["trade_count"] == 5
@@ -241,9 +237,7 @@ class TestPersistence:
     def test_db_table_created(self, db_path):
         SamplingTuner(db_path=db_path)
         conn = sqlite3.connect(db_path)
-        tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         conn.close()
         table_names = [t[0] for t in tables]
         assert "sampling_tuner" in table_names

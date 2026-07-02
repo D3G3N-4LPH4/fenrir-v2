@@ -23,14 +23,14 @@ from typing import cast
 from fenrir.ai.brain import ClaudeBrain
 from fenrir.ai.market_geometry import MarketGeometryAnalyzer
 from fenrir.config import BotConfig, TradingMode
+from fenrir.core.budget import BudgetTracker
 from fenrir.core.circuit_breaker import ServiceBreakers
+from fenrir.core.client import SolanaClient
 from fenrir.core.dump_recovery import (
     OuroborosConfig,
     PostDumpRecoveryDetector,
     ouroboros_detected_event,
 )
-from fenrir.core.budget import BudgetTracker
-from fenrir.core.client import SolanaClient
 from fenrir.core.jupiter import JupiterSwapEngine
 from fenrir.core.positions import Position, PositionManager
 from fenrir.core.wallet import WalletManager
@@ -143,9 +143,9 @@ class FenrirBot:
         # Ouroboros / dump recovery detector
         self.dump_detector = PostDumpRecoveryDetector(
             config=OuroborosConfig(
-                dump_threshold_pct=30.0,       # Flag if drops 30%+ from peak
-                recovery_threshold_pct=10.0,   # And then recovers 10%+
-                max_recovery_to_flag_pct=60.0, # But less than 60% (full recovery = legit)
+                dump_threshold_pct=30.0,  # Flag if drops 30%+ from peak
+                recovery_threshold_pct=10.0,  # And then recovers 10%+
+                max_recovery_to_flag_pct=60.0,  # But less than 60% (full recovery = legit)
                 tightened_trailing_stop_pct=8.0,  # Tighten trail to 8% on Ouroboros
             )
         )
@@ -201,8 +201,7 @@ class FenrirBot:
                 )
             else:
                 self.logger.warning(
-                    f"Unknown strategy: {sid} "
-                    f"(available: {list(STRATEGY_REGISTRY.keys())})"
+                    f"Unknown strategy: {sid} " f"(available: {list(STRATEGY_REGISTRY.keys())})"
                 )
 
         if not self.strategies:
@@ -227,10 +226,15 @@ class FenrirBot:
                 "ai_enabled": self.config.ai_analysis_enabled,
             },
         )
-        await self.event_bus.emit(bot_lifecycle_event("started", {
-            "mode": self.config.mode.value,
-            "strategies": [s.strategy_id for s in self.strategies],
-        }))
+        await self.event_bus.emit(
+            bot_lifecycle_event(
+                "started",
+                {
+                    "mode": self.config.mode.value,
+                    "strategies": [s.strategy_id for s in self.strategies],
+                },
+            )
+        )
 
         # Initialize async sessions
         await self.jupiter.initialize()
@@ -240,9 +244,7 @@ class FenrirBot:
             await self.jito.initialize()
 
         # Start monitoring and position management
-        monitor_task = asyncio.create_task(
-            self.monitor.start_monitoring(self._on_token_launch)
-        )
+        monitor_task = asyncio.create_task(self.monitor.start_monitoring(self._on_token_launch))
         management_task = asyncio.create_task(self._position_management_loop())
 
         await asyncio.gather(monitor_task, management_task)
@@ -263,14 +265,16 @@ class FenrirBot:
         creator = token_data.get("creator")
 
         # Emit detection event
-        await self.event_bus.emit(token_detected_event(
-            token_address=token_addr,
-            symbol=symbol,
-            name=name,
-            liquidity_sol=liq,
-            market_cap_sol=mcap,
-            creator=creator,
-        ))
+        await self.event_bus.emit(
+            token_detected_event(
+                token_address=token_addr,
+                symbol=symbol,
+                name=name,
+                liquidity_sol=liq,
+                market_cap_sol=mcap,
+                creator=creator,
+            )
+        )
 
         # Route through each active strategy
         for strategy in self.strategies:
@@ -284,12 +288,14 @@ class FenrirBot:
                 await self._evaluate_and_execute(strategy, token_data)
 
             except Exception as e:
-                await self.event_bus.emit(error_event(
-                    context=f"Strategy {strategy.strategy_id} evaluation",
-                    error=str(e),
-                    token_address=token_addr,
-                    strategy_id=strategy.strategy_id,
-                ))
+                await self.event_bus.emit(
+                    error_event(
+                        context=f"Strategy {strategy.strategy_id} evaluation",
+                        error=str(e),
+                        token_address=token_addr,
+                        strategy_id=strategy.strategy_id,
+                    )
+                )
 
     async def _evaluate_and_execute(
         self,
@@ -328,21 +334,27 @@ class FenrirBot:
 
         # Emit AI decision event
         if analysis:
-            await self.event_bus.emit(ai_decision_event(
-                token_address=token_addr,
-                symbol=symbol,
-                decision=analysis.decision.value,
-                confidence=analysis.confidence,
-                risk_score=analysis.risk_score,
-                reasoning=analysis.reasoning,
-                strategy_id=strategy.strategy_id,
-            ))
+            await self.event_bus.emit(
+                ai_decision_event(
+                    token_address=token_addr,
+                    symbol=symbol,
+                    decision=analysis.decision.value,
+                    confidence=analysis.confidence,
+                    risk_score=analysis.risk_score,
+                    reasoning=analysis.reasoning,
+                    strategy_id=strategy.strategy_id,
+                )
+            )
 
         if not should_buy:
             return
 
         # Use geometry-derived params if available, else fall back to strategy defaults
-        params = geometry_report.derived_params if geometry_report.derived_params else strategy.get_trade_params()
+        params = (
+            geometry_report.derived_params
+            if geometry_report.derived_params
+            else strategy.get_trade_params()
+        )
         effective_amount = params.buy_amount_sol
         if buy_amount_override is not None:
             effective_amount = min(buy_amount_override, params.buy_amount_sol * 2)
@@ -358,13 +370,15 @@ class FenrirBot:
         )
 
         if not auth.allowed:
-            await self.event_bus.emit(budget_exhausted_event(
-                strategy_id=strategy.strategy_id,
-                budget_sol=strategy.budget_sol,
-                spent_sol=self.budget_tracker.get_strategy_budget_status(
-                strategy.strategy_id, strategy.budget_sol
-            )["sol_spent"],
-            ))
+            await self.event_bus.emit(
+                budget_exhausted_event(
+                    strategy_id=strategy.strategy_id,
+                    budget_sol=strategy.budget_sol,
+                    spent_sol=self.budget_tracker.get_strategy_budget_status(
+                        strategy.strategy_id, strategy.budget_sol
+                    )["sol_spent"],
+                )
+            )
             return
 
         # Execute the buy
@@ -384,22 +398,26 @@ class FenrirBot:
             if bc and hasattr(bc, "get_price"):
                 entry_price = bc.get_price()
 
-            await self.event_bus.emit(buy_executed_event(
-                token_address=token_addr,
-                symbol=symbol,
-                amount_sol=effective_amount,
-                entry_price=entry_price,
-                simulation=(self.config.mode == TradingMode.SIMULATION),
-                strategy_id=strategy.strategy_id,
-            ))
+            await self.event_bus.emit(
+                buy_executed_event(
+                    token_address=token_addr,
+                    symbol=symbol,
+                    amount_sol=effective_amount,
+                    entry_price=entry_price,
+                    simulation=(self.config.mode == TradingMode.SIMULATION),
+                    strategy_id=strategy.strategy_id,
+                )
+            )
         else:
-            await self.event_bus.emit(trade_failed_event(
-                token_address=token_addr,
-                symbol=symbol,
-                trade_type="BUY",
-                error="Execution failed",
-                strategy_id=strategy.strategy_id,
-            ))
+            await self.event_bus.emit(
+                trade_failed_event(
+                    token_address=token_addr,
+                    symbol=symbol,
+                    trade_type="BUY",
+                    error="Execution failed",
+                    strategy_id=strategy.strategy_id,
+                )
+            )
 
     async def _position_management_loop(self):
         """
@@ -450,9 +468,7 @@ class FenrirBot:
                         pos.update_price(new_price)
 
                         # Ouroboros detection: dump → fake recovery → second dump
-                        alert = self.dump_detector.update(
-                            addr, pos.current_price, pos.entry_price
-                        )
+                        alert = self.dump_detector.update(addr, pos.current_price, pos.entry_price)
                         if alert.ouroboros_detected:
                             # Tighten trailing stop on the Position object
                             if hasattr(pos, "trailing_stop_override_pct"):
@@ -481,13 +497,15 @@ class FenrirBot:
                     )
 
                     if action == "OVERRIDE_HOLD":
-                        await self.event_bus.emit(ai_override_event(
-                            token_address=token_address,
-                            symbol=position.token_symbol,
-                            mechanical_trigger=reason,
-                            reasoning=ai_reason or "",
-                            strategy_id=position.strategy_id,
-                        ))
+                        await self.event_bus.emit(
+                            ai_override_event(
+                                token_address=token_address,
+                                symbol=position.token_symbol,
+                                mechanical_trigger=reason,
+                                reasoning=ai_reason or "",
+                                strategy_id=position.strategy_id,
+                            )
+                        )
                         continue
 
                     await self._execute_exit(token_address, position, ai_reason or reason)
@@ -505,9 +523,7 @@ class FenrirBot:
                     )
 
                     if action == "EXIT":
-                        await self._execute_exit(
-                            token_address, position, f"AI: {ai_reason}"
-                        )
+                        await self._execute_exit(token_address, position, f"AI: {ai_reason}")
 
                 # Log portfolio status
                 summary = self.positions.get_portfolio_summary()
@@ -533,9 +549,7 @@ class FenrirBot:
         """Execute an exit and record outcomes across all systems."""
         pnl_pct = position.get_pnl_percent()
         pnl_sol = position.get_pnl_sol()
-        hold_minutes = int(
-            (datetime.now() - position.entry_time).total_seconds() / 60
-        )
+        hold_minutes = int((datetime.now() - position.entry_time).total_seconds() / 60)
 
         sold = await self.trading_engine.execute_sell(token_address, reason)
         if not sold:
@@ -580,16 +594,18 @@ class FenrirBot:
                 break
 
         # Emit sell event
-        await self.event_bus.emit(sell_executed_event(
-            token_address=token_address,
-            symbol=position.token_symbol,
-            pnl_pct=pnl_pct,
-            pnl_sol=pnl_sol,
-            reason=reason,
-            hold_minutes=hold_minutes,
-            simulation=(self.config.mode == TradingMode.SIMULATION),
-            strategy_id=position.strategy_id,
-        ))
+        await self.event_bus.emit(
+            sell_executed_event(
+                token_address=token_address,
+                symbol=position.token_symbol,
+                pnl_pct=pnl_pct,
+                pnl_sol=pnl_sol,
+                reason=reason,
+                hold_minutes=hold_minutes,
+                simulation=(self.config.mode == TradingMode.SIMULATION),
+                strategy_id=position.strategy_id,
+            )
+        )
 
     async def stop(self):
         """Graceful shutdown."""

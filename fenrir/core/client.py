@@ -22,20 +22,23 @@ from fenrir.logger import FenrirLogger
 # Default timeout for individual RPC calls (seconds)
 RPC_TIMEOUT_SECONDS = 15
 
+
 class SolanaClient:
     """
     The interface between FENRIR and Solana.
     Every RPC call is a question. This class asks them eloquently.
     """
 
-    def __init__(self, config: BotConfig, logger: FenrirLogger, breaker: CircuitBreaker | None = None):
+    def __init__(
+        self, config: BotConfig, logger: FenrirLogger, breaker: CircuitBreaker | None = None
+    ):
         self.config = config
         self.logger = logger
         self._breaker = breaker
         self.client = AsyncClient(config.rpc_url)
         self.pumpfun_program = Pubkey.from_string(config.pumpfun_program)
 
-    async def _rpc(self, coro, name: str, timeout: float = RPC_TIMEOUT_SECONDS):
+    async def _rpc(self, coro, name: str, timeout: float = RPC_TIMEOUT_SECONDS):  # noqa: ASYNC109 - timeout drives the asyncio.wait_for below
         """Run one RPC coroutine with circuit-breaker protection and timeout."""
         try:
             if self._breaker:
@@ -102,9 +105,7 @@ class SolanaClient:
     ) -> str | None:
         """Broadcast to the network. The moment code becomes action on-chain."""
         opts = TxOpts(skip_preflight=skip_preflight, preflight_commitment=Confirmed)
-        resp = await self._rpc(
-            self.client.send_transaction(transaction, opts), "send_transaction"
-        )
+        resp = await self._rpc(self.client.send_transaction(transaction, opts), "send_transaction")
         return str(resp.value) if resp else None
 
     async def get_latest_blockhash(self):
@@ -127,9 +128,7 @@ class SolanaClient:
     async def get_token_accounts_by_owner(self, owner: Pubkey, mint: Pubkey) -> dict | None:
         """Get token account and balance for a specific mint."""
         resp = await self._rpc(
-            self.client.get_token_accounts_by_owner_json_parsed(
-                owner, TokenAccountOpts(mint=mint)
-            ),
+            self.client.get_token_accounts_by_owner_json_parsed(owner, TokenAccountOpts(mint=mint)),
             f"get_token_accounts:{owner}",
         )
         if resp and resp.value:
@@ -147,9 +146,7 @@ class SolanaClient:
     async def get_signature_statuses(self, signatures: list[str]):
         """Check confirmation status of transaction signatures."""
         sigs = [Signature.from_string(s) for s in signatures]
-        resp = await self._rpc(
-            self.client.get_signature_statuses(sigs), "get_signature_statuses"
-        )
+        resp = await self._rpc(self.client.get_signature_statuses(sigs), "get_signature_statuses")
         return resp.value if resp and resp.value else None
 
     async def close(self):
