@@ -16,8 +16,11 @@ from typing import Any
 
 import base58
 from solders.pubkey import Pubkey
-from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import ConnectionClosed
+
+# websockets is capped at <12 by solana 0.35.0, so use the legacy client's
+# connect (the async context-manager API used below is unchanged on 11.x).
+from websockets.legacy.client import connect as ws_connect
 
 from fenrir.config import BotConfig
 from fenrir.core.client import SolanaClient
