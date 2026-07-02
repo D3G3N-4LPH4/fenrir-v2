@@ -51,10 +51,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install linting tools
+      - name: Install linting & type-check tools
         run: |
           python -m pip install --upgrade pip
-          pip install ruff mypy
           pip install -r requirements.txt
 
       - name: Ruff check
@@ -63,6 +62,8 @@ jobs:
       - name: Ruff format check
         run: ruff format --check fenrir/ api/ tests/
 
-      - name: Mypy type check (advisory)
-        continue-on-error: true
-        run: mypy fenrir/ --ignore-missing-imports --check-untyped-defs
+      - name: Mypy type check
+        run: mypy fenrir api tools tests
+
+      - name: Pyright type check
+        run: pyright
