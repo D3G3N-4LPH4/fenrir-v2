@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from enum import Enum
 from logging.handlers import RotatingFileHandler
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -143,7 +143,16 @@ FENRIR_DEV_MODE = os.getenv("FENRIR_DEV_MODE", "false").lower() == "true"
 # Global bot instance and state
 bot_instance: FenrirBot | None = None
 bot_task: asyncio.Task | None = None
-bot_state = {"status": "stopped", "start_time": None, "config": None, "error": None}
+class BotState(TypedDict):
+    """Mutable global bot state tracked by the API."""
+
+    status: str
+    start_time: datetime | None
+    config: dict[str, Any] | None
+    error: str | None
+
+
+bot_state: BotState = {"status": "stopped", "start_time": None, "config": None, "error": None}
 # Lock protecting bot_state and bot_instance mutations from concurrent requests
 bot_state_lock = asyncio.Lock()
 
@@ -331,8 +340,9 @@ async def broadcast_update(message: dict):
 
 def get_uptime() -> float | None:
     """Calculate bot uptime in seconds"""
-    if bot_state["start_time"]:
-        return (datetime.now() - bot_state["start_time"]).total_seconds()
+    start_time = bot_state["start_time"]
+    if start_time is not None:
+        return (datetime.now() - start_time).total_seconds()
     return None
 
 

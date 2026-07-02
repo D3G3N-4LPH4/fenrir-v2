@@ -506,7 +506,8 @@ Respond with JSON:
             json_start = response.find("{")
             json_end = response.rfind("}") + 1
             json_str = response[json_start:json_end]
-            return json.loads(json_str)
+            parsed = json.loads(json_str)
+            return parsed if isinstance(parsed, dict) else {}
         except Exception:
             return {
                 "action": "HOLD",
@@ -839,7 +840,7 @@ exit_plan MUST encode:
         skips = [p for p in evaluated if p["analysis"].decision == AIDecision.SKIP]
 
         # Were the STRONG_BUY recommendations profitable?
-        strong_buy_success = 0
+        strong_buy_success = 0.0
         if strong_buys:
             profitable_strong_buys = [
                 p for p in strong_buys if p["actual_performance"]["pnl_pct"] > 0

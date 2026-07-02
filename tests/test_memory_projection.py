@@ -204,6 +204,8 @@ def test_projection_matches_live_tallies(tmp_path):
         )
         live.record_decision(rec)
         if bought:
+            # Bought rows always carry concrete pnl values; narrow for the type checker.
+            assert pnl is not None and pnl_sol is not None
             buy(chain, addr, addr)
             sell(chain, addr, addr, pnl_pct=pnl, pnl_sol=pnl_sol)
             live.update_outcome(addr, pnl, "exit", 5, pnl_sol)

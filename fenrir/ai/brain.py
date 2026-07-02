@@ -65,7 +65,7 @@ class ClaudeBrain:
         self._last_exit_eval: dict[str, datetime] = {}
 
         # Performance stats
-        self.stats = {
+        self.stats: dict[str, float] = {
             "ai_entries_evaluated": 0,
             "ai_entries_bought": 0,
             "ai_entries_skipped": 0,
@@ -75,8 +75,9 @@ class ClaudeBrain:
             "ai_exits_evaluated": 0,
             "ai_exits_overridden": 0,
             "ai_avg_response_ms": 0.0,
-            "_response_times": deque(maxlen=100),
         }
+        # Bounded rolling window of response times (O(1) appends) for averaging.
+        self._response_times: deque[float] = deque(maxlen=100)
 
     async def initialize(self) -> None:
         """Initialize the AI analyst session. Safe to call even if AI is disabled."""
@@ -466,7 +467,7 @@ class ClaudeBrain:
 
     def get_performance_report(self) -> dict:
         """Get combined performance report: brain stats + AI analyst accuracy."""
-        report = {k: v for k, v in self.stats.items() if k != "_response_times"}
+        report: dict[str, object] = dict(self.stats)
         if self.analyst:
             report["ai_analyst_report"] = self.analyst.get_ai_performance_report()
         report["session_memory"] = self.memory.get_session_stats()
@@ -507,7 +508,7 @@ class ClaudeBrain:
 
     def _record_response_time(self, ms: float) -> None:
         """Track response times for averaging (bounded deque, O(1) appends)."""
-        times = self.stats["_response_times"]
+        times = self._response_times
         times.append(ms)
         self.stats["ai_avg_response_ms"] = sum(times) / len(times) if times else 0.0
 
@@ -597,7 +598,7 @@ class ClaudeBrain:
                 timeout=exit_timeout,
             )
 
-            decisions = result.get("exit_decisions", [])
+            decisions: list[dict] = result.get("exit_decisions", [])
 
             # Persist AI continuation contracts onto Position objects
             for decision in decisions:

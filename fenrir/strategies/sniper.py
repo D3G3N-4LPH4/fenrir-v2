@@ -124,7 +124,7 @@ class ConservativeSniperStrategy(SniperStrategy):
 
         # Additional filter: require higher liquidity
         liq = token_data.get("initial_liquidity_sol", 0)
-        return liq >= 5.0
+        return bool(liq >= 5.0)
 
 
 class DegenSniperStrategy(SniperStrategy):

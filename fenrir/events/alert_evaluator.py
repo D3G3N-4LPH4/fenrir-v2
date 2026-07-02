@@ -21,7 +21,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +296,7 @@ def parse_llm_json(text: str | None) -> dict | None:
 
     # Attempt 1: direct parse
     try:
-        return json.loads(clean)
+        return cast("dict[Any, Any]", json.loads(clean))
     except json.JSONDecodeError:
         pass
 
@@ -305,7 +305,7 @@ def parse_llm_json(text: str | None) -> dict | None:
         if fence in clean:
             clean = clean.replace(fence, "").strip()
     try:
-        return json.loads(clean)
+        return cast("dict[Any, Any]", json.loads(clean))
     except json.JSONDecodeError:
         pass
 
@@ -314,7 +314,7 @@ def parse_llm_json(text: str | None) -> dict | None:
     end = clean.rfind("}") + 1
     if start != -1 and end > start:
         try:
-            return json.loads(clean[start:end])
+            return cast("dict[Any, Any]", json.loads(clean[start:end]))
         except json.JSONDecodeError:
             pass
 
