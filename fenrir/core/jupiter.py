@@ -23,7 +23,9 @@ class JupiterSwapEngine:
 
     JUPITER_API = "https://quote-api.jup.ag/v6"
 
-    def __init__(self, config: BotConfig, logger: FenrirLogger, breaker: CircuitBreaker | None = None):
+    def __init__(
+        self, config: BotConfig, logger: FenrirLogger, breaker: CircuitBreaker | None = None
+    ):
         self.config = config
         self.logger = logger
         self._breaker = breaker

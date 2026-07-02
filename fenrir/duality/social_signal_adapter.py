@@ -28,11 +28,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import subprocess
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, cast
 
 logger = logging.getLogger("fenrir.social_signal")
@@ -68,22 +67,53 @@ ECOSYSTEM_QUERIES = [
 
 # Bearish sentiment keywords — presence in a tweet raises bear score
 BEARISH_KEYWORDS = [
-    "rug", "rugpull", "scam", "dump", "dumping", "exit", "exit liquidity",
-    "honeypot", "dev sold", "dev dumped", "bundle", "bundled", "sniper",
-    "avoid", "warning", "careful", "suspicious", "fake", "bot",
+    "rug",
+    "rugpull",
+    "scam",
+    "dump",
+    "dumping",
+    "exit",
+    "exit liquidity",
+    "honeypot",
+    "dev sold",
+    "dev dumped",
+    "bundle",
+    "bundled",
+    "sniper",
+    "avoid",
+    "warning",
+    "careful",
+    "suspicious",
+    "fake",
+    "bot",
 ]
 
 # Bullish sentiment keywords
 BULLISH_KEYWORDS = [
-    "gem", "moon", "mooning", "buy", "buying", "launch", "just launched",
-    "early", "airdrop", "kol", "influencer", "trending", "viral",
-    "100x", "1000x", "massive", "huge",
+    "gem",
+    "moon",
+    "mooning",
+    "buy",
+    "buying",
+    "launch",
+    "just launched",
+    "early",
+    "airdrop",
+    "kol",
+    "influencer",
+    "trending",
+    "viral",
+    "100x",
+    "1000x",
+    "massive",
+    "huge",
 ]
 
 
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class Tweet:
@@ -97,27 +127,28 @@ class Tweet:
     views: int
     created_at: str
     engagement_score: float = 0.0
-    sentiment: str = "neutral"   # "bullish" | "bearish" | "neutral"
+    sentiment: str = "neutral"  # "bullish" | "bearish" | "neutral"
     sentiment_keywords: list[str] = field(default_factory=list)
 
     @classmethod
-    def from_raw(cls, raw: dict) -> "Tweet | None":
+    def from_raw(cls, raw: dict) -> Tweet | None:
         """Parse a raw tweet dict from twitter-cli --json output."""
         try:
             text = raw.get("text", "") or raw.get("full_text", "") or ""
             author_data = raw.get("user") or raw.get("author") or {}
             metrics = raw.get("public_metrics") or {}
 
-            likes     = int(raw.get("favorite_count") or metrics.get("like_count") or 0)
-            retweets  = int(raw.get("retweet_count") or metrics.get("retweet_count") or 0)
-            replies   = int(raw.get("reply_count") or metrics.get("reply_count") or 0)
-            views     = int(raw.get("views") or metrics.get("impression_count") or 0)
+            likes = int(raw.get("favorite_count") or metrics.get("like_count") or 0)
+            retweets = int(raw.get("retweet_count") or metrics.get("retweet_count") or 0)
+            replies = int(raw.get("reply_count") or metrics.get("reply_count") or 0)
+            views = int(raw.get("views") or metrics.get("impression_count") or 0)
             followers = int(author_data.get("followers_count") or 0)
-            author    = author_data.get("screen_name") or author_data.get("username") or "unknown"
-            tweet_id  = str(raw.get("id_str") or raw.get("id") or "")
-            created   = raw.get("created_at") or raw.get("created_at_str") or ""
+            author = author_data.get("screen_name") or author_data.get("username") or "unknown"
+            tweet_id = str(raw.get("id_str") or raw.get("id") or "")
+            created = raw.get("created_at") or raw.get("created_at_str") or ""
 
             import math
+
             score = (
                 likes * 1.0
                 + retweets * 2.0
@@ -162,17 +193,18 @@ class Tweet:
 @dataclass
 class SocialSnapshot:
     """Aggregated social picture for a single token at a point in time."""
+
     token_mint: str
     ticker: str
     tweet_count: int
     bull_count: int
     bear_count: int
     neutral_count: int
-    top_tweets: list[Tweet]           # highest engagement, up to 5
-    bear_warnings: list[str]          # deduplicated warning keywords found
-    bull_signals: list[str]           # deduplicated bullish keywords found
-    kol_mentions: list[str]           # authors with >10k followers
-    sentiment_score: float            # -1.0 (max bear) to +1.0 (max bull)
+    top_tweets: list[Tweet]  # highest engagement, up to 5
+    bear_warnings: list[str]  # deduplicated warning keywords found
+    bull_signals: list[str]  # deduplicated bullish keywords found
+    kol_mentions: list[str]  # authors with >10k followers
+    sentiment_score: float  # -1.0 (max bear) to +1.0 (max bull)
     scanned_at: str = ""
 
     @property
@@ -200,6 +232,7 @@ class SocialSnapshot:
 # CLI runner (subprocess wrapper)
 # ---------------------------------------------------------------------------
 
+
 class TwitterCLIRunner:
     """
     Thin wrapper around the `twitter` CLI subprocess.
@@ -213,6 +246,7 @@ class TwitterCLIRunner:
 
     def _build_env(self) -> dict:
         import os
+
         env = os.environ.copy()
         if self.proxy:
             env["TWITTER_PROXY"] = self.proxy
@@ -230,7 +264,7 @@ class TwitterCLIRunner:
         logger.debug(f"twitter-cli: {' '.join(cmd)}")
 
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # noqa: S603 - fixed "twitter" CLI with controlled args
                 cmd,
                 capture_output=True,
                 text=True,
@@ -280,6 +314,7 @@ class TwitterCLIRunner:
 # ---------------------------------------------------------------------------
 # Main adapter
 # ---------------------------------------------------------------------------
+
 
 class SocialSignalAdapter:
     """
@@ -338,18 +373,23 @@ class SocialSignalAdapter:
         # Mint address first (most specific), then ticker, then extras
         terms = [f'"{token_mint[:8]}"']  # partial mint is often enough
         if ticker and ticker != token_mint:
-            terms.append(f'${ticker}')
+            terms.append(f"${ticker}")
             terms.append(ticker)
         if extra_terms:
             terms.extend(extra_terms)
 
         query = " OR ".join(terms[:4])  # keep query manageable
 
-        raw_tweets = await self.runner.run_async([
-            "search", query,
-            "-t", "Latest",
-            "--max", str(self.config["token_search_max"]),
-        ])
+        raw_tweets = await self.runner.run_async(
+            [
+                "search",
+                query,
+                "-t",
+                "Latest",
+                "--max",
+                str(self.config["token_search_max"]),
+            ]
+        )
 
         if raw_tweets is None:
             logger.warning(f"Social scan failed for {ticker}")
@@ -386,11 +426,16 @@ class SocialSignalAdapter:
 
         all_tweets: list[Tweet] = []
         for query in ECOSYSTEM_QUERIES:
-            raw = await self.runner.run_async([
-                "search", query,
-                "-t", "Latest",
-                "--max", str(self.config["ecosystem_search_max"] // len(ECOSYSTEM_QUERIES)),
-            ])
+            raw = await self.runner.run_async(
+                [
+                    "search",
+                    query,
+                    "-t",
+                    "Latest",
+                    "--max",
+                    str(self.config["ecosystem_search_max"] // len(ECOSYSTEM_QUERIES)),
+                ]
+            )
             if raw:
                 tweets = [t for r in raw if (t := Tweet.from_raw(r)) is not None]
                 all_tweets.extend(tweets)
@@ -419,9 +464,7 @@ class SocialSignalAdapter:
             return "[SOCIAL] No data — scan not yet run for this token."
 
         snap = cached
-        lines = [
-            f"[SOCIAL SIGNALS — ${snap.ticker} | {snap.tweet_count} tweets scanned]"
-        ]
+        lines = [f"[SOCIAL SIGNALS — ${snap.ticker} | {snap.tweet_count} tweets scanned]"]
 
         # Sentiment summary
         score_bar = self._score_to_bar(snap.sentiment_score)
@@ -443,11 +486,15 @@ class SocialSignalAdapter:
             lines.append(f"Bullish signals: {', '.join(snap.bull_signals[:5])}")
 
         # Top tweet snippets (max 3, only if engagement score is meaningful)
-        top = [t for t in snap.top_tweets if t.engagement_score >= self.config["min_engagement_score"]][:3]
+        top = [
+            t for t in snap.top_tweets if t.engagement_score >= self.config["min_engagement_score"]
+        ][:3]
         if top:
             lines.append("\nTop tweets:")
             for t in top:
-                flag = "🔴" if t.sentiment == "bearish" else "🟢" if t.sentiment == "bullish" else "⚪"
+                flag = (
+                    "🔴" if t.sentiment == "bearish" else "🟢" if t.sentiment == "bullish" else "⚪"
+                )
                 lines.append(
                     f"  {flag} @{t.author} ({t.author_followers:,} followers) "
                     f"[❤{t.likes} 🔁{t.retweets}]: {t.text[:120].strip()}..."
@@ -493,9 +540,7 @@ class SocialSignalAdapter:
             return None
         return snapshot
 
-    def _build_snapshot(
-        self, ticker: str, token_mint: str, tweets: list[Tweet]
-    ) -> SocialSnapshot:
+    def _build_snapshot(self, ticker: str, token_mint: str, tweets: list[Tweet]) -> SocialSnapshot:
         bull = [t for t in tweets if t.sentiment == "bullish"]
         bear = [t for t in tweets if t.sentiment == "bearish"]
         neutral = [t for t in tweets if t.sentiment == "neutral"]
@@ -512,10 +557,7 @@ class SocialSignalAdapter:
 
         # KOLs
         kol_threshold = 10_000
-        kols = list({
-            f"@{t.author}" for t in tweets
-            if t.author_followers >= kol_threshold
-        })
+        kols = list({f"@{t.author}" for t in tweets if t.author_followers >= kol_threshold})
 
         # Top tweets by engagement
         top = sorted(tweets, key=lambda t: t.engagement_score, reverse=True)[:5]
@@ -532,7 +574,7 @@ class SocialSignalAdapter:
             bull_signals=bull_signals,
             kol_mentions=kols,
             sentiment_score=round(sentiment_score, 3),
-            scanned_at=datetime.now(timezone.utc).isoformat(),
+            scanned_at=datetime.now(UTC).isoformat(),
         )
 
     @staticmethod
@@ -540,8 +582,17 @@ class SocialSignalAdapter:
         """Convert -1..+1 to a visual bar."""
         idx = int((score + 1) / 2 * 8)
         idx = max(0, min(8, idx))
-        bars = ["████▓▓▒▒░", "███▓▓▒▒░░", "██▓▓▒▒░░░", "█▓▓▒▒░░░░",
-                "▓▒▒░░░░░░", "▒▒░░░░░░░", "▒░░░░░░░░", "░░░░░░░░░", "░░░░░░░░░"]
+        bars = [
+            "████▓▓▒▒░",
+            "███▓▓▒▒░░",
+            "██▓▓▒▒░░░",
+            "█▓▓▒▒░░░░",
+            "▓▒▒░░░░░░",
+            "▒▒░░░░░░░",
+            "▒░░░░░░░░",
+            "░░░░░░░░░",
+            "░░░░░░░░░",
+        ]
         label = "BULLISH" if score > 0.2 else "BEARISH" if score < -0.2 else "NEUTRAL"
         return f"{bars[idx]} {label}"
 
@@ -549,6 +600,7 @@ class SocialSignalAdapter:
 # ---------------------------------------------------------------------------
 # FENRIR strategy mixin
 # ---------------------------------------------------------------------------
+
 
 class FENRIRSocialMixin:
     """
@@ -578,7 +630,7 @@ class FENRIRSocialMixin:
         ticker: str,
         token_mint: str,
         extra_terms: list[str] | None = None,
-    ) -> "SocialSnapshot | None":
+    ) -> SocialSnapshot | None:
         """Scan social + drain events to EventBus."""
         snap = await self._social.scan_token(ticker, token_mint, extra_terms)
         if snap:
@@ -604,7 +656,9 @@ class FENRIRSocialMixin:
         bear = sum(1 for t in tweets if t.sentiment == "bearish")
         bull = sum(1 for t in tweets if t.sentiment == "bullish")
         total = len(tweets)
-        rug_hits = [t for t in tweets if any(k in t.text.lower() for k in ["rug", "scam", "honeypot"])]
+        rug_hits = [
+            t for t in tweets if any(k in t.text.lower() for k in ["rug", "scam", "honeypot"])
+        ]
         out = f"[ECOSYSTEM] pump.fun sentiment: Bull={bull} Bear={bear} / {total} tweets"
         if rug_hits:
             out += f" | ⚠️ {len(rug_hits)} rug/scam warnings in feed"
@@ -623,7 +677,7 @@ SOCIAL_PROMPT_ADDON = """
 
 Social signal guidance:
 - Bear keywords (rug/scam/dump/dev sold) = strong EXIT or NO-ENTRY signal
-- KOL mentions with high engagement = potential pump catalyst  
+- KOL mentions with high engagement = potential pump catalyst
 - Ecosystem-wide rug warnings = reduce position sizes globally
 - Sentiment score < -0.3 = override HOLD to EXIT
 """
@@ -632,6 +686,7 @@ Social signal guidance:
 # ---------------------------------------------------------------------------
 # Setup verification script
 # ---------------------------------------------------------------------------
+
 
 async def verify_setup() -> bool:
     """
@@ -645,9 +700,10 @@ async def verify_setup() -> bool:
     runner = TwitterCLIRunner()
 
     print("\n[1/3] Checking twitter-cli installation...")
-    result = runner.run(["--help"])
+    runner.run(["--help"])
     # --help exits non-zero but we just want to confirm the binary exists
     import shutil
+
     if shutil.which("twitter"):
         print("  ✓ twitter-cli found")
     else:

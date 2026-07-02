@@ -209,10 +209,14 @@ class HistoricalMemory:
         now: datetime,
     ) -> None:
         """Update aggregate stats for a creator."""
-        existing = self._conn().execute(
-            "SELECT * FROM creator_stats WHERE creator_address = ?",
-            (creator_address,),
-        ).fetchone()
+        existing = (
+            self._conn()
+            .execute(
+                "SELECT * FROM creator_stats WHERE creator_address = ?",
+                (creator_address,),
+            )
+            .fetchone()
+        )
 
         now_str = now.isoformat()
 
@@ -290,8 +294,17 @@ class HistoricalMemory:
                 WHERE creator_address = ?
                 """,
                 (
-                    total, bought, profitable, new_avg, total_sol,
-                    rugs, best, worst, new_hold, now_str, creator_address,
+                    total,
+                    bought,
+                    profitable,
+                    new_avg,
+                    total_sol,
+                    rugs,
+                    best,
+                    worst,
+                    new_hold,
+                    now_str,
+                    creator_address,
                 ),
             )
 
@@ -342,10 +355,14 @@ class HistoricalMemory:
 
     def _get_creator_context(self, creator_address: str) -> str:
         """Get creator's historical track record."""
-        row = self._conn().execute(
-            "SELECT * FROM creator_stats WHERE creator_address = ?",
-            (creator_address,),
-        ).fetchone()
+        row = (
+            self._conn()
+            .execute(
+                "SELECT * FROM creator_stats WHERE creator_address = ?",
+                (creator_address,),
+            )
+            .fetchone()
+        )
 
         if not row or row["total_launches"] < 1:
             return ""
@@ -361,8 +378,7 @@ class HistoricalMemory:
         if bought > 0:
             win_rate = (profitable / bought * 100) if bought > 0 else 0
             parts.append(
-                f"  {bought} bought, {win_rate:.0f}% win rate, "
-                f"avg PnL {avg_pnl:+.1f}%"
+                f"  {bought} bought, {win_rate:.0f}% win rate, " f"avg PnL {avg_pnl:+.1f}%"
             )
         if rugs > 0:
             parts.append(f"  ⚠️ {rugs} suspected rug(s) (PnL < -80%)")
@@ -375,8 +391,10 @@ class HistoricalMemory:
         low = liquidity_sol * 0.5
         high = liquidity_sol * 1.5
 
-        row = self._conn().execute(
-            """
+        row = (
+            self._conn()
+            .execute(
+                """
             SELECT
                 COUNT(*) as total,
                 SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins,
@@ -386,8 +404,10 @@ class HistoricalMemory:
               AND pnl_pct IS NOT NULL
               AND initial_liquidity_sol BETWEEN ? AND ?
             """,
-            (low, high),
-        ).fetchone()
+                (low, high),
+            )
+            .fetchone()
+        )
 
         if not row or row["total"] < 3:
             return ""
@@ -407,8 +427,10 @@ class HistoricalMemory:
         """Get performance for current hour of day."""
         hour = datetime.now().hour
 
-        row = self._conn().execute(
-            """
+        row = (
+            self._conn()
+            .execute(
+                """
             SELECT
                 COUNT(*) as total,
                 SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins,
@@ -418,8 +440,10 @@ class HistoricalMemory:
               AND pnl_pct IS NOT NULL
               AND hour_of_day = ?
             """,
-            (hour,),
-        ).fetchone()
+                (hour,),
+            )
+            .fetchone()
+        )
 
         if not row or row["total"] < 5:
             return ""
@@ -436,8 +460,10 @@ class HistoricalMemory:
 
     def _get_overall_context(self) -> str:
         """Get overall historical performance summary."""
-        row = self._conn().execute(
-            """
+        row = (
+            self._conn()
+            .execute(
+                """
             SELECT
                 COUNT(*) as total,
                 SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins,
@@ -446,7 +472,9 @@ class HistoricalMemory:
             FROM historical_outcomes
             WHERE was_bought = 1 AND pnl_pct IS NOT NULL
             """
-        ).fetchone()
+            )
+            .fetchone()
+        )
 
         if not row or row["total"] < 5:
             return ""
@@ -468,16 +496,22 @@ class HistoricalMemory:
 
     def get_creator_profile(self, creator_address: str) -> dict | None:
         """Get full creator stats as a dict."""
-        row = self._conn().execute(
-            "SELECT * FROM creator_stats WHERE creator_address = ?",
-            (creator_address,),
-        ).fetchone()
+        row = (
+            self._conn()
+            .execute(
+                "SELECT * FROM creator_stats WHERE creator_address = ?",
+                (creator_address,),
+            )
+            .fetchone()
+        )
         return dict(row) if row else None
 
     def get_strategy_performance(self, strategy_id: str) -> dict:
         """Get performance breakdown for a specific strategy."""
-        row = self._conn().execute(
-            """
+        row = (
+            self._conn()
+            .execute(
+                """
             SELECT
                 COUNT(*) as total,
                 SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins,
@@ -487,8 +521,10 @@ class HistoricalMemory:
             FROM historical_outcomes
             WHERE strategy_id = ? AND was_bought = 1 AND pnl_pct IS NOT NULL
             """,
-            (strategy_id,),
-        ).fetchone()
+                (strategy_id,),
+            )
+            .fetchone()
+        )
 
         if not row or not row["total"]:
             return {"total": 0}
@@ -504,9 +540,7 @@ class HistoricalMemory:
 
     def get_total_outcomes(self) -> int:
         """Total number of recorded outcomes."""
-        row = self._conn().execute(
-            "SELECT COUNT(*) as c FROM historical_outcomes"
-        ).fetchone()
+        row = self._conn().execute("SELECT COUNT(*) as c FROM historical_outcomes").fetchone()
         return row["c"] if row else 0
 
     def close(self) -> None:

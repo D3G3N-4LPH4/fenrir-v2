@@ -28,14 +28,11 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-import polars as pl
-
-from .backtest_impls import BacktestRecorder, SimulatedRouter, HistoricalDataFeed
+from .backtest_impls import BacktestRecorder
 
 if TYPE_CHECKING:
     from .protocols import ClaudeDecision, OrderResult
@@ -47,41 +44,43 @@ logger = logging.getLogger("fenrir.art")
 # ART data structures
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ARTSample:
     """
     A single training sample for OpenPipe ART.
     Contains the full prompt/response pair + a reward signal.
     """
-    sample_id:    str
-    mint:         str
-    prompt:       str         # the exact prompt Claude received
-    response:     str         # Claude's exact response
-    action:       str         # BUY / SELL / HOLD / EXIT
-    reward:       float       # continuous reward: -1.0 to +1.0
-    label:        str         # GOOD_BUY / BAD_BUY / etc.
-    pnl_pct:      float
-    hold_secs:    float
-    model:        str
-    timestamp:    str
+
+    sample_id: str
+    mint: str
+    prompt: str  # the exact prompt Claude received
+    response: str  # Claude's exact response
+    action: str  # BUY / SELL / HOLD / EXIT
+    reward: float  # continuous reward: -1.0 to +1.0
+    label: str  # GOOD_BUY / BAD_BUY / etc.
+    pnl_pct: float
+    hold_secs: float
+    model: str
+    timestamp: str
 
     def to_openrouter_format(self) -> dict:
         """Format expected by OpenPipe ART fine-tuning API."""
         return {
             "messages": [
-                {"role": "user",      "content": self.prompt},
+                {"role": "user", "content": self.prompt},
                 {"role": "assistant", "content": self.response},
             ],
-            "reward":     self.reward,
+            "reward": self.reward,
             "metadata": {
-                "sample_id":  self.sample_id,
-                "mint":       self.mint,
-                "action":     self.action,
-                "label":      self.label,
-                "pnl_pct":    self.pnl_pct,
-                "hold_secs":  self.hold_secs,
-                "model":      self.model,
-                "timestamp":  self.timestamp,
+                "sample_id": self.sample_id,
+                "mint": self.mint,
+                "action": self.action,
+                "label": self.label,
+                "pnl_pct": self.pnl_pct,
+                "hold_secs": self.hold_secs,
+                "model": self.model,
+                "timestamp": self.timestamp,
             },
         }
 
@@ -94,24 +93,25 @@ class PreferencePair:
     'rejected' is the response that led to a worse outcome.
     Both must be on similar context (same token, similar market conditions).
     """
-    sample_id:      str
-    prompt:         str
-    chosen:         str    # response from GOOD_* labeled decision
-    rejected:       str    # response from BAD_* labeled decision
-    chosen_reward:  float
+
+    sample_id: str
+    prompt: str
+    chosen: str  # response from GOOD_* labeled decision
+    rejected: str  # response from BAD_* labeled decision
+    chosen_reward: float
     rejected_reward: float
-    context_summary: str   # brief description of market conditions
+    context_summary: str  # brief description of market conditions
 
     def to_openrouter_format(self) -> dict:
         return {
             "messages": [{"role": "user", "content": self.prompt}],
-            "chosen":   [{"role": "assistant", "content": self.chosen}],
+            "chosen": [{"role": "assistant", "content": self.chosen}],
             "rejected": [{"role": "assistant", "content": self.rejected}],
             "metadata": {
-                "sample_id":      self.sample_id,
-                "chosen_reward":  self.chosen_reward,
+                "sample_id": self.sample_id,
+                "chosen_reward": self.chosen_reward,
                 "rejected_reward": self.rejected_reward,
-                "context":        self.context_summary,
+                "context": self.context_summary,
             },
         }
 
@@ -122,17 +122,17 @@ class PreferencePair:
 
 # Reward map — converts string labels to continuous reward signal
 REWARD_MAP = {
-    "GOOD_BUY":       +1.0,
-    "OK_BUY":         +0.4,
+    "GOOD_BUY": +1.0,
+    "OK_BUY": +0.4,
     "BREAK_EVEN_BUY": +0.1,
-    "BAD_BUY":        -1.0,
-    "GOOD_SELL":      +0.8,
-    "GOOD_HOLD":      +0.6,
-    "OK_HOLD":        +0.2,
-    "BAD_HOLD":       -0.7,
-    "LOSS_SELL":      +0.3,   # sold at a loss but at least stopped it
-    "EARLY_SELL":     -0.3,   # left money on table
-    "UNKNOWN":        +0.0,
+    "BAD_BUY": -1.0,
+    "GOOD_SELL": +0.8,
+    "GOOD_HOLD": +0.6,
+    "OK_HOLD": +0.2,
+    "BAD_HOLD": -0.7,
+    "LOSS_SELL": +0.3,  # sold at a loss but at least stopped it
+    "EARLY_SELL": -0.3,  # left money on table
+    "UNKNOWN": +0.0,
 }
 
 
@@ -161,9 +161,9 @@ class ARTExporter:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        samples       = self._build_samples()
-        pairs         = self._build_preference_pairs(samples)
-        sft_samples   = [s for s in samples if s.reward > 0.5]
+        samples = self._build_samples()
+        pairs = self._build_preference_pairs(samples)
+        sft_samples = [s for s in samples if s.reward > 0.5]
 
         # Write art_samples.jsonl
         self._write_jsonl(
@@ -183,7 +183,7 @@ class ARTExporter:
             [
                 {
                     "messages": [
-                        {"role": "user",      "content": s.prompt},
+                        {"role": "user", "content": s.prompt},
                         {"role": "assistant", "content": s.response},
                     ]
                 }
@@ -196,37 +196,35 @@ class ARTExporter:
         for s in samples:
             label_counts[s.label] = label_counts.get(s.label, 0) + 1
 
-        avg_reward   = sum(s.reward for s in samples) / max(len(samples), 1)
-        avg_pnl      = sum(s.pnl_pct for s in samples) / max(len(samples), 1)
+        avg_reward = sum(s.reward for s in samples) / max(len(samples), 1)
+        avg_pnl = sum(s.pnl_pct for s in samples) / max(len(samples), 1)
 
         summary = {
-            "total_events":      len(self._events),
+            "total_events": len(self._events),
             "exportable_samples": len(samples),
-            "preference_pairs":  len(pairs),
-            "sft_samples":       len(sft_samples),
-            "avg_reward":        round(avg_reward, 3),
-            "avg_pnl_pct":       round(avg_pnl, 2),
+            "preference_pairs": len(pairs),
+            "sft_samples": len(sft_samples),
+            "avg_reward": round(avg_reward, 3),
+            "avg_pnl_pct": round(avg_pnl, 2),
             "label_distribution": label_counts,
-            "output_dir":        str(output_dir),
+            "output_dir": str(output_dir),
         }
 
         with open(output_dir / "summary.json", "w") as f:
             json.dump(summary, f, indent=2)
 
-        logger.info(
-            f"ART export: {len(samples)} samples, {len(pairs)} pairs → {output_dir}"
-        )
+        logger.info(f"ART export: {len(samples)} samples, {len(pairs)} pairs → {output_dir}")
         self._print_summary(summary)
         return summary
 
     def _build_samples(self) -> list[ARTSample]:
         samples = []
         for i, event in enumerate(self._events):
-            dec     = event.get("decision", {})
+            dec = event.get("decision", {})
             outcome = event.get("outcome")
 
             # Skip events where Claude's prompt wasn't captured
-            prompt   = dec.get("raw_prompt", "")
+            prompt = dec.get("raw_prompt", "")
             response = dec.get("raw_response", "")
             if len(prompt) < self.MIN_PROMPT_LEN or not response:
                 continue
@@ -235,34 +233,34 @@ class ARTExporter:
             if not outcome:
                 continue
 
-            label  = outcome.get("label", "UNKNOWN")
+            label = outcome.get("label", "UNKNOWN")
             reward = REWARD_MAP.get(label, 0.0)
 
             # Scale reward by PnL magnitude (large wins/losses matter more)
-            pnl_pct   = outcome.get("pnl_pct", 0.0)
-            magnitude = min(abs(pnl_pct) / 50, 1.0)   # normalize to 0-1 at 50% PnL
-            reward    = reward * (0.5 + 0.5 * magnitude)
-            reward    = max(-1.0, min(1.0, reward))
+            pnl_pct = outcome.get("pnl_pct", 0.0)
+            magnitude = min(abs(pnl_pct) / 50, 1.0)  # normalize to 0-1 at 50% PnL
+            reward = reward * (0.5 + 0.5 * magnitude)
+            reward = max(-1.0, min(1.0, reward))
 
-            samples.append(ARTSample(
-                sample_id=f"fenrir_{i:06d}",
-                mint=event.get("mint", ""),
-                prompt=prompt,
-                response=response,
-                action=dec.get("action", ""),
-                reward=round(reward, 4),
-                label=label,
-                pnl_pct=round(pnl_pct, 2),
-                hold_secs=round(outcome.get("hold_secs", 0), 1),
-                model=dec.get("model", ""),
-                timestamp=dec.get("timestamp", ""),
-            ))
+            samples.append(
+                ARTSample(
+                    sample_id=f"fenrir_{i:06d}",
+                    mint=event.get("mint", ""),
+                    prompt=prompt,
+                    response=response,
+                    action=dec.get("action", ""),
+                    reward=round(reward, 4),
+                    label=label,
+                    pnl_pct=round(pnl_pct, 2),
+                    hold_secs=round(outcome.get("hold_secs", 0), 1),
+                    model=dec.get("model", ""),
+                    timestamp=dec.get("timestamp", ""),
+                )
+            )
 
         return samples
 
-    def _build_preference_pairs(
-        self, samples: list[ARTSample]
-    ) -> list[PreferencePair]:
+    def _build_preference_pairs(self, samples: list[ARTSample]) -> list[PreferencePair]:
         """
         Group samples by mint (same token = similar market context),
         then pair good decisions against bad decisions.
@@ -274,30 +272,28 @@ class ARTExporter:
         pairs = []
         for mint, mint_samples in by_mint.items():
             good = sorted(
-                [s for s in mint_samples if s.reward > 0.4],
-                key=lambda s: s.reward, reverse=True
+                [s for s in mint_samples if s.reward > 0.4], key=lambda s: s.reward, reverse=True
             )
-            bad = sorted(
-                [s for s in mint_samples if s.reward < -0.2],
-                key=lambda s: s.reward
-            )
+            bad = sorted([s for s in mint_samples if s.reward < -0.2], key=lambda s: s.reward)
 
-            for g, b in zip(good, bad):
+            for g, b in zip(good, bad, strict=False):
                 # Use the bad sample's prompt as the shared context
                 # (both saw a similar situation but decided differently)
-                pairs.append(PreferencePair(
-                    sample_id=f"pair_{g.sample_id}_{b.sample_id}",
-                    prompt=b.prompt,
-                    chosen=g.response,
-                    rejected=b.response,
-                    chosen_reward=g.reward,
-                    rejected_reward=b.reward,
-                    context_summary=(
-                        f"Token {mint[:8]} | "
-                        f"chosen={g.action}(PnL={g.pnl_pct:+.1f}%) "
-                        f"rejected={b.action}(PnL={b.pnl_pct:+.1f}%)"
-                    ),
-                ))
+                pairs.append(
+                    PreferencePair(
+                        sample_id=f"pair_{g.sample_id}_{b.sample_id}",
+                        prompt=b.prompt,
+                        chosen=g.response,
+                        rejected=b.response,
+                        chosen_reward=g.reward,
+                        rejected_reward=b.reward,
+                        context_summary=(
+                            f"Token {mint[:8]} | "
+                            f"chosen={g.action}(PnL={g.pnl_pct:+.1f}%) "
+                            f"rejected={b.action}(PnL={b.pnl_pct:+.1f}%)"
+                        ),
+                    )
+                )
 
         return pairs
 
@@ -320,10 +316,7 @@ class ARTExporter:
         print(f"  Avg reward:          {summary['avg_reward']:+.3f}")
         print(f"  Avg PnL:             {summary['avg_pnl_pct']:+.2f}%")
         print("\n  Label distribution:")
-        for label, count in sorted(
-            summary["label_distribution"].items(),
-            key=lambda x: -x[1]
-        ):
+        for label, count in sorted(summary["label_distribution"].items(), key=lambda x: -x[1]):
             bar = "█" * min(count, 30)
             print(f"    {label:<20} {bar} {count}")
         print("=" * 55)
@@ -332,6 +325,7 @@ class ARTExporter:
 # ---------------------------------------------------------------------------
 # Incident Replayer
 # ---------------------------------------------------------------------------
+
 
 class IncidentReplayer:
     """
@@ -353,7 +347,7 @@ class IncidentReplayer:
     """
 
     def __init__(self, live_event_log: str | Path):
-        self.log_path    = Path(live_event_log)
+        self.log_path = Path(live_event_log)
         self._live_events: list[dict] = []
         self._load()
 
@@ -376,7 +370,8 @@ class IncidentReplayer:
         Only works if outcomes were backfilled; live events need price lookup.
         """
         return [
-            e for e in self._live_events
+            e
+            for e in self._live_events
             if e.get("outcome") and e["outcome"].get("pnl_pct", 0) <= min_loss_pct
         ]
 
@@ -394,15 +389,15 @@ class IncidentReplayer:
         Generates a human-readable incident report for a single trade event.
         Shows exactly what Claude saw, what it decided, and what happened.
         """
-        dec     = event.get("decision", {})
-        order   = event.get("order") or {}
+        dec = event.get("decision", {})
+        order = event.get("order") or {}
         outcome = event.get("outcome") or {}
         context = event.get("context") or {}
-        mint    = event.get("mint", "unknown")
+        mint = event.get("mint", "unknown")
 
         lines = [
             "=" * 60,
-            f"FENRIR INCIDENT REPORT",
+            "FENRIR INCIDENT REPORT",
             f"Mint:      {mint}",
             f"Timestamp: {dec.get('timestamp', 'unknown')}",
             "=" * 60,
@@ -433,8 +428,8 @@ class IncidentReplayer:
         lines += ["", "--- OUTCOME ---"]
         if outcome:
             label = outcome.get("label", "UNKNOWN")
-            pnl   = outcome.get("pnl_pct", 0)
-            hold  = outcome.get("hold_secs", 0)
+            pnl = outcome.get("pnl_pct", 0)
+            hold = outcome.get("hold_secs", 0)
             reward = REWARD_MAP.get(label, 0)
             lines += [
                 f"Label:      {label}",
@@ -480,16 +475,16 @@ class IncidentReplayer:
         Only works if outcome is available (requires price lookup or
         retrospective labeling).
         """
-        dec     = event.get("decision", {})
+        dec = event.get("decision", {})
         outcome = event.get("outcome")
-        prompt  = dec.get("raw_prompt", "")
+        prompt = dec.get("raw_prompt", "")
         response = dec.get("raw_response", "")
 
         if not outcome or len(prompt) < 50:
             return None
 
-        label  = outcome.get("label", "UNKNOWN")
-        pnl    = outcome.get("pnl_pct", 0.0)
+        label = outcome.get("label", "UNKNOWN")
+        pnl = outcome.get("pnl_pct", 0.0)
         reward = REWARD_MAP.get(label, 0.0)
 
         return ARTSample(
@@ -521,6 +516,7 @@ class IncidentReplayer:
 # Live execution recorder (the production counterpart)
 # ---------------------------------------------------------------------------
 
+
 class LiveExecutionRecorder:
     """
     Live implementation of ExecutionRecorder.
@@ -534,23 +530,23 @@ class LiveExecutionRecorder:
     def __init__(self, log_path: str | Path):
         self.log_path = Path(log_path)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        self._f = open(self.log_path, "a")   # append mode — never overwrites
+        self._f = open(self.log_path, "a")  # append mode — never overwrites
         logger.info(f"LiveExecutionRecorder writing to {self.log_path}")
 
     async def record(
         self,
-        mint:     str,
-        decision: "ClaudeDecision",
-        order:    "OrderResult | None",
-        context:  dict,
-        outcome:  dict | None = None,
+        mint: str,
+        decision: ClaudeDecision,
+        order: OrderResult | None,
+        context: dict,
+        outcome: dict | None = None,
     ) -> None:
         event = {
-            "mint":     mint,
+            "mint": mint,
             "decision": decision.to_dict(),
-            "order":    order.to_dict() if order else None,
-            "context":  context,
-            "outcome":  outcome,   # None at decision time; backfilled later
+            "order": order.to_dict() if order else None,
+            "context": context,
+            "outcome": outcome,  # None at decision time; backfilled later
         }
         self._f.write(json.dumps(event) + "\n")
 

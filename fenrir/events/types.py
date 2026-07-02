@@ -7,13 +7,13 @@ Every significant action in the bot lifecycle emits an event.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
 
 def _utcnow() -> datetime:
     """Return current UTC time (timezone-aware)."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class EventSeverity(Enum):
@@ -78,6 +78,7 @@ class TradeEvent:
 # ═══════════════════════════════════════════════════════════════════════════
 #                        EVENT FACTORY HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def token_detected_event(
     token_address: str,

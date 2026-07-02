@@ -8,16 +8,19 @@ Watches the blockchain for fresh token launches on pump.fun.
 
 import asyncio
 import base64 as b64
-import base58
 import json
 from collections import OrderedDict
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from websockets.asyncio.client import connect as ws_connect
-from websockets.exceptions import ConnectionClosed
+import base58
 from solders.pubkey import Pubkey
+from websockets.exceptions import ConnectionClosed
+
+# websockets is capped at <12 by solana 0.35.0, so use the legacy client's
+# connect (the async context-manager API used below is unchanged on 11.x).
+from websockets.legacy.client import connect as ws_connect
 
 from fenrir.config import BotConfig
 from fenrir.core.client import SolanaClient
@@ -76,7 +79,7 @@ class PumpFunMonitor:
         data = getattr(ix, "data", None)
         if data is None:
             return b""
-        if isinstance(data, (bytes, bytearray)):
+        if isinstance(data, bytes | bytearray):
             return bytes(data)
         if isinstance(data, str):
             # jsonParsed encoding returns instruction data as base58; older/base64
@@ -170,9 +173,7 @@ class PumpFunMonitor:
                         # Matching that specific line (rather than a bare "Create")
                         # avoids fetching every CreateTokenAccount / CreateIdempotent
                         # from unrelated router transactions that merely touch pump.
-                        has_create_hint = any(
-                            "Instruction: CreateV2" in log for log in logs
-                        )
+                        has_create_hint = any("Instruction: CreateV2" in log for log in logs)
 
                         if not has_create_hint:
                             continue
@@ -309,9 +310,7 @@ class PumpFunMonitor:
                 # UiPartiallyDecodedInstruction has already-resolved pubkey strings
                 raw_accounts = getattr(ix, "accounts", [])
                 if raw_accounts and isinstance(raw_accounts[0], int):
-                    accounts: list[str] = [
-                        str(message.account_keys[idx]) for idx in raw_accounts
-                    ]
+                    accounts: list[str] = [str(message.account_keys[idx]) for idx in raw_accounts]
                 else:
                     accounts = [str(a) for a in raw_accounts]
 

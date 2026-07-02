@@ -13,10 +13,10 @@ Payloads here mirror exactly what AuditAdapter writes (event.data + symbol).
 from fenrir.ai.memory import AISessionMemory
 from fenrir.data.audit import AuditChain
 
-
 # ═══════════════════════════════════════════════════════════════════
 #  Fixtures / helpers
 # ═══════════════════════════════════════════════════════════════════
+
 
 def make_chain(tmp_path) -> AuditChain:
     return AuditChain(db_path=str(tmp_path / "audit.db"))
@@ -61,6 +61,7 @@ def sell(chain, addr, symbol, pnl_pct, pnl_sol, reason="exit", hold=5):
 # ═══════════════════════════════════════════════════════════════════
 #  Basic projection
 # ═══════════════════════════════════════════════════════════════════
+
 
 def test_empty_chain_yields_empty_memory(tmp_path):
     chain = make_chain(tmp_path)
@@ -124,6 +125,7 @@ def test_auto_buy_without_ai_decision_is_synthesized(tmp_path):
 #  Rolling buffer + tallies
 # ═══════════════════════════════════════════════════════════════════
 
+
 def test_max_size_evicts_but_tallies_count_all(tmp_path):
     chain = make_chain(tmp_path)
     for i in range(10):
@@ -142,6 +144,7 @@ def test_max_size_evicts_but_tallies_count_all(tmp_path):
 # ═══════════════════════════════════════════════════════════════════
 #  Risk-appetite signal survives the round trip
 # ═══════════════════════════════════════════════════════════════════
+
 
 def test_losing_streak_reconstructed(tmp_path):
     chain = make_chain(tmp_path)
@@ -162,6 +165,7 @@ def test_losing_streak_reconstructed(tmp_path):
 #  Rendered context block
 # ═══════════════════════════════════════════════════════════════════
 
+
 def test_context_block_rendered_from_projection(tmp_path):
     chain = make_chain(tmp_path)
     ai_decision(chain, "MOON", "MOON", "STRONG_BUY", 0.9, 3.0, "clean chart")
@@ -179,6 +183,7 @@ def test_context_block_rendered_from_projection(tmp_path):
 # ═══════════════════════════════════════════════════════════════════
 #  Equivalence with the live path
 # ═══════════════════════════════════════════════════════════════════
+
 
 def test_projection_matches_live_tallies(tmp_path):
     """Projecting the log should produce the same tallies as driving the live
@@ -198,9 +203,15 @@ def test_projection_matches_live_tallies(tmp_path):
     for addr, decision, conf, risk, bought, pnl, pnl_sol in seq:
         ai_decision(chain, addr, addr, decision, conf, risk)
         rec = DecisionRecord(
-            timestamp=datetime.now(), token_mint=addr, token_symbol=addr,
-            token_name=addr, decision=decision, confidence=conf,
-            risk_score=risk, reasoning_summary="r", was_bought=bought,
+            timestamp=datetime.now(),
+            token_mint=addr,
+            token_symbol=addr,
+            token_name=addr,
+            decision=decision,
+            confidence=conf,
+            risk_score=risk,
+            reasoning_summary="r",
+            was_bought=bought,
         )
         live.record_decision(rec)
         if bought:

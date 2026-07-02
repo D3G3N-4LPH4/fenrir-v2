@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import os
 import random
-import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, cast
@@ -22,13 +21,12 @@ import aiohttp
 # Auth
 # ---------------------------------------------------------------------------
 
+
 def assert_jupiter_auth() -> str:
     """Fail fast if JUPITER_API_KEY is not set."""
     key = os.getenv("JUPITER_API_KEY")
     if not key:
-        raise RuntimeError(
-            "JUPITER_API_KEY not set. Obtain from portal.jup.ag and add to .env"
-        )
+        raise RuntimeError("JUPITER_API_KEY not set. Obtain from portal.jup.ag and add to .env")
     return key
 
 
@@ -39,21 +37,22 @@ def assert_jupiter_auth() -> str:
 # Swap execute error codes from the integrating-jupiter skill
 RETRYABLE_SWAP_CODES = frozenset([-1, -1000, -1001, -1004, -2000, -2001, -2003, -2004])
 
+
 class JupiterErrorCode(Enum):
-    RATE_LIMITED      = "RATE_LIMITED"
-    EXPIRED_ORDER     = -1
-    INVALID_TX        = -2
-    INVALID_BYTES     = -3
-    FAILED_LANDING    = -1000
-    UNKNOWN_AGG       = -1001
-    INVALID_AGG_TX    = -1002
-    UNSIGNED_TX       = -1003
-    STALE_BLOCKHASH   = -1004
-    RFQ_FAILED        = -2000
-    RFQ_UNKNOWN       = -2001
-    RFQ_INVALID       = -2002
-    RFQ_EXPIRED       = -2003
-    RFQ_REJECTED      = -2004
+    RATE_LIMITED = "RATE_LIMITED"
+    EXPIRED_ORDER = -1
+    INVALID_TX = -2
+    INVALID_BYTES = -3
+    FAILED_LANDING = -1000
+    UNKNOWN_AGG = -1001
+    INVALID_AGG_TX = -1002
+    UNSIGNED_TX = -1003
+    STALE_BLOCKHASH = -1004
+    RFQ_FAILED = -2000
+    RFQ_UNKNOWN = -2001
+    RFQ_INVALID = -2002
+    RFQ_EXPIRED = -2003
+    RFQ_REJECTED = -2004
 
 
 @dataclass
@@ -70,6 +69,7 @@ class JupiterError(Exception):
 # Response types
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class TokenInfo:
     mint: str
@@ -81,13 +81,13 @@ class TokenInfo:
     raw: dict = field(default_factory=dict)
 
     @classmethod
-    def from_api(cls, data: dict) -> "TokenInfo":
+    def from_api(cls, data: dict) -> TokenInfo:
         audit = data.get("audit", {})
         return cls(
             mint=data.get("address", ""),
             symbol=data.get("symbol", ""),
             name=data.get("name", ""),
-            is_sus=audit.get("isSus", True),   # default True = conservative
+            is_sus=audit.get("isSus", True),  # default True = conservative
             organic_score=data.get("organicScore", 0.0),
             verified=data.get("tags", {}).get("verified", False),
             raw=data,
@@ -106,7 +106,7 @@ class TokenPrice:
         return self.price_usd is not None and self.confidence in ("high", "medium")
 
     @classmethod
-    def from_api(cls, mint: str, data: dict) -> "TokenPrice":
+    def from_api(cls, mint: str, data: dict) -> TokenPrice:
         return cls(
             mint=mint,
             price_usd=data.get("price"),
@@ -124,7 +124,7 @@ class WalletPosition:
     raw: dict = field(default_factory=dict)
 
     @classmethod
-    def from_api(cls, data: dict) -> "WalletPosition":
+    def from_api(cls, data: dict) -> WalletPosition:
         return cls(
             platform=data.get("platformId", ""),
             element_type=data.get("type", ""),
@@ -138,6 +138,7 @@ class WalletPosition:
 # Client
 # ---------------------------------------------------------------------------
 
+
 class JupiterClient:
     """
     Async Jupiter API client for FENRIR v2.
@@ -149,15 +150,15 @@ class JupiterClient:
     """
 
     BASE_URL = "https://api.jup.ag"
-    QUOTE_TIMEOUT = 5.0    # seconds
-    EXECUTE_TIMEOUT = 30.0 # seconds
+    QUOTE_TIMEOUT = 5.0  # seconds
+    EXECUTE_TIMEOUT = 30.0  # seconds
     MAX_RETRIES = 3
 
     def __init__(self) -> None:
         self._api_key = assert_jupiter_auth()
         self._session: aiohttp.ClientSession | None = None
 
-    async def __aenter__(self) -> "JupiterClient":
+    async def __aenter__(self) -> JupiterClient:
         self._session = aiohttp.ClientSession(
             headers={"x-api-key": self._api_key, "Content-Type": "application/json"},
         )
@@ -171,7 +172,7 @@ class JupiterClient:
     # Internal request helpers
     # ------------------------------------------------------------------
 
-    async def _get(self, path: str, params: dict | None = None, timeout: float = 10.0) -> Any:
+    async def _get(self, path: str, params: dict | None = None, timeout: float = 10.0) -> Any:  # noqa: ASYNC109 - forwarded to aiohttp.ClientTimeout
         assert self._session, "Use async context manager"
         async with self._session.get(
             f"{self.BASE_URL}{path}",
@@ -180,7 +181,7 @@ class JupiterClient:
         ) as resp:
             return await self._handle_response(resp)
 
-    async def _post(self, path: str, json: dict | None = None, timeout: float = 30.0) -> Any:
+    async def _post(self, path: str, json: dict | None = None, timeout: float = 30.0) -> Any:  # noqa: ASYNC109 - forwarded to aiohttp.ClientTimeout
         assert self._session, "Use async context manager"
         async with self._session.post(
             f"{self.BASE_URL}{path}",
@@ -221,7 +222,7 @@ class JupiterClient:
                 last_err = e
                 if not e.retryable or attempt == self.MAX_RETRIES:
                     raise
-                delay = min(1.0 * (2 ** attempt) + random.random() * 0.5, 10.0)
+                delay = min(1.0 * (2**attempt) + random.random() * 0.5, 10.0)
                 await asyncio.sleep(delay)
         raise last_err  # type: ignore[misc]
 
@@ -275,7 +276,7 @@ class JupiterClient:
         # API max 50 per request — chunk if needed
         results: dict[str, TokenPrice] = {}
         for i in range(0, len(mints), 50):
-            chunk = mints[i:i + 50]
+            chunk = mints[i : i + 50]
             data = await self._get("/price/v3", params={"ids": ",".join(chunk)})
             price_data = data.get("data", data)
             for mint in chunk:
@@ -284,9 +285,7 @@ class JupiterClient:
                     results[mint] = TokenPrice.from_api(mint, entry)
                 else:
                     # Missing = unreliable, fail closed
-                    results[mint] = TokenPrice(
-                        mint=mint, price_usd=None, confidence="", raw={}
-                    )
+                    results[mint] = TokenPrice(mint=mint, price_usd=None, confidence="", raw={})
         return results
 
     async def get_price(self, mint: str) -> TokenPrice:
@@ -366,6 +365,7 @@ class JupiterClient:
 # ---------------------------------------------------------------------------
 # Convenience factory
 # ---------------------------------------------------------------------------
+
 
 def make_jupiter_client() -> JupiterClient:
     """Factory — call assert_jupiter_auth() eagerly at FENRIR startup."""

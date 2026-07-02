@@ -37,15 +37,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import AsyncIterator, Callable, Awaitable
 
 logger = logging.getLogger(__name__)
 
 
 # ─── Exceptions ───────────────────────────────────────────────────────────────
+
 
 class CircuitOpen(Exception):
     """Raised when a call is attempted while the breaker is OPEN."""
@@ -55,20 +56,21 @@ class CircuitOpen(Exception):
         self.reason = reason
         self.retry_after_s = retry_after_s
         super().__init__(
-            f"Circuit OPEN for {service!r}: {reason} "
-            f"(retry in {retry_after_s:.1f}s)"
+            f"Circuit OPEN for {service!r}: {reason} " f"(retry in {retry_after_s:.1f}s)"
         )
 
 
 # ─── State ────────────────────────────────────────────────────────────────────
 
+
 class CircuitState(Enum):
-    CLOSED    = "closed"     # Normal operation
-    OPEN      = "open"       # Blocking all calls
+    CLOSED = "closed"  # Normal operation
+    OPEN = "open"  # Blocking all calls
     HALF_OPEN = "half_open"  # Probing for recovery
 
 
 # ─── Config ───────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class CircuitBreakerConfig:
@@ -80,10 +82,11 @@ class CircuitBreakerConfig:
     success_threshold   — consecutive successes in HALF_OPEN before CLOSED
     half_open_max_calls — max concurrent probes allowed in HALF_OPEN
     """
-    failure_threshold:   int   = 3
-    recovery_timeout_s:  float = 60.0
-    success_threshold:   int   = 2
-    half_open_max_calls: int   = 1
+
+    failure_threshold: int = 3
+    recovery_timeout_s: float = 60.0
+    success_threshold: int = 2
+    half_open_max_calls: int = 1
 
 
 # Per-service defaults tuned for FENRIR's traffic patterns
@@ -115,6 +118,7 @@ _TELEGRAM_CFG = CircuitBreakerConfig(
 
 # ─── Core circuit breaker ─────────────────────────────────────────────────────
 
+
 class CircuitBreaker:
     """
     Three-state circuit breaker for a single external service.
@@ -135,7 +139,7 @@ class CircuitBreaker:
         self._state = CircuitState.CLOSED
         self._consecutive_failures = 0
         self._consecutive_successes = 0
-        self._half_open_calls = 0     # probes currently in-flight
+        self._half_open_calls = 0  # probes currently in-flight
         self._opened_at: float | None = None
         self._last_failure_reason: str = ""
         self._total_failures = 0
@@ -346,6 +350,7 @@ class CircuitBreaker:
 
 # ─── Service registry ─────────────────────────────────────────────────────────
 
+
 class ServiceBreakers:
     """
     Pre-configured circuit breakers for every external service FENRIR calls.
@@ -366,8 +371,8 @@ class ServiceBreakers:
     ) -> None:
         self.openrouter = CircuitBreaker("OPENROUTER", _OPENROUTER_CFG, on_state_change)
         self.solana_rpc = CircuitBreaker("SOLANA_RPC", _SOLANA_RPC_CFG, on_state_change)
-        self.jupiter    = CircuitBreaker("JUPITER",    _JUPITER_CFG,    on_state_change)
-        self.telegram   = CircuitBreaker("TELEGRAM",   _TELEGRAM_CFG,   on_state_change)
+        self.jupiter = CircuitBreaker("JUPITER", _JUPITER_CFG, on_state_change)
+        self.telegram = CircuitBreaker("TELEGRAM", _TELEGRAM_CFG, on_state_change)
 
     def get_all_stats(self) -> dict:
         """Aggregate snapshot of all four breakers."""

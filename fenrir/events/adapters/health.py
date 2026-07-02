@@ -80,10 +80,10 @@ class HealthMonitorConfig:
     """
 
     # ── Rolling window sizes ────────────────────────────────────
-    confidence_window: int = 30        # Last N confidence scores
-    reasoning_window: int = 15         # Last N reasoning hashes
-    response_time_window: int = 30     # Last N response times (ms)
-    trade_outcome_window: int = 20     # Last N trade outcomes
+    confidence_window: int = 30  # Last N confidence scores
+    reasoning_window: int = 15  # Last N reasoning hashes
+    response_time_window: int = 30  # Last N response times (ms)
+    trade_outcome_window: int = 20  # Last N trade outcomes
 
     # ── Confidence clustering ───────────────────────────────────
     confidence_stddev_floor: float = 0.06
@@ -155,7 +155,7 @@ class DriftAlert:
     """A single detected drift event."""
 
     drift_type: DriftType
-    severity: str          # "warning" or "critical"
+    severity: str  # "warning" or "critical"
     message: str
     details: dict
     timestamp: datetime = field(default_factory=datetime.now)
@@ -168,7 +168,7 @@ class _StrategyHealthState:
 
     # Confidence tracking
     confidences: deque  # deque[float]
-    decisions: deque    # deque[str]  ("BUY", "STRONG_BUY", "SKIP", etc.)
+    decisions: deque  # deque[str]  ("BUY", "STRONG_BUY", "SKIP", etc.)
     reasoning_hashes: deque  # deque[str]  (truncated SHA256)
 
     # Response time tracking
@@ -782,9 +782,7 @@ class AIHealthMonitor(EventListener):
 
         # Reasoning uniqueness
         hashes = list(state.reasoning_hashes)
-        reasoning_uniqueness = (
-            len(set(hashes)) / len(hashes) if hashes else 1.0
-        )
+        reasoning_uniqueness = len(set(hashes)) / len(hashes) if hashes else 1.0
 
         # Response time stats
         rt = list(state.response_times_ms)
@@ -795,12 +793,14 @@ class AIHealthMonitor(EventListener):
                 "mean": round(conf_mean, 3),
                 "stddev": round(conf_stddev, 4),
                 "samples": len(conf_values),
-                "healthy": conf_stddev >= self.config.confidence_stddev_floor or len(conf_values) < self.config.confidence_cluster_min_samples,
+                "healthy": conf_stddev >= self.config.confidence_stddev_floor
+                or len(conf_values) < self.config.confidence_cluster_min_samples,
             },
             "reasoning": {
                 "uniqueness": round(reasoning_uniqueness, 3),
                 "samples": len(hashes),
-                "healthy": reasoning_uniqueness > (1 - self.config.reasoning_similarity_threshold) or len(hashes) < self.config.reasoning_collapse_min_samples,
+                "healthy": reasoning_uniqueness > (1 - self.config.reasoning_similarity_threshold)
+                or len(hashes) < self.config.reasoning_collapse_min_samples,
             },
             "response_time": {
                 "current_mean_ms": round(rt_mean, 1),
@@ -821,14 +821,18 @@ class AIHealthMonitor(EventListener):
                 "hedge_samples": len(state.hedge_counts),
                 "hedge_rate": round(
                     sum(1 for c in state.hedge_counts if c > 0) / len(state.hedge_counts), 3
-                ) if state.hedge_counts else 0.0,
-                "avg_hedge_count": round(
-                    sum(state.hedge_counts) / len(state.hedge_counts), 2
-                ) if state.hedge_counts else 0.0,
+                )
+                if state.hedge_counts
+                else 0.0,
+                "avg_hedge_count": round(sum(state.hedge_counts) / len(state.hedge_counts), 2)
+                if state.hedge_counts
+                else 0.0,
                 "healthy": (
                     sum(1 for c in state.hedge_counts if c > 0) / len(state.hedge_counts)
                     <= self.config.hedge_drift_threshold
-                ) if len(state.hedge_counts) >= self.config.hedge_drift_min_samples else True,
+                )
+                if len(state.hedge_counts) >= self.config.hedge_drift_min_samples
+                else True,
             },
         }
 
@@ -840,22 +844,28 @@ class AIHealthMonitor(EventListener):
         # Check for any active (non-cooldown-expired) critical alerts
         now = time.monotonic()
         recent_criticals = [
-            a for a in self._alerts[-20:]
+            a
+            for a in self._alerts[-20:]
             if a.severity == "critical"
-            and (now - self._monitor_start) - (a.timestamp - datetime.fromtimestamp(self._monitor_start + (a.timestamp.timestamp() - datetime.now().timestamp()))).total_seconds() < self.config.alert_cooldown_seconds * 2
+            and (now - self._monitor_start)
+            - (
+                a.timestamp
+                - datetime.fromtimestamp(
+                    self._monitor_start + (a.timestamp.timestamp() - datetime.now().timestamp())
+                )
+            ).total_seconds()
+            < self.config.alert_cooldown_seconds * 2
         ]
         # Simpler check: any critical alerts in last N minutes
         cutoff = datetime.now().timestamp() - self.config.alert_cooldown_seconds * 2
         recent_criticals = [
-            a for a in self._alerts
-            if a.severity == "critical" and a.timestamp.timestamp() > cutoff
+            a for a in self._alerts if a.severity == "critical" and a.timestamp.timestamp() > cutoff
         ]
         if recent_criticals:
             return "critical"
 
         recent_warnings = [
-            a for a in self._alerts
-            if a.severity == "warning" and a.timestamp.timestamp() > cutoff
+            a for a in self._alerts if a.severity == "warning" and a.timestamp.timestamp() > cutoff
         ]
         if recent_warnings:
             return "degraded"

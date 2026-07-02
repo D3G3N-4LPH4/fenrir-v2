@@ -236,9 +236,7 @@ class PerformanceAnalyzer:
             return 0.0
 
         # Sort by close time (closed positions always have a close_time)
-        sorted_positions = sorted(
-            positions, key=lambda p: p.close_time or datetime.min
-        )
+        sorted_positions = sorted(positions, key=lambda p: p.close_time or datetime.min)
 
         # Calculate cumulative P&L
         cumulative_pnl = []

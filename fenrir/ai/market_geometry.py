@@ -46,7 +46,6 @@ Usage:
 """
 
 import logging
-import math
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -59,6 +58,7 @@ logger = logging.getLogger(__name__)
 #                           GEOMETRY SIGNALS
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class CreatorImprint:
     """
@@ -66,7 +66,7 @@ class CreatorImprint:
     Identifies the creator's behavioral pattern from on-chain indicators.
     """
 
-    pattern: str = "unknown"    # "quick_exit", "holder", "dev_whale", "unknown"
+    pattern: str = "unknown"  # "quick_exit", "holder", "dev_whale", "unknown"
     risk_multiplier: float = 1.0  # Higher = riskier creator pattern
     notes: list[str] = field(default_factory=list)
 
@@ -79,7 +79,7 @@ class MomentumGeometry:
     """
 
     is_organic: bool = True
-    cone_width: float = 1.0      # Low = concentrated (likely coordinated); High = diffuse (organic)
+    cone_width: float = 1.0  # Low = concentrated (likely coordinated); High = diffuse (organic)
     momentum_score: float = 0.5  # 0.0 (weak) → 1.0 (strong)
     notes: list[str] = field(default_factory=list)
 
@@ -91,8 +91,8 @@ class LiquidityDepth:
     How much depth is there and how is it distributed?
     """
 
-    depth_score: float = 0.5     # 0.0 (thin) → 1.0 (deep)
-    migration_pct: float = 0.0   # % through bonding curve
+    depth_score: float = 0.5  # 0.0 (thin) → 1.0 (deep)
+    migration_pct: float = 0.0  # % through bonding curve
     is_thin: bool = False
     notes: list[str] = field(default_factory=list)
 
@@ -106,13 +106,14 @@ class DefenseRobustness:
 
     has_sell_walls: bool = False
     has_bot_defense: bool = False
-    exit_risk_score: float = 0.0   # 0.0 (easy exit) → 1.0 (hard exit)
+    exit_risk_score: float = 0.0  # 0.0 (easy exit) → 1.0 (hard exit)
     notes: list[str] = field(default_factory=list)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 #                           GEOMETRY REPORT
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @dataclass
 class GeometryReport:
@@ -145,6 +146,7 @@ class GeometryReport:
 # ═══════════════════════════════════════════════════════════════════════════
 #                           ANALYZER
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class MarketGeometryAnalyzer:
     """
@@ -250,15 +252,21 @@ class MarketGeometryAnalyzer:
             if liq_ratio < 0.05:
                 imprint.pattern = "quick_exit"
                 imprint.risk_multiplier = 1.5
-                notes.append(f"Very thin liquidity ratio ({liq_ratio:.1%}) — typical quick-exit pattern")
+                notes.append(
+                    f"Very thin liquidity ratio ({liq_ratio:.1%}) — typical quick-exit pattern"
+                )
             elif liq_ratio < 0.15:
                 imprint.pattern = "dev_whale"
                 imprint.risk_multiplier = 1.2
-                notes.append(f"Low liquidity ratio ({liq_ratio:.1%}) — possible dev whale concentration")
+                notes.append(
+                    f"Low liquidity ratio ({liq_ratio:.1%}) — possible dev whale concentration"
+                )
             else:
                 imprint.pattern = "holder"
                 imprint.risk_multiplier = 0.85
-                notes.append(f"Healthy liquidity ratio ({liq_ratio:.1%}) — looks like a holder mindset")
+                notes.append(
+                    f"Healthy liquidity ratio ({liq_ratio:.1%}) — looks like a holder mindset"
+                )
 
         # Name/description quality signals
         name = token_data.get("name", "")
@@ -466,10 +474,7 @@ class MarketGeometryAnalyzer:
         defense_risk = report.defense_robustness.exit_risk_score
 
         risk = (
-            creator_risk * 0.30
-            + momentum_risk * 0.20
-            + liquidity_risk * 0.25
-            + defense_risk * 0.25
+            creator_risk * 0.30 + momentum_risk * 0.20 + liquidity_risk * 0.25 + defense_risk * 0.25
         )
         return round(min(max(risk, 0.0), 1.0), 3)
 

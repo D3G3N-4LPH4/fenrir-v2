@@ -34,17 +34,17 @@ from enum import Enum
 
 import aiohttp
 
-from fenrir.protocol.pumpfun import BondingCurveState
+from fenrir.ai.hedge_detector import HedgeDetector
+from fenrir.ai.provider_resilience import ProviderResilientCaller
+from fenrir.ai.sampling_tuner import MarketRegime, SamplingParams, SamplingTuner
 from fenrir.ai.structured_output import (
+    BATCHED_EXIT_SCHEMA,
     ENTRY_ANALYSIS_SCHEMA,
     EXIT_ANALYSIS_SCHEMA,
-    BATCHED_EXIT_SCHEMA,
     build_response_format,
     parse_or_sanitize,
 )
-from fenrir.ai.provider_resilience import ProviderResilientCaller
-from fenrir.ai.hedge_detector import HedgeDetector
-from fenrir.ai.sampling_tuner import SamplingTuner, MarketRegime, SamplingParams
+from fenrir.protocol.pumpfun import BondingCurveState
 
 logger = logging.getLogger(__name__)
 
@@ -409,9 +409,7 @@ Remember: You're trading REAL money. Be conservative. Most memecoins go to zero.
             "SKIP": AIDecision.SKIP,
             "AVOID": AIDecision.AVOID,
         }
-        decision = decision_map.get(
-            str(data.get("decision", "SKIP")).upper(), AIDecision.SKIP
-        )
+        decision = decision_map.get(str(data.get("decision", "SKIP")).upper(), AIDecision.SKIP)
         return TokenAnalysis(
             decision=decision,
             confidence=float(data.get("confidence", 0.5)),
@@ -445,6 +443,7 @@ Remember: You're trading REAL money. Be conservative. Most memecoins go to zero.
     def _parse_llm_response(self, response: str, token: TokenMetadata) -> TokenAnalysis:
         """Legacy shim: extract JSON from a string and build TokenAnalysis."""
         from fenrir.ai.structured_output import extract_json
+
         data = extract_json(response)
         if not isinstance(data, dict):
             logger.error("Failed to parse LLM response (no JSON dict found)")
@@ -690,7 +689,12 @@ exit_plan MUST encode:
                     "urgency": 0.7,
                     "exit_plan": "",
                 }
-            return {"action": "HOLD", "reasoning": "AI parse failure", "urgency": 0.5, "exit_plan": ""}
+            return {
+                "action": "HOLD",
+                "reasoning": "AI parse failure",
+                "urgency": 0.5,
+                "exit_plan": "",
+            }
 
         return data
 
@@ -747,7 +751,9 @@ exit_plan MUST encode:
                     "items": {
                         **BATCHED_EXIT_SCHEMA["properties"]["exit_decisions"]["items"],
                         "properties": {
-                            **BATCHED_EXIT_SCHEMA["properties"]["exit_decisions"]["items"]["properties"],
+                            **BATCHED_EXIT_SCHEMA["properties"]["exit_decisions"]["items"][
+                                "properties"
+                            ],
                             "token_address": {
                                 "type": "string",
                                 "enum": active_addresses,

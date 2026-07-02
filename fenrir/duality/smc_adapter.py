@@ -18,17 +18,16 @@ Usage:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, cast
 
-import numpy as np
 import pandas as pd
 
 try:
     from smartmoneyconcepts import smc
 except ImportError:
-    raise ImportError("pip install smartmoneyconcepts")
+    raise ImportError("pip install smartmoneyconcepts") from None
 
 logger = logging.getLogger("fenrir.smc_adapter")
 
@@ -37,13 +36,14 @@ logger = logging.getLogger("fenrir.smc_adapter")
 # Data classes for typed signal payloads
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class FVGSignal:
-    direction: str          # "bullish" | "bearish"
+    direction: str  # "bullish" | "bearish"
     top: float
     bottom: float
-    gap_size: float         # absolute size in price units
-    gap_pct: float          # gap size as % of bottom price
+    gap_size: float  # absolute size in price units
+    gap_pct: float  # gap size as % of bottom price
     candle_index: int
     mitigated: bool
     mitigated_index: int | None = None
@@ -68,8 +68,8 @@ class FVGSignal:
 
 @dataclass
 class StructureSignal:
-    signal_type: str        # "BOS" | "CHoCH"
-    direction: str          # "bullish" | "bearish"
+    signal_type: str  # "BOS" | "CHoCH"
+    direction: str  # "bullish" | "bearish"
     level: float
     broken_index: int
     candle_index: int
@@ -91,10 +91,10 @@ class StructureSignal:
 
 @dataclass
 class LiquiditySignal:
-    direction: str          # "bullish" (buy-side swept) | "bearish" (sell-side swept)
+    direction: str  # "bullish" (buy-side swept) | "bearish" (sell-side swept)
     level: float
-    end_index: int          # last candle that was part of the pool
-    swept_index: int        # candle that swept it
+    end_index: int  # last candle that was part of the pool
+    swept_index: int  # candle that swept it
     candle_index: int
 
     @property
@@ -115,6 +115,7 @@ class LiquiditySignal:
 # ---------------------------------------------------------------------------
 # Main adapter
 # ---------------------------------------------------------------------------
+
 
 class SMCAdapter:
     """
@@ -142,7 +143,7 @@ class SMCAdapter:
         self,
         swing_length: int = 10,
         min_candles: int = 30,
-        fvg_min_gap_pct: float = 0.005,   # 0.5%
+        fvg_min_gap_pct: float = 0.005,  # 0.5%
         liq_range_pct: float = 0.01,
     ):
         self.swing_length = swing_length
@@ -152,9 +153,7 @@ class SMCAdapter:
 
         # Rolling window — trimmed to keep memory bounded
         self._MAX_CANDLES = 500
-        self._ohlcv: pd.DataFrame = pd.DataFrame(
-            columns=["open", "high", "low", "close", "volume"]
-        )
+        self._ohlcv: pd.DataFrame = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
         # Latest computed signals
         self._fvgs: list[FVGSignal] = []
@@ -198,7 +197,7 @@ class SMCAdapter:
 
         # Trim rolling window
         if len(combined) > self._MAX_CANDLES:
-            combined = combined.iloc[-self._MAX_CANDLES:]
+            combined = combined.iloc[-self._MAX_CANDLES :]
             # Rebuild emitted sets to only track candles still in window
             # (simplest approach: clear and let them repopulate without re-emit
             #  because old indices no longer exist in the window)
@@ -208,12 +207,10 @@ class SMCAdapter:
 
         self._ohlcv = cast(pd.DataFrame, combined.astype(float))
         self._candle_count = len(self._ohlcv)
-        self._last_update = datetime.now(timezone.utc)
+        self._last_update = datetime.now(UTC)
 
         if self._candle_count < self.min_candles:
-            logger.debug(
-                f"SMCAdapter: {self._candle_count}/{self.min_candles} candles — waiting"
-            )
+            logger.debug(f"SMCAdapter: {self._candle_count}/{self.min_candles} candles — waiting")
             return False
 
         self._compute_all()
@@ -228,9 +225,15 @@ class SMCAdapter:
         recent_cutoff = max(0, n - 20)
 
         fresh_fvgs = [f for f in self._fvgs if not f.mitigated]
-        recent_bos = [s for s in self._structure if s.signal_type == "BOS" and s.candle_index >= recent_cutoff]
-        recent_choch = [s for s in self._structure if s.signal_type == "CHoCH" and s.candle_index >= recent_cutoff]
-        recent_sweeps = [l for l in self._liquidity if l.candle_index >= recent_cutoff]
+        recent_bos = [
+            s for s in self._structure if s.signal_type == "BOS" and s.candle_index >= recent_cutoff
+        ]
+        recent_choch = [
+            s
+            for s in self._structure
+            if s.signal_type == "CHoCH" and s.candle_index >= recent_cutoff
+        ]
+        recent_sweeps = [s for s in self._liquidity if s.candle_index >= recent_cutoff]
 
         return {
             "candle_count": n,
@@ -239,7 +242,7 @@ class SMCAdapter:
             "fresh_fvgs": [f.to_dict() for f in fresh_fvgs],
             "recent_bos": [s.to_dict() for s in recent_bos],
             "recent_choch": [s.to_dict() for s in recent_choch],
-            "recent_liquidity_sweeps": [l.to_dict() for l in recent_sweeps],
+            "recent_liquidity_sweeps": [s.to_dict() for s in recent_sweeps],
             "summary": self._build_summary(fresh_fvgs, recent_bos, recent_choch, recent_sweeps),
         }
 
@@ -258,10 +261,18 @@ class SMCAdapter:
         # --- FVGs ---
         fresh = signals["fresh_fvgs"]
         if fresh:
-            lines.append(f"\nFair Value Gaps (unmitigated):")
+            lines.append("\nFair Value Gaps (unmitigated):")
             for f in fresh[-3:]:  # cap at 3 most recent
-                dist_pct = ((price - f["bottom"]) / price) * 100 if f["direction"] == "bullish" else ((f["top"] - price) / price) * 100
-                proximity = "PRICE INSIDE" if f["bottom"] <= price <= f["top"] else f"{abs(dist_pct):.1f}% away"
+                dist_pct = (
+                    ((price - f["bottom"]) / price) * 100
+                    if f["direction"] == "bullish"
+                    else ((f["top"] - price) / price) * 100
+                )
+                proximity = (
+                    "PRICE INSIDE"
+                    if f["bottom"] <= price <= f["top"]
+                    else f"{abs(dist_pct):.1f}% away"
+                )
                 lines.append(
                     f"  • {f['direction'].upper()} FVG [{f['bottom']:.6f} – {f['top']:.6f}] "
                     f"gap={f['gap_pct']*100:.2f}% | {proximity}"
@@ -290,9 +301,13 @@ class SMCAdapter:
         # --- Liquidity Sweeps ---
         sweeps = signals["recent_liquidity_sweeps"]
         if sweeps:
-            lines.append(f"\nLiquidity Sweeps (last 20 candles):")
+            lines.append("\nLiquidity Sweeps (last 20 candles):")
             for s in sweeps[-3:]:
-                reversal_hint = "→ watch for reversal" if s["direction"] == "bearish" else "→ continuation possible"
+                reversal_hint = (
+                    "→ watch for reversal"
+                    if s["direction"] == "bearish"
+                    else "→ continuation possible"
+                )
                 lines.append(
                     f"  • {s['direction'].upper()} pool swept at {s['level']:.6f} "
                     f"[swept candle {s['swept_index']}] {reversal_hint}"
@@ -387,11 +402,11 @@ class SMCAdapter:
             if not mitigated and candle_idx not in self._emitted_fvg_indices:
                 self._emitted_fvg_indices.add(candle_idx)
                 self._event_queue.append(signal.to_dict())
-                logger.debug(f"SMC FVG event: {signal.direction} [{signal.bottom:.6f}–{signal.top:.6f}]")
+                logger.debug(
+                    f"SMC FVG event: {signal.direction} [{signal.bottom:.6f}–{signal.top:.6f}]"
+                )
 
-    def _compute_bos_choch(
-        self, ohlcv: pd.DataFrame, swing_df: pd.DataFrame, n: int
-    ) -> None:
+    def _compute_bos_choch(self, ohlcv: pd.DataFrame, swing_df: pd.DataFrame, n: int) -> None:
         try:
             struct_df = smc.bos_choch(ohlcv, swing_df, close_break=True)
         except Exception as e:
@@ -443,9 +458,7 @@ class SMCAdapter:
                         self._event_queue.append(sig.to_dict())
                         logger.debug(f"SMC CHoCH event: {sig.direction} level={sig.level:.6f}")
 
-    def _compute_liquidity(
-        self, ohlcv: pd.DataFrame, swing_df: pd.DataFrame, n: int
-    ) -> None:
+    def _compute_liquidity(self, ohlcv: pd.DataFrame, swing_df: pd.DataFrame, n: int) -> None:
         try:
             liq_df = smc.liquidity(ohlcv, swing_df, range_percent=self.liq_range_pct)
         except Exception as e:
@@ -539,12 +552,18 @@ class SMCAdapter:
         else:
             bias = f"NEUTRAL (score: bull={bull_score} bear={bear_score})"
 
-        return {"bias": bias, "warnings": warnings, "bull_score": bull_score, "bear_score": bear_score}
+        return {
+            "bias": bias,
+            "warnings": warnings,
+            "bull_score": bull_score,
+            "bear_score": bear_score,
+        }
 
 
 # ---------------------------------------------------------------------------
 # FENRIR integration helper — drop this into your strategy layer
 # ---------------------------------------------------------------------------
+
 
 class FENRIRSMCMixin:
     """
@@ -572,7 +591,7 @@ class FENRIRSMCMixin:
             self._smc_adapters[token_mint] = SMCAdapter(
                 swing_length=10,
                 min_candles=25,
-                fvg_min_gap_pct=0.003,   # 0.3% — tighter for fast memecoins
+                fvg_min_gap_pct=0.003,  # 0.3% — tighter for fast memecoins
                 liq_range_pct=0.015,
             )
         return self._smc_adapters[token_mint]
@@ -626,6 +645,7 @@ Pay special attention to:
 
 Respond with JSON: {{"action": "HOLD|ADD|EXIT", "confidence": 0.0-1.0, "reasoning": "..."}}
 """
+
 
 def build_claude_prompt(
     adapter: SMCAdapter,

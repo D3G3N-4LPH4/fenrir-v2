@@ -15,8 +15,7 @@ Covers:
 Run with: pytest tests/test_ensemble_scorer.py -v
 """
 
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -26,7 +25,6 @@ from fenrir.ai.ensemble_scorer import (
     EnsembleScorer,
     ModelScore,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  FIXTURES
@@ -50,8 +48,7 @@ def _ok_score(model: str, score: float, decision: str = "BUY") -> ModelScore:
 
 def _failed_score(model: str, error: str = "timeout") -> ModelScore:
     return ModelScore(
-        model=model, score=0.0, decision="SKIP", reasoning="failed",
-        failed=True, error=error
+        model=model, score=0.0, decision="SKIP", reasoning="failed", failed=True, error=error
     )
 
 
@@ -79,7 +76,7 @@ class TestAgreementLogic:
         assert result.position_multiplier == 0.0
 
     def test_divergence_above_threshold_low_conviction(self, scorer):
-        primary = _ok_score(scorer.PRIMARY_MODEL, 80.0)   # above threshold
+        primary = _ok_score(scorer.PRIMARY_MODEL, 80.0)  # above threshold
         secondary = _ok_score(scorer.SECONDARY_MODEL, 50.0, "SKIP")  # below + diverge > 20
         result = scorer._agreement_logic(primary, secondary)
         assert result.conviction == ConvictionLevel.LOW_CONVICTION
@@ -94,7 +91,10 @@ class TestAgreementLogic:
         result = scorer._agreement_logic(primary, secondary)
         # divergence = 20, avg = 70 >= threshold → HIGH_CONVICTION
         # (the > check means exactly 20 does not trigger LOW_CONVICTION)
-        assert result.conviction in (ConvictionLevel.HIGH_CONVICTION, ConvictionLevel.LOW_CONVICTION)
+        assert result.conviction in (
+            ConvictionLevel.HIGH_CONVICTION,
+            ConvictionLevel.LOW_CONVICTION,
+        )
 
     def test_primary_fails_degraded(self, scorer):
         primary = _failed_score(scorer.PRIMARY_MODEL)
@@ -171,7 +171,7 @@ class TestJSONParsing:
         assert ms.decision == "BUY"
 
     def test_markdown_wrapped_json_parsed(self, scorer):
-        response = "```json\n{\"score\": 75, \"decision\": \"BUY\", \"reasoning\": \"ok\"}\n```"
+        response = '```json\n{"score": 75, "decision": "BUY", "reasoning": "ok"}\n```'
         ms = scorer._parse("model", response)
         assert not ms.failed
         assert ms.score == 75.0

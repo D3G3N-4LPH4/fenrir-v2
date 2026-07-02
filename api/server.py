@@ -143,6 +143,8 @@ FENRIR_DEV_MODE = os.getenv("FENRIR_DEV_MODE", "false").lower() == "true"
 # Global bot instance and state
 bot_instance: FenrirBot | None = None
 bot_task: asyncio.Task | None = None
+
+
 class BotState(TypedDict):
     """Mutable global bot state tracked by the API."""
 
@@ -518,8 +520,11 @@ async def get_positions():
                     "pnl_percent": position.get_pnl_percent(),
                     "pnl_sol": position.get_pnl_sol(),
                     "peak_price": position.peak_price,
-                    "trailing_stop_override_pct": getattr(position, "trailing_stop_override_pct", None),
-                    "ouroboros_triggered": getattr(position, "trailing_stop_override_pct", None) is not None,
+                    "trailing_stop_override_pct": getattr(
+                        position, "trailing_stop_override_pct", None
+                    ),
+                    "ouroboros_triggered": getattr(position, "trailing_stop_override_pct", None)
+                    is not None,
                 }
             )
 
@@ -621,8 +626,13 @@ async def pause_strategy(strategy_id: str):
     for strategy in bot_instance.strategies:
         if strategy.strategy_id == strategy_id:
             strategy.pause()
-            await broadcast_update({"event": "strategy_paused", "strategy_id": strategy_id,
-                                    "timestamp": datetime.now().isoformat()})
+            await broadcast_update(
+                {
+                    "event": "strategy_paused",
+                    "strategy_id": strategy_id,
+                    "timestamp": datetime.now().isoformat(),
+                }
+            )
             return {"status": "success", "strategy_id": strategy_id, "paused": True}
     raise HTTPException(status_code=404, detail=f"Strategy '{strategy_id}' not found")
 
@@ -635,8 +645,13 @@ async def resume_strategy(strategy_id: str):
     for strategy in bot_instance.strategies:
         if strategy.strategy_id == strategy_id:
             strategy.resume()
-            await broadcast_update({"event": "strategy_resumed", "strategy_id": strategy_id,
-                                    "timestamp": datetime.now().isoformat()})
+            await broadcast_update(
+                {
+                    "event": "strategy_resumed",
+                    "strategy_id": strategy_id,
+                    "timestamp": datetime.now().isoformat(),
+                }
+            )
             return {"status": "success", "strategy_id": strategy_id, "paused": False}
     raise HTTPException(status_code=404, detail=f"Strategy '{strategy_id}' not found")
 

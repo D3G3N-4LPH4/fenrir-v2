@@ -85,8 +85,7 @@ class LocalAITradingAnalyst(AITradingAnalyst):
         self._model_name = model_name
 
         logger.info(
-            f"🦙 Local Brain: targeting {base_url} "
-            f"(model={model_name}, temp={temperature})"
+            f"🦙 Local Brain: targeting {base_url} " f"(model={model_name}, temp={temperature})"
         )
 
     async def _call_llm(self, prompt: str) -> str:
@@ -128,14 +127,10 @@ class LocalAITradingAnalyst(AITradingAnalyst):
         }
 
         try:
-            async with self.session.post(
-                self._base_url, headers=headers, json=payload
-            ) as response:
+            async with self.session.post(self._base_url, headers=headers, json=payload) as response:
                 if response.status != 200:
                     error_text = await response.text()
-                    logger.error(
-                        f"Local model error: {response.status} - {error_text[:200]}"
-                    )
+                    logger.error(f"Local model error: {response.status} - {error_text[:200]}")
                     return self._get_conservative_default()
 
                 data = await response.json()
@@ -180,7 +175,8 @@ class LocalAITradingAnalyst(AITradingAnalyst):
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
                         if resp.status == 200:
                             return (True, f"Local model healthy at {self._base_url}")
-            except Exception:
+            except Exception as e:
+                logger.debug("Local model health check failed for %s: %s", url, e)
                 continue
 
         return (

@@ -36,6 +36,7 @@ from datetime import datetime
 #                           EVENT TYPES
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 class AuditEventType:
     """Constants for audit event types."""
 
@@ -69,6 +70,7 @@ GENESIS_SEED = "FENRIR_GENESIS_v2"
 #                           AUDIT RECORD
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class AuditRecord:
     """A single entry in the audit chain."""
@@ -100,6 +102,7 @@ class AuditRecord:
 # ═══════════════════════════════════════════════════════════════════════════
 #                           AUDIT CHAIN
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class AuditChain:
     """
@@ -166,9 +169,7 @@ class AuditChain:
         self.conn.commit()
 
         # Load the last hash to continue the chain
-        row = self.conn.execute(
-            "SELECT hash FROM audit_chain ORDER BY id DESC LIMIT 1"
-        ).fetchone()
+        row = self.conn.execute("SELECT hash FROM audit_chain ORDER BY id DESC LIMIT 1").fetchone()
 
         if row:
             self._last_hash = row["hash"]
@@ -222,9 +223,7 @@ class AuditChain:
 
         with self._write_lock:
             # Compute chained hash inside the lock so _last_hash is stable.
-            new_hash = self._compute_hash(
-                self._last_hash, event_type, payload_json, timestamp
-            )
+            new_hash = self._compute_hash(self._last_hash, event_type, payload_json, timestamp)
 
             cursor = self._conn().execute(
                 """
@@ -286,10 +285,14 @@ class AuditChain:
         genesis_hash = hashlib.sha256(GENESIS_SEED.encode()).hexdigest()
 
         if session_id:
-            rows = self._conn().execute(
-                "SELECT * FROM audit_chain WHERE session_id = ? ORDER BY id ASC",
-                (session_id,),
-            ).fetchall()
+            rows = (
+                self._conn()
+                .execute(
+                    "SELECT * FROM audit_chain WHERE session_id = ? ORDER BY id ASC",
+                    (session_id,),
+                )
+                .fetchall()
+            )
 
             if not rows:
                 return (True, None)
@@ -317,22 +320,25 @@ class AuditChain:
             # hash would pass per-session verification.
             first_prev = rows[0]["prev_hash"]
             if first_prev != genesis_hash:
-                anchor = self._conn().execute(
-                    "SELECT id FROM audit_chain WHERE hash = ?",
-                    (first_prev,),
-                ).fetchone()
+                anchor = (
+                    self._conn()
+                    .execute(
+                        "SELECT id FROM audit_chain WHERE hash = ?",
+                        (first_prev,),
+                    )
+                    .fetchone()
+                )
                 if anchor is None:
                     return (False, rows[0]["id"])
 
             return (True, None)
 
         # ── Full-chain verify (paginated) ──────────────────────────────
-        total = self._conn().execute(
-            "SELECT COUNT(*) as n FROM audit_chain"
-        ).fetchone()["n"]
+        total = self._conn().execute("SELECT COUNT(*) as n FROM audit_chain").fetchone()["n"]
 
         if total > page_size:
             import logging as _logging
+
             _logging.getLogger(__name__).warning(
                 "verify_chain: chain has %d records; verifying in pages of %d. "
                 "This may take a moment.",
@@ -341,14 +347,17 @@ class AuditChain:
             )
 
         prev_page_last_hash: str | None = None
-        prev_page_last_id: int | None = None
         offset = 0
 
         while offset < total:
-            rows = self._conn().execute(
-                "SELECT * FROM audit_chain ORDER BY id ASC LIMIT ? OFFSET ?",
-                (page_size, offset),
-            ).fetchall()
+            rows = (
+                self._conn()
+                .execute(
+                    "SELECT * FROM audit_chain ORDER BY id ASC LIMIT ? OFFSET ?",
+                    (page_size, offset),
+                )
+                .fetchall()
+            )
 
             if not rows:
                 break
@@ -373,7 +382,6 @@ class AuditChain:
                     return (False, rows[i]["id"])
 
             prev_page_last_hash = rows[-1]["hash"]
-            prev_page_last_id = rows[-1]["id"]
             offset += page_size
 
         return (True, None)
@@ -409,10 +417,14 @@ class AuditChain:
         where_clause = " AND ".join(conditions)
         params.append(limit)
 
-        rows = self._conn().execute(
-            f"SELECT * FROM audit_chain WHERE {where_clause} ORDER BY id ASC LIMIT ?",  # noqa: S608
-            params,
-        ).fetchall()
+        rows = (
+            self._conn()
+            .execute(
+                f"SELECT * FROM audit_chain WHERE {where_clause} ORDER BY id ASC LIMIT ?",  # noqa: S608
+                params,
+            )
+            .fetchall()
+        )
 
         records = []
         for row in rows:
@@ -433,10 +445,14 @@ class AuditChain:
 
     def get_token_timeline(self, token_address: str) -> list[AuditRecord]:
         """Get the complete audit trail for a specific token across all sessions."""
-        rows = self._conn().execute(
-            "SELECT * FROM audit_chain WHERE token_address = ? ORDER BY id ASC",
-            (token_address,),
-        ).fetchall()
+        rows = (
+            self._conn()
+            .execute(
+                "SELECT * FROM audit_chain WHERE token_address = ? ORDER BY id ASC",
+                (token_address,),
+            )
+            .fetchall()
+        )
 
         return [
             AuditRecord(
@@ -455,14 +471,20 @@ class AuditChain:
 
     def get_chain_stats(self) -> dict:
         """Summary statistics for the audit chain."""
-        row = self._conn().execute(
-            "SELECT COUNT(*) as total, MIN(timestamp) as first, MAX(timestamp) as last "
-            "FROM audit_chain"
-        ).fetchone()
+        row = (
+            self._conn()
+            .execute(
+                "SELECT COUNT(*) as total, MIN(timestamp) as first, MAX(timestamp) as last "
+                "FROM audit_chain"
+            )
+            .fetchone()
+        )
 
-        sessions = self._conn().execute(
-            "SELECT COUNT(DISTINCT session_id) as count FROM audit_chain"
-        ).fetchone()
+        sessions = (
+            self._conn()
+            .execute("SELECT COUNT(DISTINCT session_id) as count FROM audit_chain")
+            .fetchone()
+        )
 
         return {
             "total_records": row["total"],

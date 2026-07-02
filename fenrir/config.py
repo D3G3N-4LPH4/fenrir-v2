@@ -42,10 +42,10 @@ def _ensure_dotenv() -> None:
 class TradingMode(Enum):
     """Trading modes reflecting different risk appetites."""
 
-    SIMULATION = "simulation"      # Paper trading - no real txs
+    SIMULATION = "simulation"  # Paper trading - no real txs
     CONSERVATIVE = "conservative"  # Small positions, strict stops
-    AGGRESSIVE = "aggressive"      # Larger positions, wider stops
-    DEGEN = "degen"                # YOLO mode - maximum risk
+    AGGRESSIVE = "aggressive"  # Larger positions, wider stops
+    DEGEN = "degen"  # YOLO mode - maximum risk
 
 
 # ── Mode-specific trading presets ──────────────────────────────────────
@@ -132,38 +132,38 @@ class BotConfig:
 
     # Trading Parameters
     mode: TradingMode = TradingMode.SIMULATION
-    buy_amount_sol: float = 0.1       # SOL per trade
-    max_slippage_bps: int = 500       # 5% max slippage
+    buy_amount_sol: float = 0.1  # SOL per trade
+    max_slippage_bps: int = 500  # 5% max slippage
 
     # Risk Management
-    stop_loss_pct: float = 25.0           # Exit if down 25%
-    take_profit_pct: float = 100.0        # Exit if up 100%
-    trailing_stop_pct: float = 15.0       # Trail by 15% from peak
-    max_position_age_minutes: int = 30    # Memecoins pump/dump in minutes
+    stop_loss_pct: float = 25.0  # Exit if down 25%
+    take_profit_pct: float = 100.0  # Exit if up 100%
+    trailing_stop_pct: float = 15.0  # Trail by 15% from peak
+    max_position_age_minutes: int = 30  # Memecoins pump/dump in minutes
 
     # Launch Criteria
-    min_initial_liquidity_sol: float = 0.0      # Minimum SOL in bonding curve (0 = snipe at creation)
-    max_initial_market_cap_sol: float = 80.0    # Don't buy if already too big
+    min_initial_liquidity_sol: float = 0.0  # Minimum SOL in bonding curve (0 = snipe at creation)
+    max_initial_market_cap_sol: float = 80.0  # Don't buy if already too big
 
     # Execution Settings
     priority_fee_lamports: int = 500_000  # 0.0005 SOL for competitive inclusion
-    use_jito: bool = False                # MEV protection via Jito bundles
-    jito_tip_lamports: int = 10000        # Tip for Jito validators
+    use_jito: bool = False  # MEV protection via Jito bundles
+    jito_tip_lamports: int = 10000  # Tip for Jito validators
 
     # Monitoring
-    websocket_enabled: bool = True        # Real-time vs polling
-    poll_interval_seconds: float = 2.0   # If WebSocket fails
+    websocket_enabled: bool = True  # Real-time vs polling
+    poll_interval_seconds: float = 2.0  # If WebSocket fails
 
     # Strategy budgets
     sniper_daily_budget_sol: float = 0.0  # 0 = auto (10 × buy_amount_sol)
 
     # AI Integration - Claude Brain
-    ai_analysis_enabled: bool = True      # Master switch for AI decisions
+    ai_analysis_enabled: bool = True  # Master switch for AI decisions
     ai_api_key: str = ""
     ai_model: str = "anthropic/claude-haiku-4-5"
-    ai_provider: str = "openrouter"       # "openrouter" or "anthropic_direct"
+    ai_provider: str = "openrouter"  # "openrouter" or "anthropic_direct"
     ai_entry_timeout_seconds: float = 12.0  # Max wait for entry analysis
-    ai_exit_timeout_seconds: float = 10.0   # Max wait for exit evaluation
+    ai_exit_timeout_seconds: float = 10.0  # Max wait for exit evaluation
     ai_exit_eval_interval_seconds: float = 60.0  # Proactive exit check cadence
     ai_min_confidence_to_buy: float = 0.6  # Minimum confidence for BUY
     ai_memory_size: int = 15  # Rolling decision history size
@@ -202,9 +202,8 @@ class BotConfig:
 
         # FIX 3: support both OpenRouter and direct Anthropic API keys
         if not self.ai_api_key:
-            self.ai_api_key = (
-                os.getenv("OPENROUTER_API_KEY", "")
-                or os.getenv("ANTHROPIC_API_KEY", "")
+            self.ai_api_key = os.getenv("OPENROUTER_API_KEY", "") or os.getenv(
+                "ANTHROPIC_API_KEY", ""
             )
 
         if not self.ai_local_model_url:
@@ -214,9 +213,7 @@ class BotConfig:
         if not self.ai_local_model_name:
             self.ai_local_model_name = os.getenv("AI_LOCAL_MODEL_NAME", "fenrir-brain")
         if not self.ai_local_model_enabled:
-            self.ai_local_model_enabled = (
-                os.getenv("AI_LOCAL_MODEL_ENABLED", "").lower() == "true"
-            )
+            self.ai_local_model_enabled = os.getenv("AI_LOCAL_MODEL_ENABLED", "").lower() == "true"
 
         # FIX 4: LOG_LEVEL controllable from .env
         # Always defer to env var — .env is now loaded so os.getenv is reliable
@@ -252,9 +249,8 @@ class BotConfig:
             errors.append("RPC URL required - get one from QuickNode or Helius")
 
         if self.rpc_url and not self.rpc_url.startswith("https://"):
-            if (
-                not self.rpc_url.startswith("http://127.0.0.1")
-                and not self.rpc_url.startswith("http://localhost")
+            if not self.rpc_url.startswith("http://127.0.0.1") and not self.rpc_url.startswith(
+                "http://localhost"
             ):
                 errors.append("RPC URL must use HTTPS (plaintext HTTP leaks wallet data)")
 
@@ -292,8 +288,6 @@ class BotConfig:
             if not self.ai_local_model_url.startswith("http"):
                 errors.append("ai_local_model_url must be a valid HTTP URL")
             if not self.ai_local_model_name:
-                errors.append(
-                    "ai_local_model_name must be set when ai_local_model_enabled=True"
-                )
+                errors.append("ai_local_model_name must be set when ai_local_model_enabled=True")
 
         return errors
