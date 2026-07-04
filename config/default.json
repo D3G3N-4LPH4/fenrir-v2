@@ -21,6 +21,18 @@
   "priority_fee_lamports": 500000,
   "use_jito": false,
   "jito_tip_lamports": 10000,
+  "tx_profiles_enabled": false,
+
+  "enabled_strategies": ["sniper"],
+
+  "security_filter_enabled": false,
+  "security_require_mint_revoked": true,
+  "security_require_freeze_revoked": true,
+  "security_min_lp_burned_pct": 90.0,
+  "security_max_top10_holder_pct": 30.0,
+  "security_fail_open_on_holder_fetch_error": false,
+  "market_filter_enabled": false,
+  "market_fail_open_on_fetch_error": true,
 
   "websocket_enabled": true,
   "poll_interval_seconds": 2.0,
