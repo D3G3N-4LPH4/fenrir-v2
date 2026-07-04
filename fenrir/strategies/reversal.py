@@ -124,6 +124,7 @@ class ReversalStrategy(TradingStrategy):
 
     budget_sol = 1.0
     max_concurrent_positions = 3
+    uses_market_data = True
 
     def __init__(self, config: BotConfig) -> None:
         super().__init__()

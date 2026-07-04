@@ -18,7 +18,7 @@ import os
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, Protocol, cast
 
 from fenrir.ai.brain import ClaudeBrain
 from fenrir.ai.market_geometry import MarketGeometryAnalyzer
@@ -53,12 +53,21 @@ from fenrir.events.types import (
     token_detected_event,
     trade_failed_event,
 )
+from fenrir.filters import MarketFilter, MarketFilterConfig, SecurityFilter
 from fenrir.logger import FenrirLogger
 from fenrir.protocol.jito import JitoMEVProtection
 from fenrir.strategies import STRATEGY_REGISTRY, SniperStrategy
 from fenrir.strategies.base import TradingStrategy
 from fenrir.trading.engine import TradingEngine
 from fenrir.trading.monitor import PumpFunMonitor
+
+
+class SignalStrategy(Protocol):
+    """Structural type for market-data-aware (uses_market_data=True) strategies."""
+
+    def evaluate_token(self, token_data: dict[str, Any], market_data: Any = None) -> Any: ...
+
+    def build_ai_context(self, signal: Any) -> str: ...
 
 
 class FenrirBot:
@@ -157,6 +166,32 @@ class FenrirBot:
         self.strategies: list[TradingStrategy] = []
         self._init_strategies(strategies)
 
+        # ── Pre-trade filters (off by default; see BotConfig flags) ──
+        # Security hard-gate: instantiated only when enabled.
+        self.security_filter: SecurityFilter | None = None
+        if config.security_filter_enabled:
+            self.security_filter = SecurityFilter(
+                config.build_security_filter_config(),
+                config.rpc_url,
+                config.helius_api_key,
+            )
+
+        # Market data provider: needed when the market gate is on OR any active
+        # strategy is market-data-aware (its evaluate_token needs a snapshot).
+        # Built with enabled=True as a pure data source; the *gate* (skip on
+        # not-passed) is applied separately, only when market_filter_enabled.
+        self._needs_market_data = config.market_filter_enabled or any(
+            s.uses_market_data for s in self.strategies
+        )
+        self.market_filter: MarketFilter | None = None
+        if self._needs_market_data:
+            self.market_filter = MarketFilter(
+                MarketFilterConfig(
+                    enabled=True,
+                    fail_open_on_fetch_error=config.market_fail_open_on_fetch_error,
+                )
+            )
+
         # ── AI Brain (with historical memory) ───────────────────
         self.claude_brain = ClaudeBrain(
             config, self.logger, breaker=self.breakers.openrouter, db_path=db_path, audit=self.audit
@@ -186,8 +221,9 @@ class FenrirBot:
     def _init_strategies(self, strategy_ids: list[str] | None) -> None:
         """Initialize trading strategies."""
         if not strategy_ids:
-            # Default: just the sniper strategy matching current config
-            strategy_ids = ["sniper"]
+            # Fall back to the config surface (ENABLED_STRATEGIES / default
+            # ["sniper"]). The signal strategies stay off unless opted in.
+            strategy_ids = self.config.enabled_strategies or ["sniper"]
 
         for sid in strategy_ids:
             cls = STRATEGY_REGISTRY.get(sid)
@@ -276,16 +312,45 @@ class FenrirBot:
             )
         )
 
+        # ── Pre-trade security hard-gate (only when enabled) ──────────
+        if self.security_filter is not None:
+            lp_mint = token_data.get("lp_mint") or token_data.get("lp_mint_address")
+            sec = await self.security_filter.check(token_addr, lp_mint)
+            if not sec.passed:
+                self.logger.info(f"Security filter rejected {symbol}: {sec}")
+                return
+
+        # ── Market data snapshot (data source + optional gate) ────────
+        market_data = None
+        if self.market_filter is not None:
+            mkt = await self.market_filter.check(token_addr)
+            market_data = mkt.market_data
+            # Enforce the tier gate only when the operator turned it on.
+            if self.config.market_filter_enabled and not mkt.passed:
+                self.logger.info(f"Market filter rejected {symbol}: {mkt}")
+                return
+
         # Route through each active strategy
         for strategy in self.strategies:
             if not strategy.state.active or strategy.state.paused:
                 continue
 
             try:
-                if not await strategy.should_evaluate(token_data):
-                    continue
-
-                await self._evaluate_and_execute(strategy, token_data)
+                if strategy.uses_market_data:
+                    # Signal path: gate on the MarketData snapshot.
+                    sig_strat = cast(SignalStrategy, strategy)
+                    signal = sig_strat.evaluate_token(token_data, market_data)
+                    if signal is None:
+                        continue
+                    signal_context = sig_strat.build_ai_context(signal)
+                    await self._evaluate_and_execute(
+                        strategy, token_data, signal_context=signal_context
+                    )
+                else:
+                    # Classic path: cheap token_data pre-filter, then AI.
+                    if not await strategy.should_evaluate(token_data):
+                        continue
+                    await self._evaluate_and_execute(strategy, token_data)
 
             except Exception as e:
                 await self.event_bus.emit(
@@ -301,8 +366,16 @@ class FenrirBot:
         self,
         strategy: TradingStrategy,
         token_data: dict,
+        *,
+        signal_context: str | None = None,
     ) -> None:
-        """Evaluate a token for a specific strategy and execute if approved."""
+        """Evaluate a token for a specific strategy and execute if approved.
+
+        ``signal_context`` overrides the strategy's static AI context with a
+        per-signal context block (from a market-data-aware strategy's
+        ``build_ai_context(signal)``); when None, the classic static context is
+        used.
+        """
         token_addr = token_data["token_address"]
         symbol = token_data.get("symbol", "???")
 
@@ -316,8 +389,10 @@ class FenrirBot:
             market_cap_sol=token_data.get("market_cap_sol", 0),
         )
 
-        # Get strategy-specific AI context
-        base_strategy_context = strategy.get_ai_context()
+        # Get strategy-specific AI context (per-signal block if provided).
+        base_strategy_context = (
+            signal_context if signal_context is not None else strategy.get_ai_context()
+        )
 
         # Run pre-entry market geometry analysis (informed pipeline pattern)
         # Derives token-specific TradeParams and enriches AI context
@@ -629,6 +704,10 @@ class FenrirBot:
         await self.price_feed.close()
         if self.jito:
             await self.jito.close()
+        if self.security_filter is not None:
+            await self.security_filter.close()
+        if self.market_filter is not None:
+            await self.market_filter.close()
 
         # Shutdown new systems
         await self.event_bus.shutdown()

@@ -20,6 +20,7 @@ Usage:
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -92,6 +93,13 @@ class TradingStrategy(ABC):
     display_name: str = "Base Strategy"
     description: str = ""
 
+    # ── Dispatch ──────────────────────────────────────────────
+    # Signal-oriented strategies set this True and implement evaluate_token()
+    # (gated on a MarketData snapshot). The bot fetches market data and calls
+    # evaluate_token() for these; sniper/graduation keep the should_evaluate()
+    # path and leave this False.
+    uses_market_data: bool = False
+
     # ── Limits ────────────────────────────────────────────────
     budget_sol: float = 1.0  # Daily SOL budget
     max_concurrent_positions: int = 3  # Max open positions at once
@@ -145,6 +153,17 @@ class TradingStrategy(ABC):
         Returns:
             TradeParams with this strategy's buy amount, slippage, etc.
         """
+
+    def evaluate_token(self, token_data: dict, market_data: Any = None) -> Any:
+        """
+        Optional market-data-aware evaluation hook.
+
+        Signal-oriented strategies (uses_market_data=True) override this to gate
+        on a MarketData snapshot and return a rich signal object (or None to
+        skip). The default is a no-op: strategies that rely on should_evaluate()
+        never have this called by the bot.
+        """
+        return None
 
     def can_open_position(self) -> bool:
         """Check if this strategy can open another position."""
