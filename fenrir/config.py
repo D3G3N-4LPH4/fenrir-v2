@@ -5,12 +5,39 @@ FENRIR - Core Configuration
 Trading modes, bot configuration, and environment management.
 """
 
+from __future__ import annotations
+
 import importlib  # FIX 1: was used below but never imported
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
+
+if TYPE_CHECKING:
+    from fenrir.filters import MarketFilterConfig, SecurityFilterConfig
+    from fenrir.trading.tx_config import TxConfigManager
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Parse a boolean env var; return ``default`` when unset/empty."""
+    raw = os.getenv(name, "")
+    if raw == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float(name: str, default: float) -> float:
+    """Parse a float env var; return ``default`` when unset or malformed."""
+    raw = os.getenv(name, "")
+    if raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
 
 # Dependency check (single location for the whole package)
 _deps_missing = False
@@ -149,13 +176,35 @@ class BotConfig:
     priority_fee_lamports: int = 500_000  # 0.0005 SOL for competitive inclusion
     use_jito: bool = False  # MEV protection via Jito bundles
     jito_tip_lamports: int = 10000  # Tip for Jito validators
+    # Use per-strategy transaction profiles (fenrir.trading.tx_config) instead
+    # of the flat priority_fee/slippage/jito settings above. Off by default;
+    # consumed by the engine once the pipeline-wiring PR lands.
+    tx_profiles_enabled: bool = False
 
     # Monitoring
     websocket_enabled: bool = True  # Real-time vs polling
     poll_interval_seconds: float = 2.0  # If WebSocket fails
 
-    # Strategy budgets
+    # Strategy selection & budgets
+    # Which registered strategies to run (IDs from fenrir.strategies.STRATEGY_REGISTRY).
+    # Defaults to the sniper only; the signal strategies are opt-in. Consumed by
+    # the bot's strategy loader once the pipeline-wiring PR lands.
+    enabled_strategies: list[str] = field(default_factory=lambda: ["sniper"])
     sniper_daily_budget_sol: float = 0.0  # 0 = auto (10 × buy_amount_sol)
+
+    # ── Pre-trade filters (fenrir.filters) ─────────────────────────────
+    # Security hard-gate: mint/freeze authority, LP burn, holder concentration.
+    security_filter_enabled: bool = False
+    security_require_mint_revoked: bool = True
+    security_require_freeze_revoked: bool = True
+    security_min_lp_burned_pct: float = 90.0
+    security_max_top10_holder_pct: float = 30.0
+    security_fail_open_on_holder_fetch_error: bool = False
+    # Optional Helius key for enriched holder data (falls back to public RPC).
+    helius_api_key: str = ""
+    # Two-tier DexScreener market-condition filter.
+    market_filter_enabled: bool = False
+    market_fail_open_on_fetch_error: bool = True
 
     # AI Integration - Claude Brain
     ai_analysis_enabled: bool = True  # Master switch for AI decisions
@@ -222,12 +271,79 @@ class BotConfig:
         if env_log_level in valid_levels:
             self.log_level = env_log_level
 
+        # ── Strategy selection ─────────────────────────────────────────
+        env_strategies = os.getenv("ENABLED_STRATEGIES", "")
+        if env_strategies.strip():
+            self.enabled_strategies = [s.strip() for s in env_strategies.split(",") if s.strip()]
+
+        # ── Pre-trade filters ──────────────────────────────────────────
+        self.security_filter_enabled = _env_bool(
+            "SECURITY_FILTER_ENABLED", self.security_filter_enabled
+        )
+        self.security_require_mint_revoked = _env_bool(
+            "SECURITY_REQUIRE_MINT_REVOKED", self.security_require_mint_revoked
+        )
+        self.security_require_freeze_revoked = _env_bool(
+            "SECURITY_REQUIRE_FREEZE_REVOKED", self.security_require_freeze_revoked
+        )
+        self.security_min_lp_burned_pct = _env_float(
+            "SECURITY_MIN_LP_BURNED_PCT", self.security_min_lp_burned_pct
+        )
+        self.security_max_top10_holder_pct = _env_float(
+            "SECURITY_MAX_TOP10_HOLDER_PCT", self.security_max_top10_holder_pct
+        )
+        self.security_fail_open_on_holder_fetch_error = _env_bool(
+            "SECURITY_FAIL_OPEN_ON_HOLDER_FETCH_ERROR",
+            self.security_fail_open_on_holder_fetch_error,
+        )
+        if not self.helius_api_key:
+            self.helius_api_key = os.getenv("HELIUS_API_KEY", "")
+        self.market_filter_enabled = _env_bool("MARKET_FILTER_ENABLED", self.market_filter_enabled)
+        self.market_fail_open_on_fetch_error = _env_bool(
+            "MARKET_FAIL_OPEN_ON_FETCH_ERROR", self.market_fail_open_on_fetch_error
+        )
+
+        # ── Execution ──────────────────────────────────────────────────
+        self.tx_profiles_enabled = _env_bool("TX_PROFILES_ENABLED", self.tx_profiles_enabled)
+
     @classmethod
-    def from_mode(cls, mode: TradingMode, **overrides) -> "BotConfig":  # type: ignore[override]
+    def from_mode(cls, mode: TradingMode, **overrides) -> BotConfig:  # type: ignore[override]
         """Create a BotConfig pre-tuned for a specific trading mode."""
         preset = TRADING_PRESETS.get(mode, {})  # type: ignore[arg-type]
         merged = {**preset, "mode": mode, **overrides}
         return cls(**merged)
+
+    # ── Component config builders ──────────────────────────────────────
+    # Translate the flat BotConfig surface into the self-contained component
+    # configs from fenrir.filters / fenrir.trading. Lazy imports keep the
+    # config module light and avoid import cycles.
+
+    def build_security_filter_config(self) -> SecurityFilterConfig:
+        """Build a SecurityFilterConfig from the security_* fields."""
+        from fenrir.filters import SecurityFilterConfig
+
+        return SecurityFilterConfig(
+            require_mint_revoked=self.security_require_mint_revoked,
+            require_freeze_revoked=self.security_require_freeze_revoked,
+            min_lp_burned_pct=self.security_min_lp_burned_pct,
+            max_top10_holder_pct=self.security_max_top10_holder_pct,
+            fail_open_on_holder_fetch_error=self.security_fail_open_on_holder_fetch_error,
+        )
+
+    def build_market_filter_config(self) -> MarketFilterConfig:
+        """Build a MarketFilterConfig from the market_* fields (tier defaults kept)."""
+        from fenrir.filters import MarketFilterConfig
+
+        return MarketFilterConfig(
+            enabled=self.market_filter_enabled,
+            fail_open_on_fetch_error=self.market_fail_open_on_fetch_error,
+        )
+
+    def build_tx_config_manager(self) -> TxConfigManager:
+        """Build a TxConfigManager bound to this config's RPC URL."""
+        from fenrir.trading.tx_config import TxConfigManager
+
+        return TxConfigManager(rpc_url=self.rpc_url)
 
     def __repr__(self) -> str:
         """Redact sensitive fields to prevent accidental secret leakage in logs."""
@@ -289,5 +405,26 @@ class BotConfig:
                 errors.append("ai_local_model_url must be a valid HTTP URL")
             if not self.ai_local_model_name:
                 errors.append("ai_local_model_name must be set when ai_local_model_enabled=True")
+
+        # ── Strategy selection ─────────────────────────────────────────
+        if not self.enabled_strategies:
+            errors.append("At least one strategy must be enabled (enabled_strategies is empty)")
+        else:
+            # Lazy import to avoid a config <-> strategies import cycle.
+            from fenrir.strategies import STRATEGY_REGISTRY
+
+            unknown = [s for s in self.enabled_strategies if s not in STRATEGY_REGISTRY]
+            if unknown:
+                available = ", ".join(sorted(STRATEGY_REGISTRY))
+                errors.append(
+                    f"Unknown strategy id(s): {', '.join(unknown)} (available: {available})"
+                )
+
+        # ── Pre-trade filters ──────────────────────────────────────────
+        if not (0.0 <= self.security_min_lp_burned_pct <= 100.0):
+            errors.append("security_min_lp_burned_pct must be between 0 and 100")
+
+        if not (0.0 <= self.security_max_top10_holder_pct <= 100.0):
+            errors.append("security_max_top10_holder_pct must be between 0 and 100")
 
         return errors
