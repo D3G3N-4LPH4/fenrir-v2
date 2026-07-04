@@ -21,6 +21,7 @@ from fenrir.core.positions import PositionManager
 from fenrir.core.wallet import WalletManager
 from fenrir.logger import FenrirLogger
 from fenrir.protocol.pumpfun import BondingCurveState, PumpFunProgram
+from fenrir.trading.tx_config import TxConfigManager
 
 LAMPORTS_PER_SOL = 1_000_000_000
 DEFAULT_COMPUTE_UNITS = 200_000
@@ -52,8 +53,38 @@ class TradingEngine:
         self.logger = logger
         self.jito = jito
 
+        # Per-strategy execution profiles (slippage/priority-fee/jito). Built
+        # only when opted in; otherwise the flat BotConfig settings are used.
+        self.tx_config: TxConfigManager | None = (
+            TxConfigManager(rpc_url=config.rpc_url) if config.tx_profiles_enabled else None
+        )
+
         # Direct pump.fun program interface
         self.pumpfun = PumpFunProgram()
+
+    # ── Execution-parameter resolution ─────────────────────────────────
+    # When tx profiles are enabled, resolve slippage / priority-fee / jito
+    # per strategy; otherwise fall back to the flat BotConfig values so
+    # default behavior is unchanged.
+
+    async def _resolve_priority_fee(self, strategy_id: str) -> int:
+        if self.tx_config is not None:
+            return await self.tx_config.get_priority_fee_lamports(strategy_id)
+        return self.config.priority_fee_lamports
+
+    def _resolve_slippage_bps(self, strategy_id: str) -> int:
+        if self.tx_config is not None:
+            return self.tx_config.get_slippage_bps(strategy_id)
+        return self.config.max_slippage_bps
+
+    def _resolve_use_jito(self, strategy_id: str) -> bool:
+        # Jito requires a constructed client either way. Per-strategy tip
+        # override is a follow-up; the client's configured tip is used.
+        if self.jito is None:
+            return False
+        if self.tx_config is not None:
+            return self.tx_config.jito_enabled(strategy_id)
+        return bool(self.config.use_jito)
 
     async def fetch_curve_state(self, token_address: str) -> BondingCurveState | None:
         """
@@ -137,9 +168,14 @@ class TradingEngine:
             token_mint = Pubkey.from_string(token_address)
             amount_lamports = int(amount_sol * LAMPORTS_PER_SOL)
 
+            # Resolve per-strategy execution params (tx profile or flat config)
+            priority_fee = await self._resolve_priority_fee(strategy_id)
+            slippage_bps = self._resolve_slippage_bps(strategy_id)
+            use_jito = self._resolve_use_jito(strategy_id)
+
             # 0. Pre-check wallet balance
             balance = await self.client.get_balance(self.wallet.pubkey)
-            total_cost = amount_sol + (self.config.priority_fee_lamports / LAMPORTS_PER_SOL)
+            total_cost = amount_sol + (priority_fee / LAMPORTS_PER_SOL)
             if balance < total_cost:
                 self.logger.warning(
                     f"Insufficient SOL balance: {balance:.4f} < {total_cost:.4f} required"
@@ -166,7 +202,7 @@ class TradingEngine:
 
             # 3. Calculate expected tokens and price impact
             tokens_out, price_impact = curve_state.calculate_buy_price(amount_sol)
-            max_impact = self.config.max_slippage_bps / 100
+            max_impact = slippage_bps / 100
             if price_impact > max_impact:
                 self.logger.warning(
                     f"Price impact too high: {price_impact:.2f}% > {max_impact:.2f}%"
@@ -193,11 +229,11 @@ class TradingEngine:
                 associated_bonding_curve=assoc_bonding_curve,
                 buyer_token_account=buyer_ata,
                 amount_sol=amount_lamports,
-                max_slippage_bps=self.config.max_slippage_bps,
+                max_slippage_bps=slippage_bps,
             )
 
             # 7. Build compute budget instructions for priority
-            compute_price_ix = set_compute_unit_price(self.config.priority_fee_lamports)
+            compute_price_ix = set_compute_unit_price(priority_fee)
             compute_limit_ix = set_compute_unit_limit(DEFAULT_COMPUTE_UNITS)
 
             # 8. Get recent blockhash
@@ -224,7 +260,7 @@ class TradingEngine:
 
             # 11. Send transaction
             signature = None
-            if self.config.use_jito and self.jito:
+            if use_jito and self.jito:
                 self.logger.info("Sending via Jito bundle for MEV protection")
                 result = await self.jito.send_transaction_with_tip(
                     transaction, self.wallet.keypair, blockhash
@@ -300,6 +336,12 @@ class TradingEngine:
         try:
             token_mint = Pubkey.from_string(token_address)
 
+            # Resolve per-strategy execution params from the owning position.
+            strategy_id = getattr(position, "strategy_id", "default")
+            priority_fee = await self._resolve_priority_fee(strategy_id)
+            slippage_bps = self._resolve_slippage_bps(strategy_id)
+            use_jito = self._resolve_use_jito(strategy_id)
+
             # 1. Derive bonding curve PDA
             bonding_curve, _ = self.pumpfun.derive_bonding_curve_address(token_mint)
 
@@ -341,7 +383,7 @@ class TradingEngine:
             sol_out_lamports, price_impact = curve_state.calculate_sell_price(sell_amount)
 
             # Apply slippage for minimum output protection
-            min_sol_output = int(sol_out_lamports * (1 - self.config.max_slippage_bps / 10000))
+            min_sol_output = int(sol_out_lamports * (1 - slippage_bps / 10000))
 
             # 5. Get associated bonding curve token account
             assoc_bonding_curve = self.pumpfun.get_associated_bonding_curve_address(
@@ -360,7 +402,7 @@ class TradingEngine:
             )
 
             # 7. Build compute budget instructions
-            compute_price_ix = set_compute_unit_price(self.config.priority_fee_lamports)
+            compute_price_ix = set_compute_unit_price(priority_fee)
             compute_limit_ix = set_compute_unit_limit(DEFAULT_COMPUTE_UNITS)
 
             # 8. Get recent blockhash
@@ -387,7 +429,7 @@ class TradingEngine:
 
             # 11. Send transaction
             signature = None
-            if self.config.use_jito and self.jito:
+            if use_jito and self.jito:
                 self.logger.info("Sending sell via Jito bundle")
                 result = await self.jito.send_transaction_with_tip(
                     transaction, self.wallet.keypair, blockhash
@@ -439,11 +481,12 @@ class TradingEngine:
             token_amount = seller_token_info["amount"]
 
             # Get Jupiter quote: token -> SOL
+            slippage_bps = self._resolve_slippage_bps(getattr(position, "strategy_id", "default"))
             quote = await self.jupiter.get_quote(
                 input_mint=token_address,
                 output_mint=self.SOL_MINT,
                 amount=token_amount,
-                slippage_bps=self.config.max_slippage_bps,
+                slippage_bps=slippage_bps,
             )
             if not quote:
                 self.logger.warning("Jupiter quote failed for migrated token sell")
