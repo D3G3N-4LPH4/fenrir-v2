@@ -194,9 +194,17 @@ class TestMigrationEvaluate:
         md = _migration_md(age_minutes=10.0)
         assert MigrationSniperStrategy(cfg).evaluate_token({"token_address": TOKEN}, md) is None
 
-    def test_reject_not_raydium(self, cfg: BotConfig) -> None:
-        md = _migration_md(dex_id="pumpfun")
-        assert MigrationSniperStrategy(cfg).evaluate_token({"token_address": TOKEN}, md) is None
+    def test_accepts_pumpswap(self, cfg: BotConfig) -> None:
+        # Modern graduations land on PumpSwap — must be accepted.
+        md = _migration_md(dex_id="pumpswap")
+        sig = MigrationSniperStrategy(cfg).evaluate_token({"token_address": TOKEN}, md)
+        assert sig is not None
+
+    def test_reject_unsupported_dex(self, cfg: BotConfig) -> None:
+        # pre-migration bonding curve / other AMMs are not migration targets.
+        for dex in ("pumpfun", "orca", ""):
+            md = _migration_md(dex_id=dex)
+            assert MigrationSniperStrategy(cfg).evaluate_token({"token_address": TOKEN}, md) is None
 
     def test_none_market_data(self, cfg: BotConfig) -> None:
         assert MigrationSniperStrategy(cfg).evaluate_token({"token_address": TOKEN}, None) is None

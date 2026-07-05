@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
 """
-FENRIR - Migration Detector (pump.fun → Raydium)
+FENRIR - Migration Detector (pump.fun → PumpSwap / Raydium)
 
-Helpers for the *experimental* migration feed: recognising a pump.fun →
-Raydium graduation from transaction logs and turning it into the ``token_data``
-dict the pipeline consumes (so the ``migration_snipe`` strategy can act on it).
+Helpers for the *experimental* migration feed: recognising a pump.fun
+graduation from transaction logs and turning it into the ``token_data`` dict the
+pipeline consumes (so the ``migration_snipe`` strategy can act on it).
+
+Verified on real MigrateV2 txs signed by the migration authority: the pump.fun
+program (6EF8…) runs ``MigrateV2`` and, in the same tx, creates the destination
+pool — modern graduations create a **PumpSwap** pool (``CreatePool``); some
+legacy ones went to Raydium. The migrated token is the single non-WSOL mint.
 
 Scope / caveats:
-  - ``has_migration_hint`` and ``build_token_data`` are pure and unit-tested.
-  - Extracting the exact token mint from a real migration transaction depends
-    on live account layouts and is handled in the monitor's live loop; that
-    path is NOT verifiable offline and is gated behind
+  - ``has_migration_hint``, ``pick_token_mint`` and ``build_token_data`` are
+    pure and unit-tested; the mint heuristic is verified against real txs.
+  - The live logsSubscribe loop is network I/O, gated behind
     ``BotConfig.migration_feed_enabled`` (off by default).
 
-Downstream note: a migrated token trades on Raydium, so the market-data
-snapshot (DexScreener via ``fenrir.filters``) supplies ``dex_id="raydium"``,
-age, liquidity, etc. This builder therefore only needs to surface the token
-address (and light metadata) quickly; the MarketFilter + the strategy's
-``evaluate_token`` do the real gating.
+Downstream note: the destination AMM (PumpSwap vs Raydium) is resolved from the
+DexScreener market-data snapshot (``fenrir.filters``), not asserted here — so
+``build_token_data`` only surfaces the token address + light metadata; the
+MarketFilter + the strategy's ``evaluate_token`` (which accepts both AMMs) do
+the gating.
 """
 
 from __future__ import annotations
@@ -29,11 +33,13 @@ WSOL_MINT = "So11111111111111111111111111111111111111112"
 
 
 class MigrationDetector:
-    """Recognise pump.fun → Raydium migrations from logs and build token_data."""
+    """Recognise pump.fun graduations from logs and build token_data."""
 
     # pump.fun migration authority — the targeted logsSubscribe address.
     PUMP_MIGRATION_PROGRAM = "39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg"
-    # Raydium AMM v4 — the destination pool program (reference only).
+    # Destination pool programs (reference only). Modern graduations create a
+    # PumpSwap pool; some legacy ones created a Raydium pool.
+    PUMPSWAP_PROGRAM = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
     RAYDIUM_AMM_PROGRAM = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
     # pump.fun mint vanity suffix — used to disambiguate the token mint from an
     # LP mint when a migration tx touches more than one non-WSOL mint.
@@ -76,20 +82,20 @@ class MigrationDetector:
         token_mint: str,
         *,
         symbol: str = "???",
-        name: str = "Migrated (pump→Raydium)",
+        name: str = "Migrated (pump.fun)",
         pair_address: str | None = None,
     ) -> dict[str, Any]:
         """
         Build the token_data dict for a migrated token.
 
-        No bonding_curve_state is attached (the curve is complete post-migration);
-        pricing/market context comes from the DexScreener MarketData snapshot.
+        The destination AMM (PumpSwap vs Raydium) is intentionally NOT asserted
+        here — it's resolved from the DexScreener MarketData snapshot downstream.
+        No bonding_curve_state is attached (the curve is complete post-migration).
         """
         return {
             "token_address": token_mint,
             "symbol": symbol,
             "name": name,
-            "dex_id": "raydium",
             "pair_address": pair_address,
             "migrated": True,
         }

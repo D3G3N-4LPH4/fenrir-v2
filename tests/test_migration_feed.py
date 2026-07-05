@@ -68,9 +68,10 @@ class TestMigrationDetector:
     def test_build_token_data_defaults(self) -> None:
         td = MigrationDetector().build_token_data(TOKEN)
         assert td["token_address"] == TOKEN
-        assert td["dex_id"] == "raydium"
         assert td["migrated"] is True
         assert td["pair_address"] is None
+        # dex_id is resolved downstream from MarketData, not asserted here.
+        assert "dex_id" not in td
         assert "bonding_curve_state" not in td  # curve complete post-migration
 
     def test_build_token_data_custom(self) -> None:
@@ -132,7 +133,7 @@ class TestMigrationExtractor:
         td = _monitor()._extract_migration_token_data(_tx(post=[TOKEN, WSOL_MINT]))
         assert td is not None
         assert td["token_address"] == TOKEN
-        assert td["dex_id"] == "raydium"
+        assert td["migrated"] is True
 
     def test_wsol_only_returns_none(self) -> None:
         assert _monitor()._extract_migration_token_data(_tx(post=[WSOL_MINT])) is None
