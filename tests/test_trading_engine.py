@@ -537,13 +537,14 @@ class TestLiveSell:
         mocks["solana_client"].get_account_info.return_value = b"x" * 80
         mocks["solana_client"].get_token_accounts_by_owner.return_value = None
 
-        with patch.object(
-            live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+        with (
+            patch.object(
+                live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+            ),
+            patch.object(live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE),
+            patch("fenrir.trading.engine.asyncio.sleep", new_callable=AsyncMock),
         ):
-            with patch.object(
-                live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE
-            ):
-                result = await live_engine.execute_sell(FAKE_TOKEN, "stop_loss")
+            result = await live_engine.execute_sell(FAKE_TOKEN, "stop_loss")
 
         assert result is False
 
@@ -559,13 +560,14 @@ class TestLiveSell:
             "amount": 0,
         }
 
-        with patch.object(
-            live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+        with (
+            patch.object(
+                live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+            ),
+            patch.object(live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE),
+            patch("fenrir.trading.engine.asyncio.sleep", new_callable=AsyncMock),
         ):
-            with patch.object(
-                live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE
-            ):
-                result = await live_engine.execute_sell(FAKE_TOKEN, "stop_loss")
+            result = await live_engine.execute_sell(FAKE_TOKEN, "stop_loss")
 
         assert result is False
 

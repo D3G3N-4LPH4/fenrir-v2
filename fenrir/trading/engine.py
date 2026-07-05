@@ -19,7 +19,12 @@ from fenrir.core.jupiter import JupiterSwapEngine
 from fenrir.core.positions import PositionManager
 from fenrir.core.wallet import WalletManager
 from fenrir.logger import FenrirLogger
-from fenrir.protocol.pumpfun import TOKEN_PROGRAM, BondingCurveState, PumpFunProgram
+from fenrir.protocol.pumpfun import (
+    PUMP_GLOBAL,
+    TOKEN_PROGRAM,
+    BondingCurveState,
+    PumpFunProgram,
+)
 from fenrir.trading.tx_config import TxConfigManager
 
 LAMPORTS_PER_SOL = 1_000_000_000
@@ -87,6 +92,21 @@ class TradingEngine:
         if self.tx_config is not None:
             return self.tx_config.jito_tip_lamports(strategy_id)
         return self.config.jito_tip_lamports
+
+    async def _live_fee_recipient(self) -> Pubkey | None:
+        """Read the current pump fee_recipient from the global account.
+
+        Returns None on any failure; the instruction builder then falls back to
+        the module constant. The value rotates on-chain, so trusting a stale
+        constant risks 6000 NotAuthorized.
+        """
+        try:
+            global_data = await self.client.get_account_info(PUMP_GLOBAL)
+            if global_data:
+                return self.pumpfun.parse_global_fee_recipient(global_data)
+        except Exception as e:
+            self.logger.debug(f"fee_recipient fetch failed, using fallback: {e}")
+        return None
 
     async def close(self) -> None:
         """Release resources held by the engine (tx-profile RPC session)."""
@@ -229,9 +249,18 @@ class TradingEngine:
                 return False
             creator = Pubkey.from_string(curve_state.creator)
 
-            # 5. Idempotently create the buyer's ATA (with the correct token
+            # 5. Read the live fee_recipient (it rotates; a stale one → 6000).
+            fee_recipient = await self._live_fee_recipient()
+
+            # 6. Idempotently create the buyer's ATA (with the correct token
             #    program), then build the buy — pump.fun requires the ATA to
             #    exist, else the buy fails with AccountNotInitialized (3012).
+            #    pump `buy` takes the EXACT token amount to receive + a SOL cap:
+            #    request slightly fewer tokens than quoted so slippage doesn't
+            #    trip TooMuchSolRequired, and cap SOL at amount * (1 + slippage).
+            slippage = slippage_bps / 10_000
+            buy_amount_tokens = max(1, int(tokens_out * (1 - slippage)))
+            max_sol_cost = int(amount_lamports * (1 + slippage))
             create_ata_ix = self.pumpfun.build_create_ata_instruction(
                 self.wallet.pubkey, self.wallet.pubkey, token_mint, token_program
             )
@@ -241,8 +270,9 @@ class TradingEngine:
                 bonding_curve=bonding_curve,
                 creator=creator,
                 token_program=token_program,
-                amount_sol=amount_lamports,
-                max_slippage_bps=slippage_bps,
+                amount_tokens=buy_amount_tokens,
+                max_sol_cost=max_sol_cost,
+                fee_recipient=fee_recipient,
             )
 
             # 7. Build compute budget instructions for priority
@@ -376,12 +406,20 @@ class TradingEngine:
                     token_address, token_mint, position, reason
                 )
 
-            # 3. Get seller's token account
-            seller_token_info = await self.client.get_token_accounts_by_owner(
-                self.wallet.pubkey, token_mint
-            )
-            if not seller_token_info:
-                self.logger.warning("No token account found - nothing to sell")
+            # 3. Get seller's token account. Retry briefly: right after a buy the
+            #    RPC may not have indexed the freshly-created ATA yet, and a single
+            #    empty read would orphan the position ("nothing to sell").
+            seller_token_info = None
+            for attempt in range(4):
+                seller_token_info = await self.client.get_token_accounts_by_owner(
+                    self.wallet.pubkey, token_mint
+                )
+                if seller_token_info and seller_token_info["amount"] > 0:
+                    break
+                if attempt < 3:
+                    await asyncio.sleep(2.0)
+            if not seller_token_info or seller_token_info["amount"] <= 0:
+                self.logger.warning("No token balance found after retries - nothing to sell")
                 return False
 
             actual_balance = seller_token_info["amount"]
@@ -405,6 +443,7 @@ class TradingEngine:
                 self.logger.warning("No creator on bonding curve - cannot build sell")
                 return False
             creator = Pubkey.from_string(curve_state.creator)
+            fee_recipient = await self._live_fee_recipient()
             sell_ix = self.pumpfun.build_sell_instruction(
                 seller=self.wallet.pubkey,
                 token_mint=token_mint,
@@ -413,6 +452,7 @@ class TradingEngine:
                 token_program=token_program,
                 amount_tokens=sell_amount,
                 min_sol_output=min_sol_output,
+                fee_recipient=fee_recipient,
             )
 
             # 7. Build compute budget instructions
@@ -521,21 +561,37 @@ class TradingEngine:
             return False
 
     async def _confirm_transaction(
-        self, signature: str, max_attempts: int = 10, interval: float = 2.0
+        self, signature: str, max_attempts: int = 20, interval: float = 2.0
     ) -> bool:
-        """Poll for transaction confirmation with exponential backoff."""
+        """Poll for transaction confirmation with exponential backoff.
+
+        confirmation_status is a solders enum whose str() is e.g.
+        "TransactionConfirmationStatus.Confirmed" — match by substring (lowered)
+        rather than exact equality, else a landed tx is reported as failed and we
+        orphan the position. Falls back to get_transaction (a landed tx with no
+        meta error) since some RPCs drop the status once the sig is finalized.
+        """
         for attempt in range(max_attempts):
             statuses = await self.client.get_signature_statuses([signature])
             if statuses and statuses[0]:
                 status = statuses[0]
-                if hasattr(status, "err") and status.err:
+                if getattr(status, "err", None):
                     self.logger.warning(f"Transaction failed on-chain: {status.err}")
                     return False
-                if hasattr(status, "confirmation_status"):
-                    cs = str(status.confirmation_status)
-                    if cs in ("confirmed", "finalized"):
-                        return True
+                cs = str(getattr(status, "confirmation_status", "")).lower()
+                if "confirmed" in cs or "finalized" in cs:
+                    return True
             await asyncio.sleep(min(interval * (1.3**attempt), 10))
+
+        # Final fallback: the sig may have finalized past the status window.
+        tx = await self.client.get_transaction(signature)
+        if tx is not None:
+            err = getattr(getattr(tx, "transaction", None), "meta", None)
+            if err is None or getattr(err, "err", None) is None:
+                return True
+            self.logger.warning(f"Transaction failed on-chain: {err.err}")
+            return False
+
         self.logger.warning(
             f"Transaction {signature[:16]}... not confirmed after {max_attempts} attempts"
         )

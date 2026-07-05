@@ -277,12 +277,12 @@ class TestPumpfunInstructionBuilding:
             bonding_curve=bonding_curve,
             creator=Keypair().pubkey(),
             token_program=TOKEN_PROGRAM,
-            amount_sol=100_000_000,
-            max_slippage_bps=500,
+            amount_tokens=100_000_000,
+            max_sol_cost=105_000_000,
         )
 
         assert ix is not None
-        assert len(ix.accounts) == 16  # current pump.fun buy layout
+        assert len(ix.accounts) == 18  # 16 IDL + 2 v2 buyback fee accounts
         assert len(ix.data) == 25  # discriminator + amount + max_sol_cost + track_volume
 
     def test_build_sell_instruction_structure(self, devnet_keypair):
@@ -302,5 +302,5 @@ class TestPumpfunInstructionBuilding:
         )
 
         assert ix is not None
-        assert len(ix.accounts) == 14  # current pump.fun sell layout
+        assert len(ix.accounts) == 16  # 14 IDL + 2 v2 buyback fee accounts
         assert len(ix.data) == 24  # discriminator + amount + min_sol_output
