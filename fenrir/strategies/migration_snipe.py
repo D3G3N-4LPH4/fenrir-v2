@@ -40,6 +40,11 @@ logger = logging.getLogger("FENRIR.MigrationSnipe")
 RAYDIUM_AMM_PROGRAM = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
 PUMPFUN_MIGRATION_PROGRAM = "39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg"
 
+# DexScreener dexId values for the AMMs pump.fun tokens migrate to. Verified on
+# real MigrateV2 txs: modern graduations land on PumpSwap (pump's own AMM); some
+# legacy migrations land on Raydium. Compared case-insensitively.
+SUPPORTED_MIGRATION_DEXES = frozenset({"raydium", "pumpswap"})
+
 
 @dataclass
 class MigrationSniperConfig:
@@ -212,9 +217,12 @@ class MigrationSniperStrategy(TradingStrategy):
             )
             return None
 
-        # Must be on Raydium (confirmed migration)
-        if "raydium" not in dex_id.lower():
-            logger.debug(f"Migration reject {token_address[:8]}...: not on Raydium (dex={dex_id})")
+        # Must be on a supported migration AMM (PumpSwap or Raydium)
+        if dex_id.lower() not in SUPPORTED_MIGRATION_DEXES:
+            logger.debug(
+                f"Migration reject {token_address[:8]}...: "
+                f"unsupported migration AMM (dex={dex_id})"
+            )
             return None
 
         # Liquidity checks
