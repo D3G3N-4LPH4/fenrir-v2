@@ -6,9 +6,26 @@ Logs that read like a story, not error dumps.
 """
 
 import logging
+import sys
 from logging.handlers import RotatingFileHandler
+from typing import Any
 
 from .config import BotConfig
+
+
+def _ensure_utf8_stream(stream: Any) -> None:
+    """
+    Best-effort switch a std stream to UTF-8 so emoji/non-latin log lines don't
+    raise UnicodeEncodeError on Windows consoles (default cp1252). No-op if the
+    stream can't be reconfigured (e.g. pytest capture buffers).
+    """
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is None:
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (ValueError, OSError):
+        pass
 
 
 class FenrirLogger:
@@ -25,18 +42,23 @@ class FenrirLogger:
         # multiple times (e.g. in tests). logging.getLogger returns the same
         # logger instance, but handlers stack if not checked.
         if not self.logger.handlers:
-            # Console handler - beautiful terminal output
+            # Console handler - beautiful terminal output. Reconfigure the std
+            # streams to UTF-8 first so emoji log lines (e.g. "🧠 AI Brain")
+            # don't raise UnicodeEncodeError on Windows cp1252 consoles.
+            _ensure_utf8_stream(sys.stdout)
+            _ensure_utf8_stream(sys.stderr)
             console = logging.StreamHandler()
             console.setFormatter(
                 logging.Formatter("%(asctime)s | %(levelname)8s | %(message)s", datefmt="%H:%M:%S")
             )
             self.logger.addHandler(console)
 
-            # File handler - persistent history
+            # File handler - persistent history (UTF-8 so emoji persist too)
             file_handler = RotatingFileHandler(
                 config.log_file,
                 maxBytes=10_000_000,  # 10MB
                 backupCount=5,
+                encoding="utf-8",
             )
             file_handler.setFormatter(
                 logging.Formatter("%(asctime)s | %(levelname)8s | %(name)s | %(message)s")
