@@ -13,6 +13,7 @@ from solders.message import Message
 from solders.pubkey import Pubkey
 from solders.token.associated import get_associated_token_address
 from solders.transaction import Transaction
+from spl.token.instructions import create_associated_token_account
 
 from fenrir.config import BotConfig, TradingMode
 from fenrir.core.client import SolanaClient
@@ -222,8 +223,15 @@ class TradingEngine:
                 self.logger.warning("Zero tokens output - skipping buy")
                 return False
 
-            # 4. Get buyer's associated token account
+            # 4. Get buyer's associated token account. pump.fun's buy requires
+            # it to already exist, so create it (idempotently) if missing —
+            # otherwise the buy fails with AccountNotInitialized (Anchor 3012).
             buyer_ata = get_associated_token_address(self.wallet.pubkey, token_mint)
+            create_ata_ix = None
+            if await self.client.get_account_info(buyer_ata) is None:
+                create_ata_ix = create_associated_token_account(
+                    payer=self.wallet.pubkey, owner=self.wallet.pubkey, mint=token_mint
+                )
 
             # 5. Get associated bonding curve token account
             assoc_bonding_curve = self.pumpfun.get_associated_bonding_curve_address(
@@ -251,8 +259,11 @@ class TradingEngine:
                 self.logger.warning("Failed to get recent blockhash")
                 return False
 
-            # 9. Build and sign transaction
-            instructions = [compute_limit_ix, compute_price_ix, buy_ix]
+            # 9. Build and sign transaction (create the ATA before buying if needed)
+            instructions = [compute_limit_ix, compute_price_ix]
+            if create_ata_ix is not None:
+                instructions.append(create_ata_ix)
+            instructions.append(buy_ix)
             message = Message.new_with_blockhash(
                 instructions,
                 self.wallet.pubkey,

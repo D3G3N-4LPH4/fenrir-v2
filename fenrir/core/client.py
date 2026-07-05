@@ -89,9 +89,16 @@ class SolanaClient:
         return resp.value if resp else None
 
     async def simulate_transaction(self, transaction: Transaction) -> bool:
-        """Test the waters before diving in. Returns True if simulation succeeds."""
+        """Test the waters before diving in. Returns True if simulation succeeds.
+
+        Simulate at Confirmed commitment to match the blockhash fetched by
+        get_latest_blockhash() and the send preflight. Without this, the client
+        defaults to the finalized bank (~32 slots behind), which doesn't yet
+        know the recent confirmed blockhash → spurious BlockhashNotFound.
+        """
         resp = await self._rpc(
-            self.client.simulate_transaction(transaction), "simulate_transaction"
+            self.client.simulate_transaction(transaction, commitment=Confirmed),
+            "simulate_transaction",
         )
         if resp is None:
             return False
