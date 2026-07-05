@@ -33,6 +33,7 @@
   "security_fail_open_on_holder_fetch_error": false,
   "market_filter_enabled": false,
   "market_fail_open_on_fetch_error": true,
+  "migration_feed_enabled": false,
 
   "websocket_enabled": true,
   "poll_interval_seconds": 2.0,

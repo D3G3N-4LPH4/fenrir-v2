@@ -206,6 +206,11 @@ class BotConfig:
     market_filter_enabled: bool = False
     market_fail_open_on_fetch_error: bool = True
 
+    # Experimental: on-chain pump.fun→Raydium migration feed (WebSocket only).
+    # Off by default; the migration parser is not verified offline. Feeds the
+    # migration_snipe strategy when enabled.
+    migration_feed_enabled: bool = False
+
     # AI Integration - Claude Brain
     ai_analysis_enabled: bool = True  # Master switch for AI decisions
     ai_api_key: str = ""
@@ -301,6 +306,9 @@ class BotConfig:
         self.market_filter_enabled = _env_bool("MARKET_FILTER_ENABLED", self.market_filter_enabled)
         self.market_fail_open_on_fetch_error = _env_bool(
             "MARKET_FAIL_OPEN_ON_FETCH_ERROR", self.market_fail_open_on_fetch_error
+        )
+        self.migration_feed_enabled = _env_bool(
+            "MIGRATION_FEED_ENABLED", self.migration_feed_enabled
         )
 
         # ── Execution ──────────────────────────────────────────────────
