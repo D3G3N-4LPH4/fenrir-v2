@@ -77,8 +77,10 @@ class TestTxProfiles:
 
     async def test_dynamic_fee_clamped_to_floor(self) -> None:
         eng = _engine(tx_profiles_enabled=True)
-        # reversal = FastMomentum (TURBO, no session): fallback 1_000_000 clamps
-        # up to the profile's 0.003 SOL floor.
+        assert eng.tx_config is not None
+        eng.tx_config.rpc_url = ""  # no RPC -> preset fallback (no network)
+        # reversal = FastMomentum (TURBO): fallback 1_000_000 clamps up to the
+        # profile's 0.003 SOL floor.
         assert await eng._resolve_priority_fee("reversal") == int(0.003 * LAMPORTS)
 
     def test_slippage_per_profile(self) -> None:
@@ -100,3 +102,16 @@ class TestTxProfiles:
     def test_jito_none_overrides_profile(self) -> None:
         eng = _engine(jito=None, tx_profiles_enabled=True)
         assert eng._resolve_use_jito("migration_snipe") is False
+
+    def test_jito_tip_flat(self) -> None:
+        assert _engine(jito_tip_lamports=12_345)._resolve_jito_tip_lamports("sniper") == 12_345
+
+    def test_jito_tip_per_profile(self) -> None:
+        eng = _engine(tx_profiles_enabled=True)
+        assert eng._resolve_jito_tip_lamports("migration_snipe") == int(0.002 * LAMPORTS)
+        assert eng._resolve_jito_tip_lamports("reversal") == int(0.001 * LAMPORTS)
+        assert eng._resolve_jito_tip_lamports("narrative_tracker") == int(0.0005 * LAMPORTS)
+
+    async def test_close_is_safe(self) -> None:
+        await _engine().close()  # tx_config None
+        await _engine(tx_profiles_enabled=True).close()  # tx_config, no session
