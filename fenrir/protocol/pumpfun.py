@@ -29,8 +29,16 @@ logger = logging.getLogger(__name__)
 
 PUMP_PROGRAM_ID = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
 PUMP_GLOBAL = Pubkey.from_string("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf")
-PUMP_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
+# Primary protocol fee recipient. This ROTATES on-chain — the engine reads the
+# live value from the global account (offset 41) at trade time; this constant is
+# only the fallback. Verified current value as of the live round-trip below.
+PUMP_FEE_RECIPIENT = Pubkey.from_string("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV")
 PUMP_EVENT_AUTHORITY = Pubkey.from_string("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
+
+# Offset of `fee_recipient` inside the global account: 8 (disc) + 1 (initialized
+# bool) + 32 (authority) = 41. Read at runtime so fee-recipient rotation can't
+# brick trading (a stale value → on-chain error 6000 NotAuthorized).
+GLOBAL_FEE_RECIPIENT_OFFSET = 41
 
 # Token programs (pump.fun mints may be classic SPL or Token-2022)
 TOKEN_PROGRAM = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
@@ -41,6 +49,18 @@ ASSOCIATED_TOKEN_PROGRAM = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25e
 # verified against live buy/sell txs).
 PUMP_FEE_CONFIG = Pubkey.from_string("8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt")
 PUMP_FEE_PROGRAM = Pubkey.from_string("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ")
+
+# pump.fun's v2 "buyback" fee-sharing appends two *writable* fee accounts to buy
+# and sell as remaining-accounts (the published IDL predates this, so it lists
+# only 16/14 accounts — the deployed program needs 18/16). Order and writability
+# matter: idx0 is the buyback recipient, idx1 a fee-pool recipient. Verified
+# against real mainnet txs and a live 0.01 SOL buy+sell round-trip:
+#   buy  2Q7fZUF... (bal 0 -> 10_000_000), sell 3gWCcrm... (10_000_000 -> 0).
+# Wrong values fail simulation (6000 NotAuthorized / 6024 Overflow / 6057/6062
+# BuybackFeeRecipient), so a bad refresh can never silently spend SOL. If buys
+# start failing with those codes, refresh these from a recent successful tx.
+PUMP_BUYBACK_FEE_RECIPIENT = Pubkey.from_string("Etb9fCF6PyY9grPPj9h8SZt5qimYHhySbfrGS7wfFqBz")
+PUMP_FEE_POOL_RECIPIENT = Pubkey.from_string("GXPFM2caqTtQYC2cJ5yJRi9VDkpsYZXzYdwYpGnLmtDL")
 
 # Instruction discriminators (Anchor-style: sha256("global:<method>")[:8])
 # pump.fun migrated token creation from `create` to `create_v2`; accept both so
@@ -240,6 +260,17 @@ class PumpFunProgram:
             [b"user_volume_accumulator", bytes(user)], self.program_id
         )[0]
 
+    def parse_global_fee_recipient(self, global_data: bytes) -> Pubkey | None:
+        """Read the live primary fee_recipient from the pump global account.
+
+        It rotates on-chain, so the engine reads it fresh each trade rather than
+        trusting the constant (a stale value → 6000 NotAuthorized).
+        """
+        end = GLOBAL_FEE_RECIPIENT_OFFSET + 32
+        if len(global_data) < end:
+            return None
+        return Pubkey.from_bytes(global_data[GLOBAL_FEE_RECIPIENT_OFFSET:end])
+
     def build_create_ata_instruction(
         self, payer: Pubkey, owner: Pubkey, token_mint: Pubkey, token_program: Pubkey
     ) -> Instruction:
@@ -262,22 +293,34 @@ class PumpFunProgram:
         bonding_curve: Pubkey,
         creator: Pubkey,
         token_program: Pubkey,
-        amount_sol: int,  # lamports
-        max_slippage_bps: int = 500,  # 5%
+        amount_tokens: int,  # exact token base units to buy
+        max_sol_cost: int,  # lamports cap (slippage protection)
+        fee_recipient: Pubkey | None = None,
+        buyback_fee_recipient: Pubkey | None = None,
+        fee_pool_recipient: Pubkey | None = None,
     ) -> Instruction:
         """
-        Build a pump.fun `buy` instruction (current 16-account IDL layout).
+        Build a pump.fun `buy` instruction (live 18-account layout).
 
-        Data: discriminator(8) + amount(u64) + max_sol_cost(u64) + track_volume(1
-        byte, 0x00 = don't track). Accounts and PDAs verified against live txs.
+        pump.fun's `buy` takes the EXACT token amount to receive plus a SOL cap —
+        NOT a SOL amount. Data: discriminator(8) + amount(u64, token base units) +
+        max_sol_cost(u64, lamports) + track_volume(1 byte, 0x00 = don't track).
+
+        The published IDL lists 16 accounts; the deployed program needs two extra
+        *writable* v2 buyback fee accounts appended (see PUMP_BUYBACK_FEE_RECIPIENT).
+        fee_recipient defaults to the module constant but the engine passes the
+        live value read from the global account (it rotates).
         """
-        max_sol_cost = int(amount_sol * (1 + max_slippage_bps / 10000))
-        data = BUY_DISCRIMINATOR + struct.pack("<Q", amount_sol) + struct.pack("<Q", max_sol_cost)
+        data = (
+            BUY_DISCRIMINATOR + struct.pack("<Q", amount_tokens) + struct.pack("<Q", max_sol_cost)
+        )
         data += b"\x00"  # track_volume = None
 
         accounts = [
             AccountMeta(pubkey=PUMP_GLOBAL, is_signer=False, is_writable=False),
-            AccountMeta(pubkey=PUMP_FEE_RECIPIENT, is_signer=False, is_writable=True),
+            AccountMeta(
+                pubkey=fee_recipient or PUMP_FEE_RECIPIENT, is_signer=False, is_writable=True
+            ),
             AccountMeta(pubkey=token_mint, is_signer=False, is_writable=False),
             AccountMeta(pubkey=bonding_curve, is_signer=False, is_writable=True),
             AccountMeta(
@@ -306,6 +349,17 @@ class PumpFunProgram:
             ),
             AccountMeta(pubkey=PUMP_FEE_CONFIG, is_signer=False, is_writable=False),
             AccountMeta(pubkey=PUMP_FEE_PROGRAM, is_signer=False, is_writable=False),
+            # v2 buyback fee accounts (writable) — appended remaining-accounts.
+            AccountMeta(
+                pubkey=buyback_fee_recipient or PUMP_BUYBACK_FEE_RECIPIENT,
+                is_signer=False,
+                is_writable=True,
+            ),
+            AccountMeta(
+                pubkey=fee_pool_recipient or PUMP_FEE_POOL_RECIPIENT,
+                is_signer=False,
+                is_writable=True,
+            ),
         ]
         return Instruction(program_id=self.program_id, accounts=accounts, data=data)
 
@@ -318,13 +372,17 @@ class PumpFunProgram:
         token_program: Pubkey,
         amount_tokens: int,
         min_sol_output: int,  # minimum SOL to receive (slippage protection)
+        fee_recipient: Pubkey | None = None,
+        buyback_fee_recipient: Pubkey | None = None,
+        fee_pool_recipient: Pubkey | None = None,
     ) -> Instruction:
         """
-        Build a pump.fun `sell` instruction (current 14-account IDL layout).
+        Build a pump.fun `sell` instruction (live 16-account layout).
 
         Note vs buy: creator_vault comes BEFORE token_program, and there are no
         volume accumulators / track_volume arg. Data: disc(8) + amount(u64) +
-        min_sol_output(u64).
+        min_sol_output(u64). Like buy, the deployed program needs two extra
+        *writable* v2 buyback fee accounts appended (IDL lists only 14).
         """
         data = (
             SELL_DISCRIMINATOR
@@ -334,7 +392,9 @@ class PumpFunProgram:
 
         accounts = [
             AccountMeta(pubkey=PUMP_GLOBAL, is_signer=False, is_writable=False),
-            AccountMeta(pubkey=PUMP_FEE_RECIPIENT, is_signer=False, is_writable=True),
+            AccountMeta(
+                pubkey=fee_recipient or PUMP_FEE_RECIPIENT, is_signer=False, is_writable=True
+            ),
             AccountMeta(pubkey=token_mint, is_signer=False, is_writable=False),
             AccountMeta(pubkey=bonding_curve, is_signer=False, is_writable=True),
             AccountMeta(
@@ -357,6 +417,17 @@ class PumpFunProgram:
             AccountMeta(pubkey=PUMP_PROGRAM_ID, is_signer=False, is_writable=False),
             AccountMeta(pubkey=PUMP_FEE_CONFIG, is_signer=False, is_writable=False),
             AccountMeta(pubkey=PUMP_FEE_PROGRAM, is_signer=False, is_writable=False),
+            # v2 buyback fee accounts (writable) — appended remaining-accounts.
+            AccountMeta(
+                pubkey=buyback_fee_recipient or PUMP_BUYBACK_FEE_RECIPIENT,
+                is_signer=False,
+                is_writable=True,
+            ),
+            AccountMeta(
+                pubkey=fee_pool_recipient or PUMP_FEE_POOL_RECIPIENT,
+                is_signer=False,
+                is_writable=True,
+            ),
         ]
         return Instruction(program_id=self.program_id, accounts=accounts, data=data)
 

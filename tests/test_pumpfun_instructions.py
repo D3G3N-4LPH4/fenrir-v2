@@ -19,8 +19,10 @@ from solders.pubkey import Pubkey
 from fenrir.protocol.pumpfun import (
     ASSOCIATED_TOKEN_PROGRAM,
     BUY_DISCRIMINATOR,
+    PUMP_BUYBACK_FEE_RECIPIENT,
     PUMP_EVENT_AUTHORITY,
     PUMP_FEE_CONFIG,
+    PUMP_FEE_POOL_RECIPIENT,
     PUMP_FEE_PROGRAM,
     PUMP_FEE_RECIPIENT,
     PUMP_GLOBAL,
@@ -51,21 +53,21 @@ class TestBuyInstruction:
             bonding_curve=BC,
             creator=CREATOR,
             token_program=token_program,
-            amount_sol=1_000_000,
-            max_slippage_bps=500,
+            amount_tokens=1_000_000,
+            max_sol_cost=1_050_000,
         )
 
     def test_program_and_count(self) -> None:
         ix = self._ix()
         assert ix.program_id == PUMP_PROGRAM_ID
-        assert len(ix.accounts) == 16
+        assert len(ix.accounts) == 18  # 16 IDL + 2 v2 buyback fee accounts
 
     def test_data(self) -> None:
         ix = self._ix()
         data = bytes(ix.data)
         assert data[:8] == BUY_DISCRIMINATOR
-        assert struct.unpack("<Q", data[8:16])[0] == 1_000_000
-        assert struct.unpack("<Q", data[16:24])[0] == int(1_000_000 * 1.05)
+        assert struct.unpack("<Q", data[8:16])[0] == 1_000_000  # amount (token base units)
+        assert struct.unpack("<Q", data[16:24])[0] == 1_050_000  # max_sol_cost (lamports)
         assert data[24:] == b"\x00"  # track_volume = None
         assert len(data) == 25
 
@@ -86,6 +88,23 @@ class TestBuyInstruction:
         assert _pk(a[13]) == str(PF.derive_user_volume_accumulator(BUYER)) and a[13].is_writable
         assert _pk(a[14]) == str(PUMP_FEE_CONFIG)
         assert _pk(a[15]) == str(PUMP_FEE_PROGRAM)
+        # v2 buyback fee accounts — appended, both writable, order-sensitive.
+        assert _pk(a[16]) == str(PUMP_BUYBACK_FEE_RECIPIENT) and a[16].is_writable
+        assert _pk(a[17]) == str(PUMP_FEE_POOL_RECIPIENT) and a[17].is_writable
+
+    def test_fee_recipient_override(self) -> None:
+        override = Pubkey.from_string("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV")
+        ix = PF.build_buy_instruction(
+            buyer=BUYER,
+            token_mint=MINT,
+            bonding_curve=BC,
+            creator=CREATOR,
+            token_program=TOKEN_PROGRAM,
+            amount_tokens=1,
+            max_sol_cost=1,
+            fee_recipient=override,
+        )
+        assert _pk(ix.accounts[1]) == str(override)
 
     def test_token_2022_changes_atas(self) -> None:
         classic = self._ix(TOKEN_PROGRAM).accounts
@@ -111,7 +130,7 @@ class TestSellInstruction:
     def test_program_and_count(self) -> None:
         ix = self._ix()
         assert ix.program_id == PUMP_PROGRAM_ID
-        assert len(ix.accounts) == 14
+        assert len(ix.accounts) == 16  # 14 IDL + 2 v2 buyback fee accounts
 
     def test_data(self) -> None:
         data = bytes(self._ix().data)
@@ -129,6 +148,9 @@ class TestSellInstruction:
         assert _pk(a[11]) == str(PUMP_PROGRAM_ID)
         assert _pk(a[12]) == str(PUMP_FEE_CONFIG)
         assert _pk(a[13]) == str(PUMP_FEE_PROGRAM)
+        # v2 buyback fee accounts — appended, both writable.
+        assert _pk(a[14]) == str(PUMP_BUYBACK_FEE_RECIPIENT) and a[14].is_writable
+        assert _pk(a[15]) == str(PUMP_FEE_POOL_RECIPIENT) and a[15].is_writable
 
 
 class TestCreateAta:
@@ -139,6 +161,16 @@ class TestCreateAta:
         assert len(ix.accounts) == 6
         assert _pk(ix.accounts[1]) == str(PF.derive_ata(BUYER, MINT, TOKEN_PROGRAM))
         assert _pk(ix.accounts[5]) == str(TOKEN_PROGRAM)
+
+
+class TestParseGlobalFeeRecipient:
+    def test_reads_offset_41(self) -> None:
+        want = Pubkey.from_string("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV")
+        data = b"\x00" * 41 + bytes(want) + b"\x00" * 100
+        assert PF.parse_global_fee_recipient(data) == want
+
+    def test_none_when_short(self) -> None:
+        assert PF.parse_global_fee_recipient(b"\x00" * 40) is None
 
 
 class TestDeriveHelpers:
