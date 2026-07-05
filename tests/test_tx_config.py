@@ -14,6 +14,7 @@ Run with: pytest tests/test_tx_config.py -v
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -245,3 +246,20 @@ class TestPriorityFee:
         mgr = TxConfigManager()
         assert await mgr._fetch_dynamic_fee(DynamicFeePreset.TURBO, None) == 1_000_000
         assert await mgr._fetch_dynamic_fee(DynamicFeePreset.MEDIUM, None) == 100_000
+
+    async def test_own_session_used_when_rpc_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No session passed + rpc_url set -> manager uses its own session for a
+        # live percentile query (rather than the preset fallback).
+        mgr = TxConfigManager(rpc_url="https://rpc.example.com")
+        fees = {"result": [{"prioritizationFee": 5_000_000} for _ in range(10)]}
+        monkeypatch.setattr(mgr, "_get_session", AsyncMock(return_value=_FakeSession(fees)))
+        # reversal = TURBO (90th pct) -> 5_000_000, within the 0.003/0.01 floor/cap.
+        assert await mgr.get_priority_fee_lamports("reversal") == 5_000_000
+
+    async def test_empty_rpc_no_session_uses_fallback(self) -> None:
+        # rpc_url empty -> no live query, preset fallback clamped to floor.
+        mgr = TxConfigManager()  # rpc_url defaults to ""
+        assert await mgr.get_priority_fee_lamports("reversal") == int(0.003 * 1_000_000_000)
+
+    async def test_close_is_safe_without_session(self) -> None:
+        await TxConfigManager().close()  # never created a session

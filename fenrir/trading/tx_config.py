@@ -252,7 +252,20 @@ class TxConfigManager:
         # module-level profile singletons (would otherwise leak across
         # managers and across test cases).
         self._profiles = copy.deepcopy(STRATEGY_TX_PROFILES)
+        self._session: Any = None  # lazy aiohttp session for dynamic fee RPC
         self._apply_env_overrides()
+
+    async def _get_session(self) -> Any:
+        """Lazy aiohttp session for live prioritization-fee queries."""
+        if self._session is None or self._session.closed:
+            import aiohttp
+
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def close(self) -> None:
+        if self._session and not self._session.closed:
+            await self._session.close()
 
     def _apply_env_overrides(self) -> None:
         """
@@ -327,9 +340,15 @@ class TxConfigManager:
         if fee_config.mode == FeeMode.FIXED:
             return fee_config.fixed_fee_lamports
 
-        # Dynamic fee: query recent prioritization fees
+        # Dynamic fee: query recent prioritization fees. Fall back to the
+        # manager's own session when the caller didn't pass one and an RPC URL
+        # is configured (live percentile); otherwise _fetch_dynamic_fee returns
+        # the preset fallback.
+        active_session = session
+        if active_session is None and self.rpc_url:
+            active_session = await self._get_session()
         try:
-            fee_lamports = await self._fetch_dynamic_fee(fee_config.dynamic_preset, session)
+            fee_lamports = await self._fetch_dynamic_fee(fee_config.dynamic_preset, active_session)
             # Apply floor and cap
             fee_lamports = max(fee_lamports, fee_config.min_fee_lamports)
             fee_lamports = min(fee_lamports, fee_config.max_fee_lamports)

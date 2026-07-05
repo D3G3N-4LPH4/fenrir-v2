@@ -698,6 +698,7 @@ class FenrirBot:
 
         # Shutdown all components
         await self.monitor.stop()
+        await self.trading_engine.close()
         await self.claude_brain.close()
         await self.solana_client.close()
         await self.jupiter.close()

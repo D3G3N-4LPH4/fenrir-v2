@@ -78,13 +78,21 @@ class TradingEngine:
         return self.config.max_slippage_bps
 
     def _resolve_use_jito(self, strategy_id: str) -> bool:
-        # Jito requires a constructed client either way. Per-strategy tip
-        # override is a follow-up; the client's configured tip is used.
         if self.jito is None:
             return False
         if self.tx_config is not None:
             return self.tx_config.jito_enabled(strategy_id)
         return bool(self.config.use_jito)
+
+    def _resolve_jito_tip_lamports(self, strategy_id: str) -> int:
+        if self.tx_config is not None:
+            return self.tx_config.jito_tip_lamports(strategy_id)
+        return self.config.jito_tip_lamports
+
+    async def close(self) -> None:
+        """Release resources held by the engine (tx-profile RPC session)."""
+        if self.tx_config is not None:
+            await self.tx_config.close()
 
     async def fetch_curve_state(self, token_address: str) -> BondingCurveState | None:
         """
@@ -172,6 +180,7 @@ class TradingEngine:
             priority_fee = await self._resolve_priority_fee(strategy_id)
             slippage_bps = self._resolve_slippage_bps(strategy_id)
             use_jito = self._resolve_use_jito(strategy_id)
+            jito_tip = self._resolve_jito_tip_lamports(strategy_id)
 
             # 0. Pre-check wallet balance
             balance = await self.client.get_balance(self.wallet.pubkey)
@@ -263,7 +272,7 @@ class TradingEngine:
             if use_jito and self.jito:
                 self.logger.info("Sending via Jito bundle for MEV protection")
                 result = await self.jito.send_transaction_with_tip(
-                    transaction, self.wallet.keypair, blockhash
+                    transaction, self.wallet.keypair, blockhash, tip_lamports=jito_tip
                 )
                 if result.landed:
                     signature = result.bundle_id
@@ -341,6 +350,7 @@ class TradingEngine:
             priority_fee = await self._resolve_priority_fee(strategy_id)
             slippage_bps = self._resolve_slippage_bps(strategy_id)
             use_jito = self._resolve_use_jito(strategy_id)
+            jito_tip = self._resolve_jito_tip_lamports(strategy_id)
 
             # 1. Derive bonding curve PDA
             bonding_curve, _ = self.pumpfun.derive_bonding_curve_address(token_mint)
@@ -432,7 +442,7 @@ class TradingEngine:
             if use_jito and self.jito:
                 self.logger.info("Sending sell via Jito bundle")
                 result = await self.jito.send_transaction_with_tip(
-                    transaction, self.wallet.keypair, blockhash
+                    transaction, self.wallet.keypair, blockhash, tip_lamports=jito_tip
                 )
                 if result.landed:
                     signature = result.bundle_id
