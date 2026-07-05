@@ -28,6 +28,9 @@ from fenrir.trading.monitor import WSOL_MINT, PumpFunMonitor
 
 TOKEN = "So11111111111111111111111111111111111111112ABC"
 OTHER = "Mint2222222222222222222222222222222222222222"
+# Real pump.fun mints observed in live MigrateV2 txs (vanity "pump" suffix).
+PUMP_TOKEN = "5e8zEuwJu7mYshNqsPhvKw4YGkaCTx77zysxCmYQpump"
+PUMP_TOKEN2 = "97pz15v1VYv5MfQw2Sgf8T4THa814QmoGn5KiWcPpump"
 
 
 # ---------------------------------------------------------------------------
@@ -40,16 +43,24 @@ class TestMigrationDetector:
         "log",
         [
             "Program log: Instruction: Migrate",
+            "Program log: Instruction: MigrateV2",  # real graduations use V2
             "Program log: Migrate",
-            "Program log: Instruction: Withdraw",
-            "Program ... invoke [1]: initialize2",
         ],
     )
     def test_hint_matches(self, log: str) -> None:
         assert MigrationDetector().has_migration_hint(["noise", log, "more"]) is True
 
-    def test_hint_no_match(self) -> None:
-        assert MigrationDetector().has_migration_hint(["Program log: Instruction: Buy"]) is False
+    @pytest.mark.parametrize(
+        "log",
+        [
+            "Program log: Instruction: Buy",
+            "Program log: Instruction: Withdraw",  # narrowed out (FP-prone)
+            "Program ... invoke [1]: initialize2",  # narrowed out (FP-prone)
+            "Program log: Instruction: InitializeMint2",  # generic SPL, not a migration
+        ],
+    )
+    def test_hint_no_match(self, log: str) -> None:
+        assert MigrationDetector().has_migration_hint([log]) is False
 
     def test_hint_empty(self) -> None:
         assert MigrationDetector().has_migration_hint([]) is False
@@ -127,8 +138,14 @@ class TestMigrationExtractor:
         assert _monitor()._extract_migration_token_data(_tx(post=[WSOL_MINT])) is None
 
     def test_ambiguous_multiple_mints_returns_none(self) -> None:
-        # Two distinct non-WSOL mints → skip rather than guess.
+        # Two distinct non-WSOL mints, neither pump-suffixed → skip.
         assert _monitor()._extract_migration_token_data(_tx(post=[TOKEN, OTHER])) is None
+
+    def test_ambiguous_prefers_pump_suffix(self) -> None:
+        # Token mint + an LP-like mint → pick the pump-suffixed token.
+        td = _monitor()._extract_migration_token_data(_tx(post=[OTHER, PUMP_TOKEN, WSOL_MINT]))
+        assert td is not None
+        assert td["token_address"] == PUMP_TOKEN
 
     def test_no_meta_returns_none(self) -> None:
         tx = SimpleNamespace(transaction=SimpleNamespace(meta=None))
@@ -138,3 +155,31 @@ class TestMigrationExtractor:
         td = _monitor()._extract_migration_token_data(_tx(post=[WSOL_MINT], pre=[TOKEN]))
         assert td is not None
         assert td["token_address"] == TOKEN
+
+
+class TestPickTokenMint:
+    def _pick(self, mints: list[str]) -> str | None:
+        return MigrationDetector().pick_token_mint(mints)
+
+    def test_single(self) -> None:
+        assert self._pick([TOKEN]) == TOKEN
+
+    def test_dedup_single(self) -> None:
+        assert self._pick([TOKEN, TOKEN]) == TOKEN
+
+    def test_wsol_filtered(self) -> None:
+        assert self._pick([WSOL_MINT]) is None
+        assert self._pick([PUMP_TOKEN, WSOL_MINT]) == PUMP_TOKEN
+
+    def test_empty(self) -> None:
+        assert self._pick([]) is None
+        assert self._pick(["", ""]) is None
+
+    def test_ambiguous_non_pump(self) -> None:
+        assert self._pick([TOKEN, OTHER]) is None
+
+    def test_prefers_unique_pump(self) -> None:
+        assert self._pick([OTHER, PUMP_TOKEN]) == PUMP_TOKEN
+
+    def test_two_pump_is_ambiguous(self) -> None:
+        assert self._pick([PUMP_TOKEN, PUMP_TOKEN2]) is None
