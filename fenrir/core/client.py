@@ -132,6 +132,16 @@ class SolanaClient:
             return bytes(resp.value.data)
         return None
 
+    async def get_account_owner(self, pubkey: Pubkey) -> Pubkey | None:
+        """Return the program that owns an account (e.g. a mint's token program)."""
+        resp = await self._rpc(
+            self.client.get_account_info(pubkey, commitment=Confirmed),
+            f"get_account_owner:{pubkey}",
+        )
+        if resp and resp.value:
+            return Pubkey.from_bytes(bytes(resp.value.owner))
+        return None
+
     async def get_token_accounts_by_owner(self, owner: Pubkey, mint: Pubkey) -> dict | None:
         """Get token account and balance for a specific mint."""
         resp = await self._rpc(

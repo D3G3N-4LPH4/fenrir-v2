@@ -25,6 +25,8 @@ from fenrir.trading.engine import TradingEngine
 
 FAKE_TOKEN = "So11111111111111111111111111111111111111199"
 
+FAKE_CREATOR = "11111111111111111111111111111111"
+
 FRESH_CURVE = BondingCurveState(
     virtual_token_reserves=1_073_000_000,
     virtual_sol_reserves=30_000_000_000,
@@ -32,6 +34,7 @@ FRESH_CURVE = BondingCurveState(
     real_sol_reserves=0,
     token_total_supply=1_000_000_000,
     complete=False,
+    creator=FAKE_CREATOR,
 )
 
 MIGRATED_CURVE = BondingCurveState(
@@ -41,6 +44,7 @@ MIGRATED_CURVE = BondingCurveState(
     real_sol_reserves=85_000_000_000,
     token_total_supply=1_000_000_000,
     complete=True,
+    creator=FAKE_CREATOR,
 )
 
 
@@ -330,41 +334,23 @@ class TestLiveBuy:
         confirmed_status.confirmation_status = "confirmed"
         mocks["solana_client"].get_signature_statuses.return_value = [confirmed_status]
 
-        with patch.object(
-            live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+        with (
+            patch.object(
+                live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+            ),
+            patch.object(live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE),
+            patch.object(
+                live_engine.pumpfun, "build_create_ata_instruction", return_value=MagicMock()
+            ),
+            patch.object(live_engine.pumpfun, "build_buy_instruction", return_value=MagicMock()),
+            patch("fenrir.trading.engine.Message") as MockMsg,
+            patch("fenrir.trading.engine.Transaction") as MockTx,
+            patch("fenrir.trading.engine.set_compute_unit_price", return_value=MagicMock()),
+            patch("fenrir.trading.engine.set_compute_unit_limit", return_value=MagicMock()),
         ):
-            with patch.object(
-                live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE
-            ):
-                with patch.object(
-                    live_engine.pumpfun,
-                    "get_associated_bonding_curve_address",
-                    return_value=MagicMock(),
-                ):
-                    with patch.object(
-                        live_engine.pumpfun, "build_buy_instruction", return_value=MagicMock()
-                    ):
-                        with patch("fenrir.trading.engine.Message") as MockMsg:
-                            with patch("fenrir.trading.engine.Transaction") as MockTx:
-                                with patch(
-                                    "fenrir.trading.engine.get_associated_token_address",
-                                    return_value=MagicMock(),
-                                ):
-                                    with patch(
-                                        "fenrir.trading.engine.set_compute_unit_price",
-                                        return_value=MagicMock(),
-                                    ):
-                                        with patch(
-                                            "fenrir.trading.engine.set_compute_unit_limit",
-                                            return_value=MagicMock(),
-                                        ):
-                                            mock_tx_instance = MagicMock()
-                                            MockTx.new_unsigned.return_value = mock_tx_instance
-                                            MockMsg.new_with_blockhash.return_value = MagicMock()
-
-                                            result = await live_engine.execute_buy(
-                                                _make_token_data()
-                                            )
+            MockTx.new_unsigned.return_value = MagicMock()
+            MockMsg.new_with_blockhash.return_value = MagicMock()
+            result = await live_engine.execute_buy(_make_token_data())
 
         assert result is True
         mocks["positions"].open_position.assert_called_once()

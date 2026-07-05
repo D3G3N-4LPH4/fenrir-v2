@@ -32,8 +32,15 @@ PUMP_GLOBAL = Pubkey.from_string("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf")
 PUMP_FEE_RECIPIENT = Pubkey.from_string("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
 PUMP_EVENT_AUTHORITY = Pubkey.from_string("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
 
-# Token program
+# Token programs (pump.fun mints may be classic SPL or Token-2022)
 TOKEN_PROGRAM = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+TOKEN_2022_PROGRAM = Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+ASSOCIATED_TOKEN_PROGRAM = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+
+# Fee accounts added by pump.fun's creator-fee update (fixed global addresses,
+# verified against live buy/sell txs).
+PUMP_FEE_CONFIG = Pubkey.from_string("8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt")
+PUMP_FEE_PROGRAM = Pubkey.from_string("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ")
 
 # Instruction discriminators (Anchor-style: sha256("global:<method>")[:8])
 # pump.fun migrated token creation from `create` to `create_v2`; accept both so
@@ -64,6 +71,7 @@ class BondingCurveState:
     real_sol_reserves: int  # Real SOL reserves (lamports)
     token_total_supply: int
     complete: bool  # Has migrated to Raydium?
+    creator: str | None = None  # coin creator (for the creator_vault PDA)
 
     def get_price(self) -> float:
         """
@@ -192,6 +200,13 @@ class PumpFunProgram:
             offset += 8
 
             complete = bool(account_data[offset])
+            offset += 1
+
+            # creator pubkey (added by the creator-fee update) — needed to
+            # derive the creator_vault account for buy/sell.
+            creator = None
+            if len(account_data) >= offset + 32:
+                creator = str(Pubkey.from_bytes(account_data[offset : offset + 32]))
 
             return BondingCurveState(
                 virtual_token_reserves=virtual_token_reserves,
@@ -200,91 +215,150 @@ class PumpFunProgram:
                 real_sol_reserves=real_sol_reserves,
                 token_total_supply=token_total_supply,
                 complete=complete,
+                creator=creator,
             )
         except Exception as e:
             logger.error("Failed to decode bonding curve: %s", e)
             return None
+
+    # ── PDA / ATA derivation (IDL-accurate) ────────────────────────────
+
+    def derive_ata(self, owner: Pubkey, token_mint: Pubkey, token_program: Pubkey) -> Pubkey:
+        """Associated token account, using the mint's token program."""
+        return Pubkey.find_program_address(
+            [bytes(owner), bytes(token_program), bytes(token_mint)], ASSOCIATED_TOKEN_PROGRAM
+        )[0]
+
+    def derive_creator_vault(self, creator: Pubkey) -> Pubkey:
+        return Pubkey.find_program_address([b"creator-vault", bytes(creator)], self.program_id)[0]
+
+    def derive_global_volume_accumulator(self) -> Pubkey:
+        return Pubkey.find_program_address([b"global_volume_accumulator"], self.program_id)[0]
+
+    def derive_user_volume_accumulator(self, user: Pubkey) -> Pubkey:
+        return Pubkey.find_program_address(
+            [b"user_volume_accumulator", bytes(user)], self.program_id
+        )[0]
+
+    def build_create_ata_instruction(
+        self, payer: Pubkey, owner: Pubkey, token_mint: Pubkey, token_program: Pubkey
+    ) -> Instruction:
+        """Idempotent create-ATA (data=[1]) using the mint's token program."""
+        ata = self.derive_ata(owner, token_mint, token_program)
+        accounts = [
+            AccountMeta(pubkey=payer, is_signer=True, is_writable=True),
+            AccountMeta(pubkey=ata, is_signer=False, is_writable=True),
+            AccountMeta(pubkey=owner, is_signer=False, is_writable=False),
+            AccountMeta(pubkey=token_mint, is_signer=False, is_writable=False),
+            AccountMeta(pubkey=SYS_PROGRAM_ID, is_signer=False, is_writable=False),
+            AccountMeta(pubkey=token_program, is_signer=False, is_writable=False),
+        ]
+        return Instruction(program_id=ASSOCIATED_TOKEN_PROGRAM, accounts=accounts, data=bytes([1]))
 
     def build_buy_instruction(
         self,
         buyer: Pubkey,
         token_mint: Pubkey,
         bonding_curve: Pubkey,
-        associated_bonding_curve: Pubkey,
-        buyer_token_account: Pubkey,
+        creator: Pubkey,
+        token_program: Pubkey,
         amount_sol: int,  # lamports
         max_slippage_bps: int = 500,  # 5%
     ) -> Instruction:
         """
-        Build a buy instruction for the pump.fun program.
+        Build a pump.fun `buy` instruction (current 16-account IDL layout).
 
-        Instruction format:
-        - 8 bytes: discriminator (buy)
-        - 8 bytes: amount (SOL in lamports)
-        - 8 bytes: max_sol_cost (for slippage protection)
+        Data: discriminator(8) + amount(u64) + max_sol_cost(u64) + track_volume(1
+        byte, 0x00 = don't track). Accounts and PDAs verified against live txs.
         """
-        # Calculate max SOL with slippage
         max_sol_cost = int(amount_sol * (1 + max_slippage_bps / 10000))
+        data = BUY_DISCRIMINATOR + struct.pack("<Q", amount_sol) + struct.pack("<Q", max_sol_cost)
+        data += b"\x00"  # track_volume = None
 
-        # Build instruction data
-        instruction_data = BUY_DISCRIMINATOR
-        instruction_data += struct.pack("<Q", amount_sol)
-        instruction_data += struct.pack("<Q", max_sol_cost)
-
-        # Build accounts list
         accounts = [
             AccountMeta(pubkey=PUMP_GLOBAL, is_signer=False, is_writable=False),
             AccountMeta(pubkey=PUMP_FEE_RECIPIENT, is_signer=False, is_writable=True),
             AccountMeta(pubkey=token_mint, is_signer=False, is_writable=False),
             AccountMeta(pubkey=bonding_curve, is_signer=False, is_writable=True),
-            AccountMeta(pubkey=associated_bonding_curve, is_signer=False, is_writable=True),
-            AccountMeta(pubkey=buyer_token_account, is_signer=False, is_writable=True),
+            AccountMeta(
+                pubkey=self.derive_ata(bonding_curve, token_mint, token_program),
+                is_signer=False,
+                is_writable=True,
+            ),
+            AccountMeta(
+                pubkey=self.derive_ata(buyer, token_mint, token_program),
+                is_signer=False,
+                is_writable=True,
+            ),
             AccountMeta(pubkey=buyer, is_signer=True, is_writable=True),
             AccountMeta(pubkey=SYS_PROGRAM_ID, is_signer=False, is_writable=False),
-            AccountMeta(pubkey=TOKEN_PROGRAM, is_signer=False, is_writable=False),
+            AccountMeta(pubkey=token_program, is_signer=False, is_writable=False),
+            AccountMeta(
+                pubkey=self.derive_creator_vault(creator), is_signer=False, is_writable=True
+            ),
             AccountMeta(pubkey=PUMP_EVENT_AUTHORITY, is_signer=False, is_writable=False),
+            AccountMeta(pubkey=PUMP_PROGRAM_ID, is_signer=False, is_writable=False),
+            AccountMeta(
+                pubkey=self.derive_global_volume_accumulator(), is_signer=False, is_writable=False
+            ),
+            AccountMeta(
+                pubkey=self.derive_user_volume_accumulator(buyer), is_signer=False, is_writable=True
+            ),
+            AccountMeta(pubkey=PUMP_FEE_CONFIG, is_signer=False, is_writable=False),
+            AccountMeta(pubkey=PUMP_FEE_PROGRAM, is_signer=False, is_writable=False),
         ]
-
-        return Instruction(program_id=self.program_id, accounts=accounts, data=instruction_data)
+        return Instruction(program_id=self.program_id, accounts=accounts, data=data)
 
     def build_sell_instruction(
         self,
         seller: Pubkey,
         token_mint: Pubkey,
         bonding_curve: Pubkey,
-        associated_bonding_curve: Pubkey,
-        seller_token_account: Pubkey,
+        creator: Pubkey,
+        token_program: Pubkey,
         amount_tokens: int,
         min_sol_output: int,  # minimum SOL to receive (slippage protection)
     ) -> Instruction:
         """
-        Build a sell instruction for the pump.fun program.
+        Build a pump.fun `sell` instruction (current 14-account IDL layout).
 
-        Instruction format:
-        - 8 bytes: discriminator (sell)
-        - 8 bytes: amount (tokens)
-        - 8 bytes: min_sol_output (for slippage protection)
+        Note vs buy: creator_vault comes BEFORE token_program, and there are no
+        volume accumulators / track_volume arg. Data: disc(8) + amount(u64) +
+        min_sol_output(u64).
         """
-        # Build instruction data
-        instruction_data = SELL_DISCRIMINATOR
-        instruction_data += struct.pack("<Q", amount_tokens)
-        instruction_data += struct.pack("<Q", min_sol_output)
+        data = (
+            SELL_DISCRIMINATOR
+            + struct.pack("<Q", amount_tokens)
+            + struct.pack("<Q", min_sol_output)
+        )
 
-        # Build accounts list
         accounts = [
             AccountMeta(pubkey=PUMP_GLOBAL, is_signer=False, is_writable=False),
             AccountMeta(pubkey=PUMP_FEE_RECIPIENT, is_signer=False, is_writable=True),
             AccountMeta(pubkey=token_mint, is_signer=False, is_writable=False),
             AccountMeta(pubkey=bonding_curve, is_signer=False, is_writable=True),
-            AccountMeta(pubkey=associated_bonding_curve, is_signer=False, is_writable=True),
-            AccountMeta(pubkey=seller_token_account, is_signer=False, is_writable=True),
+            AccountMeta(
+                pubkey=self.derive_ata(bonding_curve, token_mint, token_program),
+                is_signer=False,
+                is_writable=True,
+            ),
+            AccountMeta(
+                pubkey=self.derive_ata(seller, token_mint, token_program),
+                is_signer=False,
+                is_writable=True,
+            ),
             AccountMeta(pubkey=seller, is_signer=True, is_writable=True),
             AccountMeta(pubkey=SYS_PROGRAM_ID, is_signer=False, is_writable=False),
-            AccountMeta(pubkey=TOKEN_PROGRAM, is_signer=False, is_writable=False),
+            AccountMeta(
+                pubkey=self.derive_creator_vault(creator), is_signer=False, is_writable=True
+            ),
+            AccountMeta(pubkey=token_program, is_signer=False, is_writable=False),
             AccountMeta(pubkey=PUMP_EVENT_AUTHORITY, is_signer=False, is_writable=False),
+            AccountMeta(pubkey=PUMP_PROGRAM_ID, is_signer=False, is_writable=False),
+            AccountMeta(pubkey=PUMP_FEE_CONFIG, is_signer=False, is_writable=False),
+            AccountMeta(pubkey=PUMP_FEE_PROGRAM, is_signer=False, is_writable=False),
         ]
-
-        return Instruction(program_id=self.program_id, accounts=accounts, data=instruction_data)
+        return Instruction(program_id=self.program_id, accounts=accounts, data=data)
 
     def derive_bonding_curve_address(self, token_mint: Pubkey) -> tuple[Pubkey, int]:
         """
