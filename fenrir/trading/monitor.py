@@ -26,6 +26,9 @@ from fenrir.config import BotConfig
 from fenrir.core.client import SolanaClient
 from fenrir.logger import FenrirLogger
 from fenrir.protocol.pumpfun import PumpFunProgram, TokenLaunchDetector
+from fenrir.trading.migration import MigrationDetector
+
+WSOL_MINT = "So11111111111111111111111111111111111111112"
 
 
 class PumpFunMonitor:
@@ -47,6 +50,7 @@ class PumpFunMonitor:
         self.ws_subscription_id: int | None = None
         self.launch_detector = TokenLaunchDetector()
         self.pumpfun_program = PumpFunProgram()
+        self.migration_detector = MigrationDetector()
 
     def _is_seen(self, key: str) -> bool:
         return key in self._seen_tokens_lru
@@ -99,7 +103,17 @@ class PumpFunMonitor:
         self.logger.info("FENRIR awakens... Monitoring pump.fun launches")
 
         if self.config.websocket_enabled:
-            await self._monitor_websocket(on_launch)
+            if self.config.migration_feed_enabled:
+                # Run the launch feed and the (experimental) migration feed
+                # concurrently — logsSubscribe allows only one address per
+                # subscription, so the migration feed needs its own connection.
+                self.logger.info("Migration feed enabled (experimental)")
+                await asyncio.gather(
+                    self._monitor_websocket(on_launch),
+                    self._monitor_migration_websocket(on_launch),
+                )
+            else:
+                await self._monitor_websocket(on_launch)
         else:
             await self._monitor_polling(on_launch)
 
@@ -208,6 +222,135 @@ class PumpFunMonitor:
                 f"WebSocket failed {self.MAX_WS_RECONNECT_ATTEMPTS} times - falling back to polling"
             )
             await self._monitor_polling(on_launch)
+
+    async def _monitor_migration_websocket(self, on_launch: Callable[..., Any]) -> None:
+        """
+        EXPERIMENTAL: second logsSubscribe watching the pump.fun migration
+        authority for pump→Raydium graduations, feeding the migration_snipe
+        strategy.
+
+        Off unless config.migration_feed_enabled. The migration-tx parser
+        (_extract_migration_token_data) relies on live account layouts and is
+        not verified offline; it errs on the side of skipping (returns None)
+        when the token mint is ambiguous rather than acting on a guess.
+        """
+        program = self.migration_detector.PUMP_MIGRATION_PROGRAM
+        self.logger.info(f"Migration WebSocket active (program {program[:8]}...)")
+        consecutive_failures = 0
+        backoff = 1.0
+
+        while self.running and consecutive_failures < self.MAX_WS_RECONNECT_ATTEMPTS:
+            try:
+                async with ws_connect(
+                    self.config.ws_url,
+                    ping_interval=20,
+                    ping_timeout=20,
+                    close_timeout=10,
+                ) as ws:
+                    consecutive_failures = 0
+                    backoff = 1.0
+
+                    subscribe_msg = json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "logsSubscribe",
+                            "params": [
+                                {"mentions": [program]},
+                                {"commitment": "confirmed"},
+                            ],
+                        }
+                    )
+                    await ws.send(subscribe_msg)
+
+                    confirm = json.loads(await ws.recv())
+                    if "result" in confirm:
+                        self.logger.info(
+                            f"Subscribed to migration logs (sub_id: {confirm['result']})"
+                        )
+
+                    async for message in ws:
+                        if not self.running:
+                            break
+
+                        try:
+                            data = json.loads(message)
+                        except json.JSONDecodeError:
+                            continue
+
+                        if data.get("method") != "logsNotification":
+                            continue
+
+                        value = data.get("params", {}).get("result", {}).get("value", {})
+                        signature = value.get("signature", "")
+                        logs: list[str] = value.get("logs", [])
+                        if value.get("err") or not signature:
+                            continue
+
+                        if not self.migration_detector.has_migration_hint(logs):
+                            continue
+
+                        if self._is_seen(signature):
+                            continue
+                        self._mark_seen(signature)
+
+                        tx = await self.client.get_transaction(signature)
+                        if not tx:
+                            continue
+                        token_data = self._extract_migration_token_data(tx)
+                        if token_data:
+                            # Migrated tokens bypass the pump-launch quality gate
+                            # (_meets_criteria); the market filter + strategy
+                            # evaluate_token do the gating.
+                            await on_launch(token_data)
+
+            except ConnectionClosed as e:
+                consecutive_failures += 1
+                self.logger.warning(
+                    f"Migration WebSocket disconnected: {e}. "
+                    f"Reconnecting ({consecutive_failures}/{self.MAX_WS_RECONNECT_ATTEMPTS})..."
+                )
+                await asyncio.sleep(min(backoff, 30))
+                backoff *= 2
+
+            except Exception as e:
+                consecutive_failures += 1
+                self.logger.error("Migration WebSocket error", e)
+                await asyncio.sleep(min(backoff, 30))
+                backoff *= 2
+
+        if self.running:
+            self.logger.warning("Migration feed stopped after repeated failures")
+
+    def _extract_migration_token_data(self, tx: Any) -> dict[str, Any] | None:
+        """
+        EXPERIMENTAL best-effort: identify the migrated token mint from a
+        migration transaction's token balances.
+
+        Heuristic: a migration tx references the graduating token's mint in its
+        pre/post token balances; the only non-WSOL mint is the candidate. If
+        the mint is ambiguous (zero or multiple non-WSOL mints), return None so
+        the bot skips rather than acting on the wrong token. Not verified
+        offline — validate on devnet/mainnet before enabling live.
+        """
+        try:
+            meta = getattr(tx.transaction, "meta", None)
+            if meta is None:
+                return None
+            balances = list(getattr(meta, "post_token_balances", None) or []) + list(
+                getattr(meta, "pre_token_balances", None) or []
+            )
+            mints = {
+                str(b.mint)
+                for b in balances
+                if str(getattr(b, "mint", "")) and str(b.mint) != WSOL_MINT
+            }
+            if len(mints) != 1:
+                return None
+            return self.migration_detector.build_token_data(next(iter(mints)))
+        except Exception as e:
+            self.logger.debug(f"Migration token extraction failed: {e}")
+            return None
 
     async def _monitor_polling(self, on_launch: Callable[..., Any]) -> None:
         """Polling-based monitoring. Reliable fallback when WebSocket is unavailable."""
