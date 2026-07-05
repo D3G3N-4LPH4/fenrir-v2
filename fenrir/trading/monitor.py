@@ -26,9 +26,9 @@ from fenrir.config import BotConfig
 from fenrir.core.client import SolanaClient
 from fenrir.logger import FenrirLogger
 from fenrir.protocol.pumpfun import PumpFunProgram, TokenLaunchDetector
-from fenrir.trading.migration import MigrationDetector
+from fenrir.trading.migration import WSOL_MINT, MigrationDetector
 
-WSOL_MINT = "So11111111111111111111111111111111111111112"
+__all__ = ["PumpFunMonitor", "WSOL_MINT"]
 
 
 class PumpFunMonitor:
@@ -324,14 +324,15 @@ class PumpFunMonitor:
 
     def _extract_migration_token_data(self, tx: Any) -> dict[str, Any] | None:
         """
-        EXPERIMENTAL best-effort: identify the migrated token mint from a
-        migration transaction's token balances.
+        Identify the migrated token mint from a migration transaction's token
+        balances and build its token_data.
 
-        Heuristic: a migration tx references the graduating token's mint in its
-        pre/post token balances; the only non-WSOL mint is the candidate. If
-        the mint is ambiguous (zero or multiple non-WSOL mints), return None so
-        the bot skips rather than acting on the wrong token. Not verified
-        offline — validate on devnet/mainnet before enabling live.
+        Verified against live MigrateV2 txs on the pump migration authority: the
+        graduating token's mint is the single non-WSOL mint in the tx's
+        pre/post token balances. Disambiguation for the multi-mint edge case is
+        delegated to MigrationDetector.pick_token_mint (prefers the pump-suffix
+        mint; None if still ambiguous, so the bot skips rather than guesses).
+        Only reached after has_migration_hint gates the tx in the live loop.
         """
         try:
             meta = getattr(tx.transaction, "meta", None)
@@ -340,14 +341,11 @@ class PumpFunMonitor:
             balances = list(getattr(meta, "post_token_balances", None) or []) + list(
                 getattr(meta, "pre_token_balances", None) or []
             )
-            mints = {
-                str(b.mint)
-                for b in balances
-                if str(getattr(b, "mint", "")) and str(b.mint) != WSOL_MINT
-            }
-            if len(mints) != 1:
+            mints = [str(getattr(b, "mint", "")) for b in balances]
+            token_mint = self.migration_detector.pick_token_mint(mints)
+            if token_mint is None:
                 return None
-            return self.migration_detector.build_token_data(next(iter(mints)))
+            return self.migration_detector.build_token_data(token_mint)
         except Exception as e:
             self.logger.debug(f"Migration token extraction failed: {e}")
             return None
