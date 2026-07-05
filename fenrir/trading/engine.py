@@ -11,9 +11,7 @@ import asyncio
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 from solders.message import Message
 from solders.pubkey import Pubkey
-from solders.token.associated import get_associated_token_address
 from solders.transaction import Transaction
-from spl.token.instructions import create_associated_token_account
 
 from fenrir.config import BotConfig, TradingMode
 from fenrir.core.client import SolanaClient
@@ -21,7 +19,7 @@ from fenrir.core.jupiter import JupiterSwapEngine
 from fenrir.core.positions import PositionManager
 from fenrir.core.wallet import WalletManager
 from fenrir.logger import FenrirLogger
-from fenrir.protocol.pumpfun import BondingCurveState, PumpFunProgram
+from fenrir.protocol.pumpfun import TOKEN_PROGRAM, BondingCurveState, PumpFunProgram
 from fenrir.trading.tx_config import TxConfigManager
 
 LAMPORTS_PER_SOL = 1_000_000_000
@@ -223,28 +221,26 @@ class TradingEngine:
                 self.logger.warning("Zero tokens output - skipping buy")
                 return False
 
-            # 4. Get buyer's associated token account. pump.fun's buy requires
-            # it to already exist, so create it (idempotently) if missing —
-            # otherwise the buy fails with AccountNotInitialized (Anchor 3012).
-            buyer_ata = get_associated_token_address(self.wallet.pubkey, token_mint)
-            create_ata_ix = None
-            if await self.client.get_account_info(buyer_ata) is None:
-                create_ata_ix = create_associated_token_account(
-                    payer=self.wallet.pubkey, owner=self.wallet.pubkey, mint=token_mint
-                )
+            # 4. Detect the mint's token program (classic SPL or Token-2022) and
+            #    the coin creator (needed for the creator_vault account).
+            token_program = await self.client.get_account_owner(token_mint) or TOKEN_PROGRAM
+            if not curve_state.creator:
+                self.logger.warning("No creator on bonding curve - cannot build buy")
+                return False
+            creator = Pubkey.from_string(curve_state.creator)
 
-            # 5. Get associated bonding curve token account
-            assoc_bonding_curve = self.pumpfun.get_associated_bonding_curve_address(
-                bonding_curve, token_mint
+            # 5. Idempotently create the buyer's ATA (with the correct token
+            #    program), then build the buy — pump.fun requires the ATA to
+            #    exist, else the buy fails with AccountNotInitialized (3012).
+            create_ata_ix = self.pumpfun.build_create_ata_instruction(
+                self.wallet.pubkey, self.wallet.pubkey, token_mint, token_program
             )
-
-            # 6. Build buy instruction
             buy_ix = self.pumpfun.build_buy_instruction(
                 buyer=self.wallet.pubkey,
                 token_mint=token_mint,
                 bonding_curve=bonding_curve,
-                associated_bonding_curve=assoc_bonding_curve,
-                buyer_token_account=buyer_ata,
+                creator=creator,
+                token_program=token_program,
                 amount_sol=amount_lamports,
                 max_slippage_bps=slippage_bps,
             )
@@ -259,11 +255,8 @@ class TradingEngine:
                 self.logger.warning("Failed to get recent blockhash")
                 return False
 
-            # 9. Build and sign transaction (create the ATA before buying if needed)
-            instructions = [compute_limit_ix, compute_price_ix]
-            if create_ata_ix is not None:
-                instructions.append(create_ata_ix)
-            instructions.append(buy_ix)
+            # 9. Build and sign transaction (idempotent ATA-create before the buy)
+            instructions = [compute_limit_ix, compute_price_ix, create_ata_ix, buy_ix]
             message = Message.new_with_blockhash(
                 instructions,
                 self.wallet.pubkey,
@@ -391,7 +384,6 @@ class TradingEngine:
                 self.logger.warning("No token account found - nothing to sell")
                 return False
 
-            seller_ata = seller_token_info["address"]
             actual_balance = seller_token_info["amount"]
 
             # Sell the on-chain balance (authoritative, avoids truncation of fractional tokens)
@@ -406,18 +398,19 @@ class TradingEngine:
             # Apply slippage for minimum output protection
             min_sol_output = int(sol_out_lamports * (1 - slippage_bps / 10000))
 
-            # 5. Get associated bonding curve token account
-            assoc_bonding_curve = self.pumpfun.get_associated_bonding_curve_address(
-                bonding_curve, token_mint
-            )
-
-            # 6. Build sell instruction
+            # 5. Detect token program + creator, then build the sell instruction
+            #    (associated accounts + creator_vault are derived inside).
+            token_program = await self.client.get_account_owner(token_mint) or TOKEN_PROGRAM
+            if not curve_state.creator:
+                self.logger.warning("No creator on bonding curve - cannot build sell")
+                return False
+            creator = Pubkey.from_string(curve_state.creator)
             sell_ix = self.pumpfun.build_sell_instruction(
                 seller=self.wallet.pubkey,
                 token_mint=token_mint,
                 bonding_curve=bonding_curve,
-                associated_bonding_curve=assoc_bonding_curve,
-                seller_token_account=seller_ata,
+                creator=creator,
+                token_program=token_program,
                 amount_tokens=sell_amount,
                 min_sol_output=min_sol_output,
             )

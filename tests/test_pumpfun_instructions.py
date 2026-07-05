@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""
+FENRIR - pump.fun Instruction Test Suite
+
+Pins the rebuilt (current-IDL) buy/sell instruction layout: account count,
+order, writability, discriminators, args, PDA/ATA derivations, Token-2022
+support, and creator decoding. Verified against real on-chain txs; these tests
+keep it from silently drifting again.
+
+Run with: pytest tests/test_pumpfun_instructions.py -v
+"""
+
+from __future__ import annotations
+
+import struct
+
+from solders.pubkey import Pubkey
+
+from fenrir.protocol.pumpfun import (
+    ASSOCIATED_TOKEN_PROGRAM,
+    BUY_DISCRIMINATOR,
+    PUMP_EVENT_AUTHORITY,
+    PUMP_FEE_CONFIG,
+    PUMP_FEE_PROGRAM,
+    PUMP_FEE_RECIPIENT,
+    PUMP_GLOBAL,
+    PUMP_PROGRAM_ID,
+    SELL_DISCRIMINATOR,
+    TOKEN_2022_PROGRAM,
+    TOKEN_PROGRAM,
+    BondingCurveState,
+    PumpFunProgram,
+)
+
+PF = PumpFunProgram()
+BUYER = Pubkey.from_string("So11111111111111111111111111111111111111112")
+MINT = Pubkey.from_string("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+CREATOR = Pubkey.from_string("Vote111111111111111111111111111111111111111")
+BC, _ = PF.derive_bonding_curve_address(MINT)
+
+
+def _pk(meta) -> str:
+    return str(meta.pubkey)
+
+
+class TestBuyInstruction:
+    def _ix(self, token_program: Pubkey = TOKEN_PROGRAM):
+        return PF.build_buy_instruction(
+            buyer=BUYER,
+            token_mint=MINT,
+            bonding_curve=BC,
+            creator=CREATOR,
+            token_program=token_program,
+            amount_sol=1_000_000,
+            max_slippage_bps=500,
+        )
+
+    def test_program_and_count(self) -> None:
+        ix = self._ix()
+        assert ix.program_id == PUMP_PROGRAM_ID
+        assert len(ix.accounts) == 16
+
+    def test_data(self) -> None:
+        ix = self._ix()
+        data = bytes(ix.data)
+        assert data[:8] == BUY_DISCRIMINATOR
+        assert struct.unpack("<Q", data[8:16])[0] == 1_000_000
+        assert struct.unpack("<Q", data[16:24])[0] == int(1_000_000 * 1.05)
+        assert data[24:] == b"\x00"  # track_volume = None
+        assert len(data) == 25
+
+    def test_account_order(self) -> None:
+        a = self._ix().accounts
+        assert _pk(a[0]) == str(PUMP_GLOBAL)
+        assert _pk(a[1]) == str(PUMP_FEE_RECIPIENT) and a[1].is_writable
+        assert _pk(a[2]) == str(MINT)
+        assert _pk(a[3]) == str(BC) and a[3].is_writable
+        assert _pk(a[4]) == str(PF.derive_ata(BC, MINT, TOKEN_PROGRAM))
+        assert _pk(a[5]) == str(PF.derive_ata(BUYER, MINT, TOKEN_PROGRAM))
+        assert _pk(a[6]) == str(BUYER) and a[6].is_signer and a[6].is_writable
+        assert _pk(a[8]) == str(TOKEN_PROGRAM)
+        assert _pk(a[9]) == str(PF.derive_creator_vault(CREATOR)) and a[9].is_writable
+        assert _pk(a[10]) == str(PUMP_EVENT_AUTHORITY)
+        assert _pk(a[11]) == str(PUMP_PROGRAM_ID)
+        assert _pk(a[12]) == str(PF.derive_global_volume_accumulator())
+        assert _pk(a[13]) == str(PF.derive_user_volume_accumulator(BUYER)) and a[13].is_writable
+        assert _pk(a[14]) == str(PUMP_FEE_CONFIG)
+        assert _pk(a[15]) == str(PUMP_FEE_PROGRAM)
+
+    def test_token_2022_changes_atas(self) -> None:
+        classic = self._ix(TOKEN_PROGRAM).accounts
+        t22 = self._ix(TOKEN_2022_PROGRAM).accounts
+        assert _pk(t22[8]) == str(TOKEN_2022_PROGRAM)
+        assert _pk(t22[4]) != _pk(classic[4])  # associated_bonding_curve differs
+        assert _pk(t22[5]) != _pk(classic[5])  # associated_user differs
+        assert _pk(t22[4]) == str(PF.derive_ata(BC, MINT, TOKEN_2022_PROGRAM))
+
+
+class TestSellInstruction:
+    def _ix(self, token_program: Pubkey = TOKEN_PROGRAM):
+        return PF.build_sell_instruction(
+            seller=BUYER,
+            token_mint=MINT,
+            bonding_curve=BC,
+            creator=CREATOR,
+            token_program=token_program,
+            amount_tokens=5_000,
+            min_sol_output=10,
+        )
+
+    def test_program_and_count(self) -> None:
+        ix = self._ix()
+        assert ix.program_id == PUMP_PROGRAM_ID
+        assert len(ix.accounts) == 14
+
+    def test_data(self) -> None:
+        data = bytes(self._ix().data)
+        assert data[:8] == SELL_DISCRIMINATOR
+        assert struct.unpack("<Q", data[8:16])[0] == 5_000
+        assert struct.unpack("<Q", data[16:24])[0] == 10
+        assert len(data) == 24  # no track_volume on sell
+
+    def test_creator_vault_before_token_program(self) -> None:
+        a = self._ix().accounts
+        # The key buy/sell difference: sell has creator_vault at 8, token at 9.
+        assert _pk(a[8]) == str(PF.derive_creator_vault(CREATOR)) and a[8].is_writable
+        assert _pk(a[9]) == str(TOKEN_PROGRAM)
+        assert _pk(a[10]) == str(PUMP_EVENT_AUTHORITY)
+        assert _pk(a[11]) == str(PUMP_PROGRAM_ID)
+        assert _pk(a[12]) == str(PUMP_FEE_CONFIG)
+        assert _pk(a[13]) == str(PUMP_FEE_PROGRAM)
+
+
+class TestCreateAta:
+    def test_idempotent_create_ata(self) -> None:
+        ix = PF.build_create_ata_instruction(BUYER, BUYER, MINT, TOKEN_PROGRAM)
+        assert ix.program_id == ASSOCIATED_TOKEN_PROGRAM
+        assert bytes(ix.data) == bytes([1])  # CreateIdempotent
+        assert len(ix.accounts) == 6
+        assert _pk(ix.accounts[1]) == str(PF.derive_ata(BUYER, MINT, TOKEN_PROGRAM))
+        assert _pk(ix.accounts[5]) == str(TOKEN_PROGRAM)
+
+
+class TestDeriveHelpers:
+    def test_pda_seeds(self) -> None:
+        assert (
+            PF.derive_creator_vault(CREATOR)
+            == Pubkey.find_program_address([b"creator-vault", bytes(CREATOR)], PUMP_PROGRAM_ID)[0]
+        )
+        assert (
+            PF.derive_global_volume_accumulator()
+            == Pubkey.find_program_address([b"global_volume_accumulator"], PUMP_PROGRAM_ID)[0]
+        )
+        assert (
+            PF.derive_user_volume_accumulator(BUYER)
+            == Pubkey.find_program_address(
+                [b"user_volume_accumulator", bytes(BUYER)], PUMP_PROGRAM_ID
+            )[0]
+        )
+
+
+class TestDecodeCreator:
+    def _curve(self, creator: Pubkey | None) -> bytes:
+        d = b"\x00" * 8  # discriminator
+        d += struct.pack("<Q", 1_073_000_000)
+        d += struct.pack("<Q", 30_000_000_000)
+        d += struct.pack("<Q", 793_100_000)
+        d += struct.pack("<Q", 0)
+        d += struct.pack("<Q", 1_000_000_000)
+        d += b"\x00"  # complete=False (offset now 49)
+        d += bytes(creator) if creator is not None else b"\x00" * 24  # 81 vs 73 bytes
+        return d
+
+    def test_creator_parsed(self) -> None:
+        state = PumpFunProgram().decode_bonding_curve(self._curve(CREATOR))
+        assert state is not None
+        assert state.creator == str(CREATOR)
+
+    def test_creator_absent_when_short(self) -> None:
+        state = PumpFunProgram().decode_bonding_curve(self._curve(None))
+        assert state is not None
+        assert state.creator is None
+
+    def test_dataclass_default_creator_none(self) -> None:
+        assert (
+            BondingCurveState(
+                virtual_token_reserves=1,
+                virtual_sol_reserves=1,
+                real_token_reserves=1,
+                real_sol_reserves=0,
+                token_total_supply=1,
+                complete=False,
+            ).creator
+            is None
+        )

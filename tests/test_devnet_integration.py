@@ -19,7 +19,6 @@ from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.system_program import ID as SYS_PROGRAM_ID
 from solders.system_program import TransferParams, transfer
-from solders.token.associated import get_associated_token_address
 
 from fenrir.config import BotConfig, TradingMode
 from fenrir.core.client import SolanaClient
@@ -29,6 +28,7 @@ from fenrir.protocol.pumpfun import (
     INITIAL_REAL_TOKEN_RESERVES,
     INITIAL_VIRTUAL_SOL_RESERVES,
     INITIAL_VIRTUAL_TOKEN_RESERVES,
+    TOKEN_PROGRAM,
     BondingCurveState,
     PumpFunProgram,
 )
@@ -270,41 +270,37 @@ class TestPumpfunInstructionBuilding:
         program = PumpFunProgram()
         fake_mint = Keypair().pubkey()
         bonding_curve, _ = program.derive_bonding_curve_address(fake_mint)
-        assoc = program.get_associated_bonding_curve_address(bonding_curve, fake_mint)
-        buyer_ata = get_associated_token_address(devnet_keypair.pubkey(), fake_mint)
 
         ix = program.build_buy_instruction(
             buyer=devnet_keypair.pubkey(),
             token_mint=fake_mint,
             bonding_curve=bonding_curve,
-            associated_bonding_curve=assoc,
-            buyer_token_account=buyer_ata,
+            creator=Keypair().pubkey(),
+            token_program=TOKEN_PROGRAM,
             amount_sol=100_000_000,
             max_slippage_bps=500,
         )
 
         assert ix is not None
-        assert len(ix.accounts) == 10
-        assert len(ix.data) == 24  # 8 (discriminator) + 8 (amount) + 8 (max_sol_cost)
+        assert len(ix.accounts) == 16  # current pump.fun buy layout
+        assert len(ix.data) == 25  # discriminator + amount + max_sol_cost + track_volume
 
     def test_build_sell_instruction_structure(self, devnet_keypair):
         """Sell instruction should have correct number of accounts and data layout."""
         program = PumpFunProgram()
         fake_mint = Keypair().pubkey()
         bonding_curve, _ = program.derive_bonding_curve_address(fake_mint)
-        assoc = program.get_associated_bonding_curve_address(bonding_curve, fake_mint)
-        seller_ata = get_associated_token_address(devnet_keypair.pubkey(), fake_mint)
 
         ix = program.build_sell_instruction(
             seller=devnet_keypair.pubkey(),
             token_mint=fake_mint,
             bonding_curve=bonding_curve,
-            associated_bonding_curve=assoc,
-            seller_token_account=seller_ata,
+            creator=Keypair().pubkey(),
+            token_program=TOKEN_PROGRAM,
             amount_tokens=1_000_000,
             min_sol_output=50_000_000,
         )
 
         assert ix is not None
-        assert len(ix.accounts) == 10
-        assert len(ix.data) == 24  # 8 + 8 + 8
+        assert len(ix.accounts) == 14  # current pump.fun sell layout
+        assert len(ix.data) == 24  # discriminator + amount + min_sol_output
