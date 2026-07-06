@@ -7,12 +7,13 @@ Executes trades directly against pump.fun's bonding curve program.
 """
 
 import asyncio
+import base64
 
 import base58
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 from solders.message import Message
 from solders.pubkey import Pubkey
-from solders.transaction import Transaction
+from solders.transaction import Transaction, VersionedTransaction
 
 from fenrir.config import BotConfig, TradingMode
 from fenrir.core.client import SolanaClient
@@ -624,13 +625,35 @@ class TradingEngine:
                 self.logger.warning("Jupiter swap transaction build failed")
                 return False
 
-            self.logger.info(f"Jupiter sell fallback: {token_address[:8]}... | Reason: {reason}")
+            # Sign and send it. Jupiter returns a base64 VersionedTransaction with
+            # the fee-payer/blockhash already set; we re-sign the message with our
+            # keypair and broadcast. (Previously this was built and then dropped,
+            # so the position was marked closed while the tokens were never sold.)
+            signature = await self._sign_send_jupiter_swap(swap_tx_b64)
+            if not signature:
+                self.logger.warning("Jupiter swap send returned no signature")
+                return False
+
+            confirmed = await self._confirm_transaction(signature)
+            if not confirmed:
+                self.logger.warning(f"Jupiter sell not confirmed: {signature}")
+                return False
+
+            self.logger.info(
+                f"Jupiter sell fallback: {token_address[:8]}... | {reason} | TX: {signature}"
+            )
             self.positions.close_position(token_address, reason)
             return True
 
         except Exception as e:
             self.logger.error(f"Jupiter sell fallback failed for {token_address}", e)
             return False
+
+    async def _sign_send_jupiter_swap(self, swap_tx_b64: str) -> str | None:
+        """Sign a Jupiter base64 VersionedTransaction with our keypair and send it."""
+        unsigned = VersionedTransaction.from_bytes(base64.b64decode(swap_tx_b64))
+        signed = VersionedTransaction(unsigned.message, [self.wallet.keypair])
+        return await self.client.send_raw_transaction(bytes(signed))
 
     async def _confirm_transaction(
         self, signature: str, max_attempts: int = 20, interval: float = 2.0
