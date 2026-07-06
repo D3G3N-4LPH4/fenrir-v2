@@ -8,6 +8,7 @@ Executes trades directly against pump.fun's bonding curve program.
 
 import asyncio
 
+import base58
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 from solders.message import Message
 from solders.pubkey import Pubkey
@@ -20,7 +21,9 @@ from fenrir.core.positions import PositionManager
 from fenrir.core.wallet import WalletManager
 from fenrir.logger import FenrirLogger
 from fenrir.protocol.pumpfun import (
+    BUY_DISCRIMINATOR,
     PUMP_GLOBAL,
+    PUMP_PROGRAM_ID,
     TOKEN_PROGRAM,
     BondingCurveState,
     PumpFunProgram,
@@ -66,6 +69,13 @@ class TradingEngine:
         # Direct pump.fun program interface
         self.pumpfun = PumpFunProgram()
 
+        # Per-token v2 buyback fee accounts (idx16/17). They're a per-token
+        # fee-sharing config (not a simple PDA), so we resolve them by shadowing
+        # the token's own most recent successful buy and cache per mint — the
+        # config is stable per token. Wrong accounts fail simulation (6024), so a
+        # miss is safe, never a silent bad send.
+        self._fee_extras_cache: dict[str, tuple[Pubkey, Pubkey]] = {}
+
     # ── Execution-parameter resolution ─────────────────────────────────
     # When tx profiles are enabled, resolve slippage / priority-fee / jito
     # per strategy; otherwise fall back to the flat BotConfig values so
@@ -106,6 +116,58 @@ class TradingEngine:
                 return self.pumpfun.parse_global_fee_recipient(global_data)
         except Exception as e:
             self.logger.debug(f"fee_recipient fetch failed, using fallback: {e}")
+        return None
+
+    async def _resolve_fee_extras(self, token_mint: Pubkey) -> tuple[Pubkey, Pubkey] | None:
+        """Resolve the token's two v2 buyback fee accounts (buy idx16/17).
+
+        They are a per-token fee-sharing config, not a derivable PDA, so we copy
+        them from the token's most recent successful on-chain buy (18 accounts)
+        and cache per mint. Returns None if none can be found (the builder then
+        falls back to the module constants). A wrong value fails simulation, so
+        this never risks a bad send.
+        """
+        key = str(token_mint)
+        cached = self._fee_extras_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            sigs = await self.client.get_recent_signatures(token_mint, limit=25)
+            for s in sigs:
+                if getattr(s, "err", None) is not None:
+                    continue
+                tx = await self.client.get_transaction(str(s.signature))
+                if not tx:
+                    continue
+                msg = tx.transaction.transaction.message
+                keys = [str(k) for k in msg.account_keys]
+                for ix in msg.instructions:
+                    pid = (
+                        str(ix.program_id)
+                        if hasattr(ix, "program_id")
+                        else keys[ix.program_id_index]
+                    )
+                    if pid != str(PUMP_PROGRAM_ID):
+                        continue
+                    data = getattr(ix, "data", None)
+                    raw = base58.b58decode(data) if isinstance(data, str) else bytes(data or b"")
+                    if raw[:8] != BUY_DISCRIMINATOR:
+                        continue
+                    accs = getattr(ix, "accounts", [])
+                    resolved = (
+                        [keys[i] for i in accs]
+                        if (accs and isinstance(accs[0], int))
+                        else [str(a) for a in accs]
+                    )
+                    if len(resolved) >= 18:
+                        extras = (
+                            Pubkey.from_string(resolved[16]),
+                            Pubkey.from_string(resolved[17]),
+                        )
+                        self._fee_extras_cache[key] = extras
+                        return extras
+        except Exception as e:
+            self.logger.debug(f"fee-extras resolve failed for {key[:8]}...: {e}")
         return None
 
     async def close(self) -> None:
@@ -249,8 +311,13 @@ class TradingEngine:
                 return False
             creator = Pubkey.from_string(curve_state.creator)
 
-            # 5. Read the live fee_recipient (it rotates; a stale one → 6000).
+            # 5. Read the live fee_recipient (it rotates; a stale one → 6000) and
+            #    the token's per-token v2 buyback fee accounts (a stale/wrong one
+            #    → 6024 Overflow). Both fail simulation if wrong, never spend SOL.
             fee_recipient = await self._live_fee_recipient()
+            extras = await self._resolve_fee_extras(token_mint)
+            buyback_recipient = extras[0] if extras else None
+            fee_pool_recipient = extras[1] if extras else None
 
             # 6. Idempotently create the buyer's ATA (with the correct token
             #    program), then build the buy — pump.fun requires the ATA to
@@ -273,6 +340,8 @@ class TradingEngine:
                 amount_tokens=buy_amount_tokens,
                 max_sol_cost=max_sol_cost,
                 fee_recipient=fee_recipient,
+                buyback_fee_recipient=buyback_recipient,
+                fee_pool_recipient=fee_pool_recipient,
             )
 
             # 7. Build compute budget instructions for priority
@@ -444,6 +513,7 @@ class TradingEngine:
                 return False
             creator = Pubkey.from_string(curve_state.creator)
             fee_recipient = await self._live_fee_recipient()
+            extras = await self._resolve_fee_extras(token_mint)
             sell_ix = self.pumpfun.build_sell_instruction(
                 seller=self.wallet.pubkey,
                 token_mint=token_mint,
@@ -453,6 +523,8 @@ class TradingEngine:
                 amount_tokens=sell_amount,
                 min_sol_output=min_sol_output,
                 fee_recipient=fee_recipient,
+                buyback_fee_recipient=extras[0] if extras else None,
+                fee_pool_recipient=extras[1] if extras else None,
             )
 
             # 7. Build compute budget instructions

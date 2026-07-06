@@ -53,12 +53,15 @@ PUMP_FEE_PROGRAM = Pubkey.from_string("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6Voj
 # pump.fun's v2 "buyback" fee-sharing appends two *writable* fee accounts to buy
 # and sell as remaining-accounts (the published IDL predates this, so it lists
 # only 16/14 accounts — the deployed program needs 18/16). Order and writability
-# matter: idx0 is the buyback recipient, idx1 a fee-pool recipient. Verified
-# against real mainnet txs and a live 0.01 SOL buy+sell round-trip:
-#   buy  2Q7fZUF... (bal 0 -> 10_000_000), sell 3gWCcrm... (10_000_000 -> 0).
-# Wrong values fail simulation (6000 NotAuthorized / 6024 Overflow / 6057/6062
-# BuybackFeeRecipient), so a bad refresh can never silently spend SOL. If buys
-# start failing with those codes, refresh these from a recent successful tx.
+# matter: idx0 is the buyback recipient, idx1 a fee-pool recipient.
+#
+# IMPORTANT: these are a PER-TOKEN fee-sharing config, NOT global constants — a
+# different token's accounts fail simulation with 6024 Overflow. The engine
+# resolves them per token at runtime (TradingEngine._resolve_fee_extras) by
+# shadowing the token's own most recent successful buy. These constants are only
+# a last-resort fallback for a token with no prior buy to shadow. Wrong values
+# fail simulation (6000 / 6024 / 6057 / 6062), so they can never silently spend
+# SOL. Verified live: buy 2Q7fZUF..., sell 3gWCcrm... (bal 0 -> 10M -> 0).
 PUMP_BUYBACK_FEE_RECIPIENT = Pubkey.from_string("Etb9fCF6PyY9grPPj9h8SZt5qimYHhySbfrGS7wfFqBz")
 PUMP_FEE_POOL_RECIPIENT = Pubkey.from_string("GXPFM2caqTtQYC2cJ5yJRi9VDkpsYZXzYdwYpGnLmtDL")
 
