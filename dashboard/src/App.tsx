@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import type {
+  AvailableStrategy,
   BotConfigSurface,
   BotStatus,
   FeedEvent,
@@ -13,6 +14,7 @@ import PositionsTable from './components/PositionsTable'
 import EventFeed from './components/EventFeed'
 import BrainStats from './components/BrainStats'
 import SettingsPanel from './components/SettingsPanel'
+import StrategiesPanel from './components/StrategiesPanel'
 import './App.css'
 
 const API = '/api'
@@ -29,6 +31,8 @@ function App() {
   const [ouroboros, setOuroboros] = useState<OuroborosStats | null>(null)
   const [brainStats, setBrainStats] = useState<Record<string, unknown> | null>(null)
   const [config, setConfig] = useState<BotConfigSurface | null>(null)
+  const [availableStrategies, setAvailableStrategies] = useState<AvailableStrategy[]>([])
+  const [centerTab, setCenterTab] = useState<'positions' | 'strategies'>('positions')
   const [wsConnected, setWsConnected] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
@@ -73,7 +77,30 @@ function App() {
     } catch {
       // config unavailable until the bot is configured/started — ignore
     }
+
+    try {
+      const stratRes = await fetch(`${API}/bot/strategies/available`, { headers })
+      if (stratRes.ok) {
+        const data = await stratRes.json()
+        if (data.strategies) setAvailableStrategies(data.strategies)
+      }
+    } catch {
+      // ignore — strategies tab shows empty until reachable
+    }
   }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const toggleStrategy = async (strategyId: string, enable: boolean) => {
+    const action = enable ? 'enable' : 'disable'
+    const res = await fetch(`${API}/bot/strategies/${strategyId}/${action}`, {
+      method: 'POST',
+      headers,
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error(body.detail ?? `Failed to ${action} (${res.status})`)
+    }
+    await poll()  // refresh live state
+  }
 
   const saveConfig = async (patch: Partial<BotConfigSurface>) => {
     const res = await fetch(`${API}/bot/config`, {
@@ -212,7 +239,29 @@ function App() {
         </div>
 
         <div className="center-col">
-          <PositionsTable positions={positions} isRunning={isRunning} />
+          <div className="center-tabs">
+            <button
+              className={centerTab === 'positions' ? 'center-tab active' : 'center-tab'}
+              onClick={() => setCenterTab('positions')}
+            >
+              Positions
+            </button>
+            <button
+              className={centerTab === 'strategies' ? 'center-tab active' : 'center-tab'}
+              onClick={() => setCenterTab('strategies')}
+            >
+              Strategies
+            </button>
+          </div>
+          {centerTab === 'positions' ? (
+            <PositionsTable positions={positions} isRunning={isRunning} />
+          ) : (
+            <StrategiesPanel
+              strategies={availableStrategies}
+              isRunning={isRunning}
+              onToggle={toggleStrategy}
+            />
+          )}
         </div>
 
         <div className="right-col">
