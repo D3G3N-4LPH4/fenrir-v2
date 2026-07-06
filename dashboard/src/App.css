@@ -60,3 +60,28 @@
     border-bottom: 1px solid var(--border);
   }
 }
+
+/* Center-column tab bar (Positions | Strategies) */
+.center-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.center-tab {
+  font-family: var(--font);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  padding: 7px 14px;
+  background: var(--card);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: var(--transition);
+}
+.center-tab:hover { color: var(--text); border-color: var(--border-bright); }
+.center-tab.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-glow);
+}

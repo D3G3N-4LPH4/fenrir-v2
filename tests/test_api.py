@@ -48,9 +48,13 @@ async def _clean_state():
     _reset_bot_state()
     # Clear any lingering websocket references
     server_module.active_websockets.clear()
+    # Reset the sliding-window rate limiter so cross-test request accumulation
+    # doesn't trip 429s in the full suite.
+    server_module.rate_limiter.reset()
     yield
     _reset_bot_state()
     server_module.active_websockets.clear()
+    server_module.rate_limiter.reset()
 
 
 @pytest_asyncio.fixture
@@ -1100,3 +1104,73 @@ class TestConfigEndpoints:
         # Pydantic bounds: ai_min_confidence_to_buy in [0, 1]
         resp = await client_no_auth.post("/bot/config", json={"ai_min_confidence_to_buy": 1.5})
         assert resp.status_code == 422
+
+
+# ===================================================================
+#  /bot/strategies/available + enable/disable (Strategies tab)
+# ===================================================================
+
+
+class TestStrategySwitching:
+    @pytest.mark.asyncio
+    async def test_available_when_stopped_all_unloaded(self, client_no_auth: AsyncClient):
+        resp = await client_no_auth.get("/bot/strategies/available")
+        assert resp.status_code == 200
+        strategies = resp.json()["strategies"]
+        assert len(strategies) == len(server_module.STRATEGY_REGISTRY)
+        assert all(not s["loaded"] and not s["active"] for s in strategies)
+
+    @pytest.mark.asyncio
+    async def test_available_when_running_reflects_state(self, client_no_auth: AsyncClient):
+        loaded = SimpleNamespace(
+            strategy_id="sniper", state=SimpleNamespace(active=True, paused=False)
+        )
+        bot = MagicMock()
+        bot.strategies = [loaded]
+        server_module.bot_instance = bot
+        server_module.bot_state["status"] = "running"
+
+        resp = await client_no_auth.get("/bot/strategies/available")
+        strategies = {s["strategy_id"]: s for s in resp.json()["strategies"]}
+        assert strategies["sniper"]["loaded"] and strategies["sniper"]["active"]
+        assert not strategies["reversal"]["loaded"]
+        assert not strategies["reversal"]["active"]
+
+    @pytest.mark.asyncio
+    async def test_enable_running_calls_bot(self, client_no_auth: AsyncClient):
+        bot = MagicMock()
+        bot.set_strategy_enabled = AsyncMock(return_value=(True, "loaded"))
+        server_module.bot_instance = bot
+        server_module.bot_state["status"] = "running"
+
+        resp = await client_no_auth.post("/bot/strategies/reversal/enable")
+        assert resp.status_code == 200
+        bot.set_strategy_enabled.assert_awaited_once_with("reversal", True)
+        assert resp.json()["message"] == "loaded"
+
+    @pytest.mark.asyncio
+    async def test_disable_running_calls_bot(self, client_no_auth: AsyncClient):
+        bot = MagicMock()
+        bot.set_strategy_enabled = AsyncMock(return_value=(True, "paused"))
+        server_module.bot_instance = bot
+        server_module.bot_state["status"] = "running"
+
+        resp = await client_no_auth.post("/bot/strategies/sniper/disable")
+        assert resp.status_code == 200
+        bot.set_strategy_enabled.assert_awaited_once_with("sniper", False)
+        assert resp.json()["enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_enable_unknown_strategy_404(self, client_no_auth: AsyncClient):
+        bot = MagicMock()
+        bot.set_strategy_enabled = AsyncMock(return_value=(False, "Unknown strategy 'nope'"))
+        server_module.bot_instance = bot
+        server_module.bot_state["status"] = "running"
+
+        resp = await client_no_auth.post("/bot/strategies/nope/enable")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_enable_when_stopped_400(self, client_no_auth: AsyncClient):
+        resp = await client_no_auth.post("/bot/strategies/sniper/enable")
+        assert resp.status_code == 400

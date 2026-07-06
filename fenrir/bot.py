@@ -258,6 +258,48 @@ class FenrirBot:
             self.strategies.append(SniperStrategy(self.config))
             self.logger.info("Fallback: loaded default Sniper strategy")
 
+    def _find_strategy(self, strategy_id: str) -> TradingStrategy | None:
+        return next((s for s in self.strategies if s.strategy_id == strategy_id), None)
+
+    async def set_strategy_enabled(self, strategy_id: str, enabled: bool) -> tuple[bool, str]:
+        """Switch a strategy on/off live from the dashboard.
+
+        enable: resume it if already loaded, else instantiate and add it to the
+        active set (building the market-data provider on demand if the strategy
+        needs it). disable: pause it (keeps existing positions; stops new entries)
+        — we pause rather than unload so state/positions aren't stranded.
+
+        Returns (ok, message). ok=False only for an unknown strategy id.
+        """
+        cls = STRATEGY_REGISTRY.get(strategy_id)
+        if cls is None:
+            return False, f"Unknown strategy '{strategy_id}'"
+
+        existing = self._find_strategy(strategy_id)
+        if enabled:
+            if existing is not None:
+                existing.resume()
+                return True, "resumed"
+            strategy = cast(Callable[[BotConfig], TradingStrategy], cls)(self.config)
+            self.strategies.append(strategy)
+            # Signal strategies need a MarketData provider; build it if the bot
+            # started without one (no market-data strategy was enabled at boot).
+            if strategy.uses_market_data and self.market_filter is None:
+                self._needs_market_data = True
+                self.market_filter = MarketFilter(
+                    MarketFilterConfig(
+                        enabled=True,
+                        fail_open_on_fetch_error=self.config.market_fail_open_on_fetch_error,
+                    )
+                )
+            self.logger.info(f"Strategy activated live: {strategy.display_name} ({strategy_id})")
+            return True, "loaded"
+
+        if existing is None:
+            return True, "already inactive"
+        existing.pause()
+        return True, "paused"
+
     async def start(self):
         """
         Unleash the wolf.

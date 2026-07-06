@@ -91,3 +91,13 @@ export interface BotConfigSurface {
   scanner_max_positions: number
   ai_min_confidence_to_buy: number
 }
+
+export interface AvailableStrategy {
+  strategy_id: string
+  display_name: string
+  description: string
+  uses_market_data: boolean
+  loaded: boolean
+  active: boolean
+  paused: boolean
+}

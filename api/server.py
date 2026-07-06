@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     )
     from fenrir.events.bus import EventListener
     from fenrir.events.types import TradeEvent
+    from fenrir.strategies import STRATEGY_REGISTRY
 else:
     try:
         from fenrir import (  # noqa: F401
@@ -47,11 +48,13 @@ else:
         )
         from fenrir.events.bus import EventListener
         from fenrir.events.types import TradeEvent
+        from fenrir.strategies import STRATEGY_REGISTRY
     except ImportError:
         print("Warning: fenrir package not found.")
         print("   Make sure the fenrir/ package is in your Python path.")
         BotConfig = None
         FenrirBot = None
+        STRATEGY_REGISTRY = {}
         TradingMode = None
         EventListener = object
         TradeEvent = object
@@ -114,6 +117,10 @@ class RateLimiter:
         cutoff = now - self.window_seconds
         active = [t for t in self._requests.get(client_ip, []) if t > cutoff]
         return max(0, self.max_requests - len(active))
+
+    def reset(self) -> None:
+        """Clear all tracked request timestamps (used for test isolation)."""
+        self._requests.clear()
 
 
 # ===================================================================
@@ -689,6 +696,69 @@ async def resume_strategy(strategy_id: str):
             )
             return {"status": "success", "strategy_id": strategy_id, "paused": False}
     raise HTTPException(status_code=404, detail=f"Strategy '{strategy_id}' not found")
+
+
+@app.get("/bot/strategies/available")
+async def get_available_strategies():
+    """All registered strategies with their live state (for the Strategies tab).
+
+    active = loaded and not paused; loaded strategies also report paused. When
+    the bot isn't running, everything reports not-loaded/inactive.
+    """
+    loaded = {}
+    if bot_instance is not None and bot_state["status"] == "running":
+        loaded = {s.strategy_id: s for s in bot_instance.strategies}
+    strategies = []
+    for sid, cls in STRATEGY_REGISTRY.items():
+        s = loaded.get(sid)
+        strategies.append(
+            {
+                "strategy_id": sid,
+                "display_name": getattr(cls, "display_name", sid),
+                "description": getattr(cls, "description", ""),
+                "uses_market_data": getattr(cls, "uses_market_data", False),
+                "loaded": s is not None,
+                "active": bool(s is not None and s.state.active and not s.state.paused),
+                "paused": bool(s is not None and s.state.paused),
+            }
+        )
+    return {"strategies": strategies}
+
+
+@app.post("/bot/strategies/{strategy_id}/enable")
+async def enable_strategy(strategy_id: str):
+    """Activate a strategy live — loads it if not already running, else resumes it."""
+    if not bot_instance or bot_state["status"] != "running":
+        raise HTTPException(status_code=400, detail="Bot is not running")
+    ok, message = await bot_instance.set_strategy_enabled(strategy_id, True)
+    if not ok:
+        raise HTTPException(status_code=404, detail=message)
+    await broadcast_update(
+        {
+            "event": "strategy_enabled",
+            "strategy_id": strategy_id,
+            "timestamp": datetime.now().isoformat(),
+        }
+    )
+    return {"status": "success", "strategy_id": strategy_id, "enabled": True, "message": message}
+
+
+@app.post("/bot/strategies/{strategy_id}/disable")
+async def disable_strategy(strategy_id: str):
+    """Deactivate a strategy live (pauses it — existing positions are kept)."""
+    if not bot_instance or bot_state["status"] != "running":
+        raise HTTPException(status_code=400, detail="Bot is not running")
+    ok, message = await bot_instance.set_strategy_enabled(strategy_id, False)
+    if not ok:
+        raise HTTPException(status_code=404, detail=message)
+    await broadcast_update(
+        {
+            "event": "strategy_disabled",
+            "strategy_id": strategy_id,
+            "timestamp": datetime.now().isoformat(),
+        }
+    )
+    return {"status": "success", "strategy_id": strategy_id, "enabled": False, "message": message}
 
 
 @app.get("/bot/config")
