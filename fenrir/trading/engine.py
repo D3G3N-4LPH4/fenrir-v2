@@ -234,6 +234,11 @@ class TradingEngine:
 
         self.logger.info(f"Executing buy: {token_address[:8]}... for {amount_sol} SOL")
 
+        # Migrated mid-caps and established large-caps trade on AMMs, not the
+        # pump bonding curve — route them through Jupiter instead of the curve buy.
+        if self._is_non_curve_token(token_data):
+            return await self._execute_buy_non_curve(token_data, amount_sol, strategy_id)
+
         if self.config.mode == TradingMode.SIMULATION:
             self.logger.info("SIMULATION MODE - No real transaction sent")
             # Price the position from the pump.fun bonding curve so that entry
@@ -477,11 +482,15 @@ class TradingEngine:
             # 1. Derive bonding curve PDA
             bonding_curve, _ = self.pumpfun.derive_bonding_curve_address(token_mint)
 
-            # 2. Fetch bonding curve state
+            # 2. Fetch bonding curve state. No curve account at all means an
+            #    established / non-pump token (scanner or migrated) — sell it on
+            #    the AMM via Jupiter, same as a migrated (complete-curve) token.
             account_data = await self.client.get_account_info(bonding_curve)
             if not account_data:
-                self.logger.warning("Failed to fetch bonding curve for sell")
-                return False
+                self.logger.info("No pump curve for token - selling via Jupiter DEX")
+                return await self._execute_sell_via_jupiter(
+                    token_address, token_mint, position, reason
+                )
 
             curve_state = self.pumpfun.decode_bonding_curve(account_data)
             if not curve_state:
@@ -606,6 +615,112 @@ class TradingEngine:
             self.logger.error(f"Sell execution failed for {token_address}", e)
             return False
 
+    @staticmethod
+    def _is_non_curve_token(token_data: dict) -> bool:
+        """True for tokens that trade on an AMM rather than a live pump curve
+        (migrated mid-caps and scanner-surfaced mid/large caps)."""
+        return bool(token_data.get("migrated")) or token_data.get("tier") in ("mid", "large")
+
+    async def _execute_buy_non_curve(
+        self, token_data: dict, amount_sol: float, strategy_id: str
+    ) -> bool:
+        """Buy a non-curve token: Jupiter swap live, quote-priced position in sim."""
+        if self.config.mode == TradingMode.SIMULATION:
+            return await self._sim_buy_non_curve(token_data, amount_sol, strategy_id)
+        return await self.execute_buy_via_jupiter(token_data, amount_sol, strategy_id)
+
+    async def _sim_buy_non_curve(
+        self, token_data: dict, amount_sol: float, strategy_id: str
+    ) -> bool:
+        """Open a simulated position for a non-curve token, priced from a Jupiter
+        quote so entry price shares the price feed's SOL-per-token scale."""
+        token_address = token_data["token_address"]
+        slippage_bps = self._resolve_slippage_bps(strategy_id)
+        quote = await self.jupiter.get_quote(
+            self.SOL_MINT, token_address, int(amount_sol * LAMPORTS_PER_SOL), slippage_bps
+        )
+        if not quote or "outAmount" not in quote:
+            self.logger.warning(f"Sim buy: no Jupiter quote for {token_address[:8]}...")
+            return False
+        decimals = int(token_data.get("decimals", 6))
+        out_ui = int(quote["outAmount"]) / (10**decimals)
+        if out_ui <= 0:
+            return False
+        self.positions.open_position(
+            token_address=token_address,
+            entry_price=amount_sol / out_ui,
+            amount_tokens=out_ui,
+            amount_sol=amount_sol,
+            strategy_id=strategy_id,
+            token_symbol=token_data.get("symbol", "???"),
+        )
+        return True
+
+    async def execute_buy_via_jupiter(
+        self, token_data: dict, amount_sol: float, strategy_id: str = "default"
+    ) -> bool:
+        """Buy a non-curve token via a Jupiter SOL->token swap and open a position.
+
+        Entry price is SOL per whole token (amount_sol / tokens received), matching
+        the DexScreener priceNative scale the management loop marks against.
+        """
+        token_address = token_data["token_address"]
+        try:
+            Pubkey.from_string(token_address)  # validate the mint
+            amount_lamports = int(amount_sol * LAMPORTS_PER_SOL)
+
+            priority_fee = await self._resolve_priority_fee(strategy_id)
+            balance = await self.client.get_balance(self.wallet.pubkey)
+            if balance < amount_sol + priority_fee / LAMPORTS_PER_SOL:
+                self.logger.warning(
+                    f"Insufficient SOL for Jupiter buy: {balance:.4f} < {amount_sol:.4f}"
+                )
+                return False
+
+            slippage_bps = self._resolve_slippage_bps(strategy_id)
+            quote = await self.jupiter.get_quote(
+                self.SOL_MINT, token_address, amount_lamports, slippage_bps
+            )
+            if not quote:
+                self.logger.warning(f"Jupiter quote failed for {token_address[:8]}... buy")
+                return False
+            swap_tx_b64 = await self.jupiter.get_swap_transaction(quote, str(self.wallet.pubkey))
+            if not swap_tx_b64:
+                self.logger.warning("Jupiter buy swap build failed")
+                return False
+            signature = await self._sign_send_jupiter_swap(swap_tx_b64)
+            if not signature:
+                self.logger.warning("Jupiter buy send returned no signature")
+                return False
+            if not await self._confirm_transaction(signature):
+                self.logger.warning(f"Jupiter buy not confirmed: {signature}")
+                return False
+
+            # Size the position from the quote's expected output (known now, no
+            # lagging balance read — the freshly created ATA often isn't indexed
+            # for several seconds). The sell later uses the real on-chain balance.
+            decimals = int(token_data.get("decimals", 6))
+            out_base = int(quote.get("outAmount", 0))
+            ui_amount = out_base / (10**decimals)
+            if ui_amount <= 0:
+                self.logger.warning("Jupiter buy: quote had no output amount")
+                return False
+            entry_price = amount_sol / ui_amount
+            self.logger.buy_executed(token_address, amount_sol, entry_price)
+            self.positions.open_position(
+                token_address=token_address,
+                entry_price=entry_price,
+                amount_tokens=ui_amount,
+                amount_sol=amount_sol,
+                strategy_id=strategy_id,
+                token_symbol=token_data.get("symbol", "???"),
+            )
+            self.logger.info(f"Jupiter buy TX: {signature}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Jupiter buy failed for {token_address}", e)
+            return False
+
     async def _execute_sell_via_jupiter(
         self,
         token_address: str,
@@ -615,12 +730,19 @@ class TradingEngine:
     ) -> bool:
         """Fallback: sell via Jupiter DEX after token has migrated to Raydium."""
         try:
-            # Get token balance
-            seller_token_info = await self.client.get_token_accounts_by_owner(
-                self.wallet.pubkey, token_mint
-            )
+            # Get token balance. Retry briefly — right after a buy the ATA may
+            # not be indexed yet, and a single empty read would strand the token.
+            seller_token_info = None
+            for attempt in range(4):
+                seller_token_info = await self.client.get_token_accounts_by_owner(
+                    self.wallet.pubkey, token_mint
+                )
+                if seller_token_info and seller_token_info["amount"] > 0:
+                    break
+                if attempt < 3:
+                    await asyncio.sleep(2.0)
             if not seller_token_info or seller_token_info["amount"] <= 0:
-                self.logger.warning("No token balance for Jupiter sell fallback")
+                self.logger.warning("No token balance for Jupiter sell fallback after retries")
                 return False
 
             token_amount = seller_token_info["amount"]

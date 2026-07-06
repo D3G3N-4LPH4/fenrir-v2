@@ -745,3 +745,76 @@ class TestDynamicPriorityFee:
         fee = await live_engine._resolve_priority_fee("sniper")
         assert fee == 555
         mocks["solana_client"].get_recent_prioritization_fees.assert_not_called()
+
+
+# ===================================================================
+#  Non-curve (Jupiter) buy path — migrated / established tokens
+# ===================================================================
+
+
+class TestNonCurveBuy:
+    def test_is_non_curve_token(self):
+        assert TradingEngine._is_non_curve_token({"migrated": True}) is True
+        assert TradingEngine._is_non_curve_token({"tier": "mid"}) is True
+        assert TradingEngine._is_non_curve_token({"tier": "large"}) is True
+        # fresh launch: on a curve, no tier/migrated flag
+        assert TradingEngine._is_non_curve_token({"bonding_curve_state": object()}) is False
+        assert TradingEngine._is_non_curve_token({"tier": "low"}) is False
+
+    @pytest.mark.asyncio
+    async def test_execute_buy_routes_non_curve_to_jupiter(self, live_engine):
+        td = {"token_address": FAKE_TOKEN, "tier": "large", "symbol": "BIG"}
+        with patch.object(
+            live_engine, "execute_buy_via_jupiter", new=AsyncMock(return_value=True)
+        ) as jup:
+            result = await live_engine.execute_buy(td, amount_sol=0.01)
+        assert result is True
+        jup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_execute_buy_via_jupiter_success_opens_position(self, live_engine, mocks):
+        mocks["solana_client"].get_balance.return_value = 10.0
+        # quote outAmount 2_000_000 base units at 6 decimals -> 2.0 whole tokens
+        mocks["jupiter"].get_quote.return_value = {"outAmount": "2000000"}
+        mocks["jupiter"].get_swap_transaction.return_value = "b64tx"
+        td = {"token_address": FAKE_TOKEN, "tier": "large", "symbol": "BIG", "decimals": 6}
+        with (
+            patch.object(live_engine, "_sign_send_jupiter_swap", new=AsyncMock(return_value="sig")),
+            patch.object(live_engine, "_confirm_transaction", new=AsyncMock(return_value=True)),
+        ):
+            result = await live_engine.execute_buy_via_jupiter(td, 0.01, "default")
+        assert result is True
+        kwargs = mocks["positions"].open_position.call_args.kwargs
+        assert kwargs["amount_tokens"] == pytest.approx(2.0)
+        assert kwargs["entry_price"] == pytest.approx(0.01 / 2.0)  # SOL per whole token
+
+    @pytest.mark.asyncio
+    async def test_execute_buy_via_jupiter_not_confirmed_no_position(self, live_engine, mocks):
+        mocks["solana_client"].get_balance.return_value = 10.0
+        mocks["jupiter"].get_quote.return_value = {"outAmount": "1000000"}
+        mocks["jupiter"].get_swap_transaction.return_value = "b64tx"
+        td = {"token_address": FAKE_TOKEN, "tier": "large", "symbol": "BIG"}
+        with (
+            patch.object(live_engine, "_sign_send_jupiter_swap", new=AsyncMock(return_value="sig")),
+            patch.object(live_engine, "_confirm_transaction", new=AsyncMock(return_value=False)),
+        ):
+            result = await live_engine.execute_buy_via_jupiter(td, 0.01, "default")
+        assert result is False
+        mocks["positions"].open_position.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sell_no_curve_routes_to_jupiter(self, live_engine, mocks):
+        position = _make_position()
+        mocks["positions"].positions = {FAKE_TOKEN: position}
+        mocks["solana_client"].get_account_info.return_value = None  # no pump curve
+        with (
+            patch.object(
+                live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+            ),
+            patch.object(
+                live_engine, "_execute_sell_via_jupiter", new=AsyncMock(return_value=True)
+            ) as jup,
+        ):
+            result = await live_engine.execute_sell(FAKE_TOKEN, "take_profit")
+        assert result is True
+        jup.assert_awaited_once()
