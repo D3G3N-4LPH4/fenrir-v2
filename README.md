@@ -1,7 +1,12 @@
-# FENRIR v2 — Pump.fun Solana Trading Bot
+# FENRIR v2 — Multi-Tier AI Solana Trading Bot
 
-Async Python trading bot for sniping memecoin launches on [Pump.fun](https://pump.fun) (Solana).
-Autonomous AI decision engine, real-time WebSocket monitoring, Jito MEV protection, pluggable strategy system, Ouroboros dump-recovery detection, market geometry analysis, and a live web dashboard.
+Async Python trading bot for Solana with an autonomous AI decision engine that trades the **whole market**, not just launches:
+
+- **Low cap** — fresh [Pump.fun](https://pump.fun) launches, bought directly on the bonding curve
+- **Mid cap** — migrated coins (graduated off the curve to PumpSwap/Raydium)
+- **Large cap** — established $1M+ coins surfaced by a market scanner
+
+Mid/large caps are traded on AMMs via Jupiter; fresh launches via direct on-chain pump.fun execution. Real-time WebSocket launch monitoring, a Jupiter-trending market scanner, Jito MEV protection, a pluggable strategy system, Ouroboros dump-recovery detection, market-geometry pre-scoring, and a live React web dashboard with in-place settings + strategy switching.
 
 ```bash
 pip install -e ".[all]"
@@ -9,15 +14,18 @@ cp config/.env.example .env   # fill in your keys
 python -m fenrir --mode simulation
 ```
 
+> **Live-capable.** The pump.fun buy/sell path is verified against the current on-chain program (v2 buyback fees, per-token fee resolution, Token-2022), and the Jupiter path is verified for migrated/established tokens. Every real send is simulate-guarded. Trade only with a dedicated wallet and funds you can lose.
+
 ---
 
 ## Features
 
 ### Trading
 
-- WebSocket monitoring of Pump.fun token launches in real time
-- Direct bonding curve buy/sell via on-chain program interaction
-- Jupiter swap engine for liquidity routing
+- **Multi-tier candidate discovery** — real-time WebSocket monitoring of Pump.fun launches (low cap) plus a periodic **market scanner** (Jupiter trending) that surfaces migrated mid-caps and established large-caps by market cap
+- **Direct pump.fun bonding-curve buy/sell** — verified against the current on-chain program (v2 buyback fee accounts resolved per-token, Token-2022 support, live fee-recipient, dynamic priority fee)
+- **Jupiter buy/sell for non-curve tokens** — migrated/established coins trade on AMMs; routed through Jupiter (`lite-api.jup.ag`) on both entry and exit
+- Simulate-before-send guard on every live transaction
 - Jito MEV bundle protection (optional)
 - Multi-source price feeds with fallback
 
@@ -35,18 +43,19 @@ python -m fenrir --mode simulation
 - Stop loss, take profit, trailing stop, max hold time — all per-strategy configurable
 - **Ouroboros detector** — identifies dump → fake recovery → second dump patterns and auto-tightens trailing stops per position
 - **Market geometry analyzer** — pre-entry scoring across four axes (creator imprint, momentum geometry, liquidity depth, defense robustness) with auto-derived TradeParams
-- Per-strategy SOL budget enforcement
+- Per-strategy SOL budget + max-position limits
+- **Global daily SOL cap** — master safety valve on net live exposure across all strategies
 - Configurable AI confidence threshold
 
 ### Infrastructure
 
-- Pluggable strategy system — `sniper` and `graduation` built in, easy to add custom strategies
+- Pluggable strategy system — 8 built-in strategies (sniper family, graduation, migration-snipe, reversal, volume-anomaly, narrative-tracker), easy to add more
 - Event bus — decoupled alerting (log, Telegram, audit, WebSocket, AI health monitor)
 - Merkle hash-chain audit trail — tamper-evident SQLite trade log
-- Budget tracker — per-strategy daily spend limits
+- Budget tracker — per-strategy daily spend limits + global cap
 - FastAPI REST + WebSocket API
 - Rich terminal dashboard (`--dashboard` flag)
-- **React web dashboard** — live positions, event feed, AI stats, strategy controls
+- **React web dashboard** — live positions, event feed, AI stats, a **Settings panel** (change scanner / caps / buy amount / confidence gate live, no restart), and a **Strategies tab** (activate/pause any strategy on a running bot)
 
 ---
 
@@ -80,11 +89,16 @@ fenrir/
 │   └── adapters/            # log, telegram, audit, health monitor
 ├── strategies/
 │   ├── base.py              # TradingStrategy ABC + TradeParams
-│   ├── sniper.py            # Fast entry on new launches
-│   └── graduation.py        # Targets tokens approaching Raydium migration
+│   ├── sniper.py            # Fast entry on new launches (+ conservative/degen)
+│   ├── graduation.py        # Targets tokens approaching Raydium migration
+│   ├── migration_snipe.py   # Snipes freshly-migrated (PumpSwap) tokens
+│   ├── reversal.py          # Market-data reversal signals
+│   ├── volume_anomaly.py    # Volume-spike signals
+│   └── narrative_tracker.py # Narrative/social momentum
 ├── trading/
-│   ├── engine.py            # Buy/sell execution
-│   └── monitor.py           # PumpFun WebSocket monitor
+│   ├── engine.py            # Buy/sell execution (pump curve + Jupiter)
+│   ├── monitor.py           # PumpFun WebSocket monitor (+ migration feed)
+│   └── scanner.py           # MarketScanner — multi-tier Jupiter-trending discovery
 ├── protocol/
 │   ├── pumpfun.py           # Pump.fun bonding curve protocol
 │   └── jito.py              # Jito MEV bundle submission
@@ -103,11 +117,13 @@ dashboard/                   # React web dashboard (Vite + TypeScript)
 │       ├── BotControls.tsx  # Start/stop, strategy pause/resume
 │       ├── PositionsTable.tsx # Live positions with Ouroboros badge
 │       ├── EventFeed.tsx    # Real-time event stream
-│       └── BrainStats.tsx   # AI decision metrics
+│       ├── BrainStats.tsx   # AI decision metrics
+│       ├── SettingsPanel.tsx   # Live config (scanner, caps, confidence gate)
+│       └── StrategiesPanel.tsx # Strategies tab — switch strategies live
 └── package.json
 
 tools/                       # Backtesting framework
-tests/                       # 246 tests (pytest + pytest-asyncio)
+tests/                       # 684 tests (pytest + pytest-asyncio)
 config/                      # default.json, devnet.json, .env.example
 ```
 
@@ -153,6 +169,16 @@ AI_LOCAL_MODEL_NAME=fenrir-brain
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...
 
+# Market scanner (mid/large-cap discovery) — off by default
+MARKET_SCANNER_ENABLED=false
+MID_CAP_MIN_USD=200000
+LARGE_CAP_MIN_USD=1000000
+SCANNER_MIN_LIQUIDITY_USD=50000
+
+# Risk / execution
+GLOBAL_DAILY_SOL_LIMIT=0        # 0 = disabled; master cap across all strategies
+DYNAMIC_PRIORITY_FEE_ENABLED=false
+
 # Web API
 FENRIR_API_KEY=your_secret_key
 FENRIR_DEV_MODE=false       # set true to skip auth locally
@@ -167,9 +193,13 @@ Key `BotConfig` fields (can also be set in `config/default.json`):
 | `stop_loss_pct` | 25.0 | Exit if down this % |
 | `take_profit_pct` | 100.0 | Exit if up this % |
 | `trailing_stop_pct` | 15.0 | Trail from peak (auto-tightened by Ouroboros) |
-| `ai_analysis_enabled` | false | Enable AI decision engine |
+| `ai_analysis_enabled` | true | Enable AI decision engine |
 | `ai_min_confidence_to_buy` | 0.6 | Minimum AI confidence to enter |
 | `ai_local_model_enabled` | false | Route AI to local model instead of cloud |
+| `market_scanner_enabled` | false | Scan Jupiter trending for mid/large-cap candidates |
+| `mid_cap_min_usd` / `large_cap_min_usd` | 200k / 1M | Market-cap tier thresholds (USD) |
+| `global_daily_sol_limit` | 0.0 | Net-exposure cap across all strategies (0 = off) |
+| `dynamic_priority_fee_enabled` | false | Size priority fee from recent on-chain fees |
 
 ---
 
@@ -194,14 +224,15 @@ python -m fenrir --mode simulation --stop-loss 20 --take-profit 150
 ### API server + Web dashboard
 
 ```bash
-# Terminal 1: API backend (port 8000)
-uvicorn api.server:app --port 8000 --reload
+# Terminal 1: API backend (port 8000). FENRIR_DEV_MODE=true skips API-key auth
+# for local use; set FENRIR_API_KEY instead for anything exposed.
+FENRIR_DEV_MODE=true python -m api.server        # or: uvicorn api.server:app --port 8000 --reload
 
-# Terminal 2: Web dashboard (port 5173)
+# Terminal 2: Web dashboard (port 5173) — proxies /api -> :8000
 cd dashboard
 npm install
 npm run dev
-# Open http://localhost:5173
+# Open http://localhost:5173 — Unchain (start), then the Positions / Strategies tabs
 ```
 
 > **Note:** If using the local OBLITERATUS model, vLLM also defaults to port 8000.
@@ -240,9 +271,14 @@ The brain performs a health check on startup and falls back to the cloud API if 
 | Strategy | ID | Description |
 | --- | --- | --- |
 | Sniper | `sniper` | Fast entry on new launches matching liquidity/mcap filters |
+| Conservative / Degen Sniper | `sniper_conservative` / `sniper_degen` | Sniper tuned tighter / looser |
 | Graduation | `graduation` | Targets tokens approaching Raydium migration (>70% bonding curve) |
+| Migration Snipe | `migration_snipe` | Snipes freshly-migrated (PumpSwap) tokens |
+| Reversal | `reversal` | Market-data reversal signals |
+| Volume Anomaly | `volume_anomaly` | Volume-spike signals |
+| Narrative Tracker | `narrative_tracker` | Narrative / social momentum |
 
-Each strategy has its own `budget_sol`, `max_concurrent_positions`, and can be paused/resumed independently via the API or web dashboard.
+Each strategy has its own `budget_sol`, `max_concurrent_positions`, and can be paused/resumed — or **activated live on a running bot** — from the dashboard's Strategies tab or the API (market-data strategies build their data provider on demand).
 
 ---
 
@@ -283,10 +319,13 @@ Composite quality and risk scores (0–1) feed auto-derived `TradeParams` (posit
 | `GET` | `/bot/status` | Status + portfolio summary |
 | `GET` | `/bot/full-status` | Full status: AI, strategies, budget, ouroboros, geometry |
 | `GET` | `/bot/positions` | All open positions with Ouroboros flags |
-| `GET` | `/bot/strategies` | Strategy runtime states |
-| `POST` | `/bot/strategies/{id}/pause` | Pause a strategy |
-| `POST` | `/bot/strategies/{id}/resume` | Resume a strategy |
-| `GET` | `/bot/config` | Current bot config |
+| `POST` | `/bot/trade` | Manual buy/sell |
+| `GET` | `/bot/strategies` | Runtime states of loaded strategies |
+| `GET` | `/bot/strategies/available` | All registered strategies + live state (Strategies tab) |
+| `POST` | `/bot/strategies/{id}/pause` \| `/resume` | Pause / resume a loaded strategy |
+| `POST` | `/bot/strategies/{id}/enable` \| `/disable` | Activate (live-load) / deactivate a strategy |
+| `GET` | `/bot/config` | Live config surface |
+| `POST` | `/bot/config` | Apply a config patch live (no restart) or stage it |
 | `WS` | `/ws/updates` | Real-time event stream |
 
 Docs at `http://localhost:8000/docs` when the API server is running.
@@ -302,8 +341,8 @@ Docs at `http://localhost:8000/docs` when the API server is running.
 - **Storage** — SQLite (trades, audit chain, historical memory)
 - **Frontend** — React 18 + TypeScript + Vite (JetBrains Mono, no chart libs)
 - **Terminal UI** — Rich
-- **Testing** — pytest + pytest-asyncio (246 tests)
-- **Linting** — Ruff, Mypy, pre-commit
+- **Testing** — pytest + pytest-asyncio (684 tests); dashboard type-checked with `tsc`
+- **Linting** — Ruff, Mypy, Pyright, pre-commit
 
 ---
 
