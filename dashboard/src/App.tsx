@@ -1,10 +1,18 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import type { BotStatus, FeedEvent, OuroborosStats, Position, StrategyStatus } from './types'
+import type {
+  BotConfigSurface,
+  BotStatus,
+  FeedEvent,
+  OuroborosStats,
+  Position,
+  StrategyStatus,
+} from './types'
 import StatusBar from './components/StatusBar'
 import BotControls from './components/BotControls'
 import PositionsTable from './components/PositionsTable'
 import EventFeed from './components/EventFeed'
 import BrainStats from './components/BrainStats'
+import SettingsPanel from './components/SettingsPanel'
 import './App.css'
 
 const API = '/api'
@@ -20,12 +28,13 @@ function App() {
   const [strategies, setStrategies] = useState<StrategyStatus[]>([])
   const [ouroboros, setOuroboros] = useState<OuroborosStats | null>(null)
   const [brainStats, setBrainStats] = useState<Record<string, unknown> | null>(null)
+  const [config, setConfig] = useState<BotConfigSurface | null>(null)
   const [wsConnected, setWsConnected] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const headers = API_KEY ? { 'X-API-Key': API_KEY } : {}
+  const headers: Record<string, string> = API_KEY ? { 'X-API-Key': API_KEY } : {}
 
   // ── REST polling ──────────────────────────────────────────────────
   const poll = useCallback(async () => {
@@ -54,7 +63,31 @@ function App() {
     } catch {
       // full-status only available when bot is running
     }
+
+    try {
+      const cfgRes = await fetch(`${API}/bot/config`, { headers })
+      if (cfgRes.ok) {
+        const data = await cfgRes.json()
+        if (data.config) setConfig(data.config)
+      }
+    } catch {
+      // config unavailable until the bot is configured/started — ignore
+    }
   }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const saveConfig = async (patch: Partial<BotConfigSurface>) => {
+    const res = await fetch(`${API}/bot/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify(patch),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error(body.detail ?? `Save failed (${res.status})`)
+    }
+    const data = await res.json()
+    if (data.config) setConfig(data.config)
+  }
 
   useEffect(() => {
     poll()
@@ -175,6 +208,7 @@ function App() {
             onResume={resumeStrategy}
           />
           <BrainStats stats={brainStats} />
+          <SettingsPanel config={config} onSave={saveConfig} />
         </div>
 
         <div className="center-col">

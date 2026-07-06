@@ -83,8 +83,8 @@ class BudgetTracker:
         self._reset_time: datetime = datetime.now()
 
     def set_global_limit(self, max_sol: float) -> None:
-        """Set an absolute global SOL limit across all strategies."""
-        self._global_sol_limit = max_sol
+        """Set an absolute global SOL limit across all strategies. <=0 disables it."""
+        self._global_sol_limit = max_sol if max_sol > 0 else None
 
     def _get_state(self, strategy_id: str) -> StrategyBudgetState:
         """Get or create budget state for a strategy."""

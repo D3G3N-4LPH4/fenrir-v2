@@ -81,3 +81,13 @@ export type WsMessage = FeedEvent | {
   timestamp?: string
   strategy_id?: string
 }
+
+export interface BotConfigSurface {
+  market_scanner_enabled: boolean
+  global_daily_sol_limit: number
+  buy_amount_sol: number
+  mid_cap_min_usd: number
+  large_cap_min_usd: number
+  scanner_max_positions: number
+  ai_min_confidence_to_buy: number
+}

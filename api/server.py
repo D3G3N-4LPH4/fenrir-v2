@@ -302,6 +302,41 @@ class StartBotRequest(BaseModel):
     rpc_url: str | None = Field(default=None, description="Custom RPC URL")
 
 
+class UpdateConfigRequest(BaseModel):
+    """Partial live-config patch from the dashboard settings panel.
+
+    All fields optional — only the ones the user changed are sent. Mirrors the
+    live-tunable subset of BotConfig; applied via FenrirBot.apply_config_update
+    (which performs the side-effects, e.g. starting/stopping the scanner) when
+    the bot is running, or staged into bot_state for the next start otherwise.
+    """
+
+    market_scanner_enabled: bool | None = None
+    global_daily_sol_limit: float | None = Field(default=None, ge=0)
+    buy_amount_sol: float | None = Field(default=None, gt=0)
+    mid_cap_min_usd: float | None = Field(default=None, ge=0)
+    large_cap_min_usd: float | None = Field(default=None, ge=0)
+    scanner_max_positions: int | None = Field(default=None, ge=0)
+    ai_min_confidence_to_buy: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+# Fields surfaced by GET /bot/config and echoed back after a POST.
+_CONFIG_SURFACE_FIELDS = (
+    "market_scanner_enabled",
+    "global_daily_sol_limit",
+    "buy_amount_sol",
+    "mid_cap_min_usd",
+    "large_cap_min_usd",
+    "scanner_max_positions",
+    "ai_min_confidence_to_buy",
+)
+
+
+def _config_surface(cfg) -> dict[str, Any]:
+    """Extract the dashboard-tunable subset from a live BotConfig."""
+    return {name: getattr(cfg, name) for name in _CONFIG_SURFACE_FIELDS}
+
+
 class ManualTradeRequest(BaseModel):
     """Manual trade execution"""
 
@@ -658,11 +693,51 @@ async def resume_strategy(strategy_id: str):
 
 @app.get("/bot/config")
 async def get_bot_config():
-    """Get current bot configuration"""
+    """Get the dashboard-tunable config surface.
+
+    Reflects the live BotConfig when the bot is running (not the stale request
+    payload that started it); falls back to the staged bot_state config otherwise.
+    """
+    if bot_instance is not None:
+        return {"status": "success", "config": _config_surface(bot_instance.config)}
     if not bot_state["config"]:
         raise HTTPException(status_code=400, detail="Bot has not been configured yet")
-
     return {"status": "success", "config": bot_state["config"]}
+
+
+@app.post("/bot/config")
+async def update_bot_config(patch: UpdateConfigRequest):
+    """Apply a partial config change from the dashboard.
+
+    Running bot: delegates to FenrirBot.apply_config_update, which mutates the
+    live config AND performs the side-effects (start/stop the scanner task,
+    re-apply the global SOL cap, refresh strategy buy amounts) so changes take
+    effect on the next cycle with no restart. Stopped bot: staged into
+    bot_state["config"] for the next /bot/start.
+    """
+    updates = patch.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields provided")
+
+    if bot_instance is not None:
+        errors = await bot_instance.apply_config_update(updates)
+        if errors:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid configuration: {', '.join(errors)}"
+            )
+        await broadcast_update(
+            {
+                "event": "config_updated",
+                "fields": list(updates.keys()),
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+        logger.info(f"Live config updated: {updates}")
+        return {"status": "success", "config": _config_surface(bot_instance.config)}
+
+    # Bot not running yet — stage the change for the next /bot/start.
+    bot_state["config"] = {**(bot_state["config"] or {}), **updates}
+    return {"status": "success", "config": bot_state["config"], "note": "staged for next start"}
 
 
 @app.websocket("/ws/updates")

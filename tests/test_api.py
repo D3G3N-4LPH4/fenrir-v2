@@ -11,6 +11,7 @@ Run with: pytest tests/test_api.py -v
 
 import asyncio
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1013,3 +1014,89 @@ class TestRateLimiter:
             assert "retry-after" in resp.headers
         finally:
             server_module.rate_limiter = original
+
+
+# ===================================================================
+#  /bot/config — GET surface + POST live/staged updates
+# ===================================================================
+
+
+def _cfg_surface():
+    """A JSON-serializable stand-in for the live BotConfig surface."""
+    return SimpleNamespace(
+        market_scanner_enabled=True,
+        global_daily_sol_limit=0.5,
+        buy_amount_sol=0.01,
+        mid_cap_min_usd=200_000.0,
+        large_cap_min_usd=1_000_000.0,
+        scanner_max_positions=3,
+        ai_min_confidence_to_buy=0.75,
+    )
+
+
+class TestConfigEndpoints:
+    @pytest.mark.asyncio
+    async def test_get_config_running_reflects_live(self, client_no_auth: AsyncClient):
+        bot = MagicMock()
+        bot.config = _cfg_surface()
+        server_module.bot_instance = bot
+        resp = await client_no_auth.get("/bot/config")
+        assert resp.status_code == 200
+        cfg = resp.json()["config"]
+        assert cfg["market_scanner_enabled"] is True
+        assert cfg["ai_min_confidence_to_buy"] == 0.75
+        assert set(cfg) == set(server_module._CONFIG_SURFACE_FIELDS)
+
+    @pytest.mark.asyncio
+    async def test_get_config_stopped_no_config_400(self, client_no_auth: AsyncClient):
+        resp = await client_no_auth.get("/bot/config")
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_get_config_stopped_returns_staged(self, client_no_auth: AsyncClient):
+        server_module.bot_state["config"] = {"buy_amount_sol": 0.02}
+        resp = await client_no_auth.get("/bot/config")
+        assert resp.status_code == 200
+        assert resp.json()["config"]["buy_amount_sol"] == 0.02
+
+    @pytest.mark.asyncio
+    async def test_post_config_running_applies_and_returns_surface(
+        self, client_no_auth: AsyncClient
+    ):
+        bot = MagicMock()
+        bot.config = _cfg_surface()
+        bot.apply_config_update = AsyncMock(return_value=[])
+        server_module.bot_instance = bot
+        resp = await client_no_auth.post("/bot/config", json={"market_scanner_enabled": False})
+        assert resp.status_code == 200
+        bot.apply_config_update.assert_awaited_once_with({"market_scanner_enabled": False})
+        assert "market_scanner_enabled" in resp.json()["config"]
+
+    @pytest.mark.asyncio
+    async def test_post_config_running_validation_error_400(self, client_no_auth: AsyncClient):
+        bot = MagicMock()
+        bot.config = _cfg_surface()
+        bot.apply_config_update = AsyncMock(return_value=["buy_amount_sol must be > 0"])
+        server_module.bot_instance = bot
+        resp = await client_no_auth.post("/bot/config", json={"buy_amount_sol": 0.01})
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_post_config_stopped_stages(self, client_no_auth: AsyncClient):
+        resp = await client_no_auth.post("/bot/config", json={"buy_amount_sol": 0.02})
+        assert resp.status_code == 200
+        staged = server_module.bot_state["config"]
+        assert staged is not None
+        assert staged["buy_amount_sol"] == 0.02
+        assert "staged" in resp.json().get("note", "")
+
+    @pytest.mark.asyncio
+    async def test_post_config_empty_400(self, client_no_auth: AsyncClient):
+        resp = await client_no_auth.post("/bot/config", json={})
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_post_config_rejects_out_of_range_confidence(self, client_no_auth: AsyncClient):
+        # Pydantic bounds: ai_min_confidence_to_buy in [0, 1]
+        resp = await client_no_auth.post("/bot/config", json={"ai_min_confidence_to_buy": 1.5})
+        assert resp.status_code == 422
