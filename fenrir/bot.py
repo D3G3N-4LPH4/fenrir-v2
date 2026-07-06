@@ -128,6 +128,9 @@ class FenrirBot:
 
         # Market scanner (multi-tier discovery; started only when enabled)
         self.scanner = MarketScanner(config, self.jupiter, self.logger)
+        # Handle to the running scanner task so it can be started/stopped live
+        # from apply_config_update() without restarting the bot.
+        self._scanner_task: asyncio.Task | None = None
 
         # ── NEW: Event Bus ──────────────────────────────────────
         self.event_bus = EventBus()
@@ -296,7 +299,10 @@ class FenrirBot:
         ]
         # Multi-tier market scanner (mid/large caps) — opt-in.
         if self.config.market_scanner_enabled:
-            tasks.append(asyncio.create_task(self.scanner.start_scanning(self._on_candidate)))
+            self._scanner_task = asyncio.create_task(
+                self.scanner.start_scanning(self._on_candidate)
+            )
+            tasks.append(self._scanner_task)
 
         await asyncio.gather(*tasks)
 
@@ -508,6 +514,50 @@ class FenrirBot:
                     strategy_id=strategy.strategy_id,
                 )
             )
+
+    async def apply_config_update(self, updates: dict) -> list[str]:
+        """Apply a live config patch and perform the side-effects that a bare
+        attribute set would miss, so dashboard toggles take effect without a
+        restart. Returns config validation errors (empty list = OK).
+
+        Live-effective fields:
+        - market_scanner_enabled: starts/stops the scanner task on demand.
+        - global_daily_sol_limit: re-applies the budget tracker's global cap.
+        - buy_amount_sol: refreshes each strategy's cached trade params.
+        - scanner tier thresholds / ai_min_confidence_to_buy / scanner_max_positions:
+          read fresh each cycle, so a plain setattr is enough.
+        """
+        for key, value in updates.items():
+            setattr(self.config, key, value)
+
+        errors = self.config.validate()
+        if errors:
+            return errors
+
+        if "global_daily_sol_limit" in updates:
+            self.budget_tracker.set_global_limit(self.config.global_daily_sol_limit)
+
+        if "buy_amount_sol" in updates:
+            for strat in self.strategies:
+                params = getattr(strat, "_params", None)
+                if params is not None and hasattr(params, "buy_amount_sol"):
+                    params.buy_amount_sol = self.config.buy_amount_sol
+
+        if "market_scanner_enabled" in updates:
+            if self.config.market_scanner_enabled:
+                if self._scanner_task is None or self._scanner_task.done():
+                    self._scanner_task = asyncio.create_task(
+                        self.scanner.start_scanning(self._on_candidate)
+                    )
+                    self.logger.info("Market scanner started (live config update)")
+            else:
+                await self.scanner.stop()
+                if self._scanner_task is not None:
+                    self._scanner_task.cancel()
+                    self._scanner_task = None
+                self.logger.info("Market scanner stopped (live config update)")
+
+        return []
 
     def _tier_context(self, token_data: dict) -> str:
         """Reframe the AI prompt for a scanned mid/large-cap so it isn't judged by
@@ -801,6 +851,10 @@ class FenrirBot:
 
         # Shutdown all components
         await self.monitor.stop()
+        await self.scanner.stop()
+        if self._scanner_task is not None:
+            self._scanner_task.cancel()
+            self._scanner_task = None
         await self.trading_engine.close()
         await self.claude_brain.close()
         await self.solana_client.close()
