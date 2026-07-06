@@ -24,6 +24,8 @@ class JupiterSwapEngine:
     # Jupiter's legacy quote-api.jup.ag/v6 host was retired; the current free
     # (keyless) endpoint is lite-api.jup.ag/swap/v1 (paid tier: api.jup.ag).
     JUPITER_API = "https://lite-api.jup.ag/swap/v1"
+    # Tokens v2 (keyless) — trending/top lists for the market scanner.
+    TOKENS_API = "https://lite-api.jup.ag/tokens/v2"
 
     def __init__(
         self, config: BotConfig, logger: FenrirLogger, breaker: CircuitBreaker | None = None
@@ -123,6 +125,33 @@ class JupiterSwapEngine:
                 self._breaker.record_failure(type(e).__name__)
             self.logger.error("Failed to build swap transaction", e)
             return None
+
+    async def get_trending_tokens(
+        self, category: str = "toptraded", interval: str = "24h"
+    ) -> list[dict]:
+        """Fetch a Jupiter trending/top token list (keyless Tokens-v2).
+
+        category: toporganicscore | toptraded | toptrending; interval: 5m|1h|6h|24h.
+        Each token carries mcap, liquidity, usdPrice, holderCount, isVerified,
+        organicScore, socials, decimals, graduatedAt. Returns [] on any failure.
+        """
+        if not self.session:
+            await self.initialize()
+        assert self.session is not None
+        try:
+            url = f"{self.TOKENS_API}/{category}/{interval}"
+            async with self.session.get(url) as response:
+                if response.status != 200:
+                    self.logger.warning(
+                        f"Jupiter trending {category}/{interval}: {response.status}"
+                    )
+                    return []
+                data = await response.json()
+            tokens = data if isinstance(data, list) else data.get("tokens", [])
+            return cast("list[dict]", tokens)
+        except Exception as e:
+            self.logger.error("Failed to fetch Jupiter trending tokens", e)
+            return []
 
     async def close(self):
         """Clean up resources."""

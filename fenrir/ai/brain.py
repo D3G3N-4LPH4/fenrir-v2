@@ -513,6 +513,12 @@ class ClaudeBrain:
             initial_liquidity_sol=token_data.get("initial_liquidity_sol", 0),
             current_market_cap_sol=token_data.get("market_cap_sol", 0),
             creator_address=token_data.get("creator"),
+            # Scanner-surfaced (mid/large-cap) tokens carry real enrichment —
+            # populate it so the prompt's metrics/socials aren't blank zeros.
+            holder_count=token_data.get("holder_count", 0) or 0,
+            website=self._sanitize_metadata_field(token_data.get("website"), max_length=200),
+            twitter=self._sanitize_metadata_field(token_data.get("twitter"), max_length=200),
+            telegram=self._sanitize_metadata_field(token_data.get("telegram"), max_length=200),
         )
 
     def _record_response_time(self, ms: float) -> None:

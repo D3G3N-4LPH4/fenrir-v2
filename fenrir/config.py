@@ -202,6 +202,24 @@ class BotConfig:
     dynamic_priority_fee_enabled: bool = False
     max_priority_fee_lamports: int = 5_000_000  # 0.005 SOL ceiling
 
+    # ── Market scanner (multi-tier discovery beyond fresh launches) ────
+    # Off by default. When on, periodically pulls Jupiter trending tokens,
+    # buckets them into mid/large-cap tiers by USD market cap, and feeds each to
+    # the AI (which trades them via the Jupiter buy path). Env: MARKET_SCANNER_ENABLED.
+    market_scanner_enabled: bool = False
+    scanner_interval_seconds: float = 120.0
+    scanner_categories: list[str] = field(default_factory=lambda: ["toptraded", "toporganicscore"])
+    scanner_interval_window: str = "24h"  # Jupiter interval: 5m|1h|6h|24h
+    mid_cap_min_usd: float = 200_000.0  # mid tier: [mid_min, large_min)
+    large_cap_min_usd: float = 1_000_000.0  # large tier: >= large_min
+    scanner_min_liquidity_usd: float = 50_000.0
+    scanner_min_organic_score: float = 0.0  # 0 = disabled
+    scanner_require_verified: bool = False
+    scanner_max_candidates_per_cycle: int = 5
+    scanner_cooldown_minutes: float = 30.0
+    scanner_daily_budget_sol: float = 0.0  # 0 = auto (5 × buy_amount_sol)
+    scanner_max_positions: int = 3
+
     # ── Pre-trade filters (fenrir.filters) ─────────────────────────────
     # Security hard-gate: mint/freeze authority, LP burn, holder concentration.
     security_filter_enabled: bool = False
@@ -342,6 +360,22 @@ class BotConfig:
                 self.max_priority_fee_lamports = int(env_maxfee)
             except ValueError:
                 pass
+
+        # ── Market scanner ─────────────────────────────────────────────
+        self.market_scanner_enabled = _env_bool(
+            "MARKET_SCANNER_ENABLED", self.market_scanner_enabled
+        )
+        self.scanner_interval_seconds = _env_float(
+            "SCANNER_INTERVAL_SECONDS", self.scanner_interval_seconds
+        )
+        self.mid_cap_min_usd = _env_float("MID_CAP_MIN_USD", self.mid_cap_min_usd)
+        self.large_cap_min_usd = _env_float("LARGE_CAP_MIN_USD", self.large_cap_min_usd)
+        self.scanner_min_liquidity_usd = _env_float(
+            "SCANNER_MIN_LIQUIDITY_USD", self.scanner_min_liquidity_usd
+        )
+        env_scan_strats = os.getenv("SCANNER_CATEGORIES", "")
+        if env_scan_strats:
+            self.scanner_categories = [s.strip() for s in env_scan_strats.split(",") if s.strip()]
 
     @classmethod
     def from_mode(cls, mode: TradingMode, **overrides) -> BotConfig:  # type: ignore[override]
