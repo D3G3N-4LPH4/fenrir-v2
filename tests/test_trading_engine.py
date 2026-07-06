@@ -518,17 +518,46 @@ class TestLiveSell:
         mocks["jupiter"].get_quote.return_value = {"outAmount": "50000000"}
         mocks["jupiter"].get_swap_transaction.return_value = "base64tx"
 
-        with patch.object(
-            live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+        with (
+            patch.object(
+                live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+            ),
+            patch.object(live_engine.pumpfun, "decode_bonding_curve", return_value=MIGRATED_CURVE),
+            patch.object(
+                live_engine, "_sign_send_jupiter_swap", new=AsyncMock(return_value="jup_sig")
+            ),
+            patch.object(live_engine, "_confirm_transaction", new=AsyncMock(return_value=True)),
         ):
-            with patch.object(
-                live_engine.pumpfun, "decode_bonding_curve", return_value=MIGRATED_CURVE
-            ):
-                result = await live_engine.execute_sell(FAKE_TOKEN, "take_profit")
+            result = await live_engine.execute_sell(FAKE_TOKEN, "take_profit")
 
         assert result is True
         mocks["jupiter"].get_quote.assert_called_once()
         mocks["positions"].close_position.assert_called_once_with(FAKE_TOKEN, "take_profit")
+
+    @pytest.mark.asyncio
+    async def test_sell_migrated_not_closed_when_send_fails(self, live_engine, mocks):
+        """If the Jupiter swap never lands, the position must NOT be marked closed."""
+        position = _make_position()
+        mocks["positions"].positions = {FAKE_TOKEN: position}
+        mocks["solana_client"].get_account_info.return_value = b"x" * 80
+        mocks["solana_client"].get_token_accounts_by_owner.return_value = {
+            "address": MagicMock(),
+            "amount": 500_000,
+        }
+        mocks["jupiter"].get_quote.return_value = {"outAmount": "50000000"}
+        mocks["jupiter"].get_swap_transaction.return_value = "base64tx"
+
+        with (
+            patch.object(
+                live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+            ),
+            patch.object(live_engine.pumpfun, "decode_bonding_curve", return_value=MIGRATED_CURVE),
+            patch.object(live_engine, "_sign_send_jupiter_swap", new=AsyncMock(return_value=None)),
+        ):
+            result = await live_engine.execute_sell(FAKE_TOKEN, "take_profit")
+
+        assert result is False
+        mocks["positions"].close_position.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_sell_no_token_account_returns_false(self, live_engine, mocks):

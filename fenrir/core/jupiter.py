@@ -21,7 +21,9 @@ class JupiterSwapEngine:
     Finding the best price is an art form.
     """
 
-    JUPITER_API = "https://quote-api.jup.ag/v6"
+    # Jupiter's legacy quote-api.jup.ag/v6 host was retired; the current free
+    # (keyless) endpoint is lite-api.jup.ag/swap/v1 (paid tier: api.jup.ag).
+    JUPITER_API = "https://lite-api.jup.ag/swap/v1"
 
     def __init__(
         self, config: BotConfig, logger: FenrirLogger, breaker: CircuitBreaker | None = None

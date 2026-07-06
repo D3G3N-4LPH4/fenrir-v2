@@ -115,6 +115,15 @@ class SolanaClient:
         resp = await self._rpc(self.client.send_transaction(transaction, opts), "send_transaction")
         return str(resp.value) if resp else None
 
+    async def send_raw_transaction(self, raw_tx: bytes, skip_preflight: bool = True) -> str | None:
+        """Broadcast a pre-serialized (already-signed) transaction — e.g. a
+        Jupiter VersionedTransaction for a migrated-token swap."""
+        opts = TxOpts(skip_preflight=skip_preflight, preflight_commitment=Confirmed)
+        resp = await self._rpc(
+            self.client.send_raw_transaction(raw_tx, opts), "send_raw_transaction"
+        )
+        return str(resp.value) if resp else None
+
     async def get_latest_blockhash(self):
         """Fetch a recent blockhash for building transactions."""
         resp = await self._rpc(
