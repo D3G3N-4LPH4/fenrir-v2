@@ -9,10 +9,12 @@ Run with: pytest tests/test_trading_engine.py -v
 """
 
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from solders.pubkey import Pubkey
 
 from fenrir.config import BotConfig, TradingMode
 from fenrir.core.positions import Position, PositionManager
@@ -624,3 +626,49 @@ class TestManagePositions:
         await sim_engine.manage_positions()
 
         assert mocks["positions"].close_position.call_count == 2
+
+
+# ===================================================================
+#  Per-token v2 buyback fee-account resolution
+# ===================================================================
+
+
+class TestResolveFeeExtras:
+    """_resolve_fee_extras shadows the token's own recent buy for its idx16/17."""
+
+    def _fake_buy_tx(self, keys):
+        """Build a minimal tx object with an 18-account pump buy instruction."""
+        import base58
+
+        from fenrir.protocol.pumpfun import BUY_DISCRIMINATOR, PUMP_PROGRAM_ID
+
+        ix = SimpleNamespace(
+            program_id=PUMP_PROGRAM_ID,
+            data=base58.b58encode(BUY_DISCRIMINATOR + b"\x00" * 17).decode(),
+            accounts=list(range(18)),
+        )
+        message = SimpleNamespace(account_keys=keys, instructions=[ix])
+        return SimpleNamespace(
+            transaction=SimpleNamespace(transaction=SimpleNamespace(message=message))
+        )
+
+    @pytest.mark.asyncio
+    async def test_extracts_idx16_17_and_caches(self, live_engine, mocks):
+        keys = [Pubkey.from_bytes(bytes([i + 1] * 32)) for i in range(18)]
+        mocks["solana_client"].get_recent_signatures.return_value = [
+            SimpleNamespace(err=None, signature="sig1")
+        ]
+        mocks["solana_client"].get_transaction.return_value = self._fake_buy_tx(keys)
+
+        extras = await live_engine._resolve_fee_extras(keys[2])
+        assert extras == (keys[16], keys[17])
+
+        # Second call must hit the per-mint cache (no RPC needed).
+        mocks["solana_client"].get_recent_signatures.return_value = []
+        assert await live_engine._resolve_fee_extras(keys[2]) == (keys[16], keys[17])
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_prior_buy(self, live_engine, mocks):
+        mocks["solana_client"].get_recent_signatures.return_value = []
+        mint = Pubkey.from_bytes(bytes([99] * 32))
+        assert await live_engine._resolve_fee_extras(mint) is None
