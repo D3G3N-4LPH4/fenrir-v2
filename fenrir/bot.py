@@ -60,6 +60,7 @@ from fenrir.strategies import STRATEGY_REGISTRY, SniperStrategy
 from fenrir.strategies.base import TradingStrategy
 from fenrir.trading.engine import TradingEngine
 from fenrir.trading.monitor import PumpFunMonitor
+from fenrir.trading.scanner import MarketScanner
 
 
 class SignalStrategy(Protocol):
@@ -124,6 +125,9 @@ class FenrirBot:
 
         # Monitor
         self.monitor = PumpFunMonitor(config, self.solana_client, self.logger)
+
+        # Market scanner (multi-tier discovery; started only when enabled)
+        self.scanner = MarketScanner(config, self.jupiter, self.logger)
 
         # ── NEW: Event Bus ──────────────────────────────────────
         self.event_bus = EventBus()
@@ -286,10 +290,15 @@ class FenrirBot:
             await self.jito.initialize()
 
         # Start monitoring and position management
-        monitor_task = asyncio.create_task(self.monitor.start_monitoring(self._on_token_launch))
-        management_task = asyncio.create_task(self._position_management_loop())
+        tasks = [
+            asyncio.create_task(self.monitor.start_monitoring(self._on_token_launch)),
+            asyncio.create_task(self._position_management_loop()),
+        ]
+        # Multi-tier market scanner (mid/large caps) — opt-in.
+        if self.config.market_scanner_enabled:
+            tasks.append(asyncio.create_task(self.scanner.start_scanning(self._on_candidate)))
 
-        await asyncio.gather(monitor_task, management_task)
+        await asyncio.gather(*tasks)
 
     async def _on_token_launch(self, token_data: dict):
         """
@@ -497,6 +506,94 @@ class FenrirBot:
                     trade_type="BUY",
                     error="Execution failed",
                     strategy_id=strategy.strategy_id,
+                )
+            )
+
+    def _tier_context(self, token_data: dict) -> str:
+        """Reframe the AI prompt for a scanned mid/large-cap so it isn't judged by
+        launch-sniping heuristics (which treat high mcap as a 'FOMO trap')."""
+        tier = token_data.get("tier")
+        mcap = token_data.get("market_cap_usd") or 0
+        liq = token_data.get("liquidity_usd") or 0
+        holders = token_data.get("holder_count") or 0
+        label = "ESTABLISHED LARGE-CAP" if tier == "large" else "MID-CAP (graduated off the curve)"
+        return (
+            f"MARKET-SCAN CANDIDATE — {label}. This is NOT a fresh pump.fun launch; it trades on "
+            f"an AMM. Market cap ~${mcap:,.0f}, liquidity ~${liq:,.0f}, {holders:,} holders. "
+            f"Evaluate it as a momentum/swing trade based on trend strength, liquidity and downside "
+            f"risk — a high market cap is EXPECTED for this tier and is NOT itself a red flag or "
+            f"'FOMO trap'. Judge on relative strength, not on launch-sniping heuristics."
+        )
+
+    async def _on_candidate(self, token_data: dict) -> None:
+        """Evaluate a scanner-surfaced mid/large-cap token and trade it via Jupiter.
+
+        Parallel to _on_token_launch but for AMM-traded tokens: reframes the AI
+        for the tier, gates on budget, and executes through the Jupiter buy path.
+        """
+        token_addr = token_data["token_address"]
+        symbol = token_data.get("symbol", "???")
+        if token_addr in self.positions.positions:
+            return  # already holding
+
+        await self.event_bus.emit(
+            token_detected_event(
+                token_address=token_addr,
+                symbol=symbol,
+                name=token_data.get("name", "Unknown"),
+                liquidity_sol=0.0,
+                market_cap_sol=0.0,
+                creator=None,
+            )
+        )
+
+        strategy_positions = self.positions.get_by_strategy("scanner")
+        should_buy, analysis, buy_amount_override = await self.claude_brain.evaluate_entry(
+            token_data, strategy_positions, strategy_context=self._tier_context(token_data)
+        )
+        if analysis:
+            await self.event_bus.emit(
+                ai_decision_event(
+                    token_address=token_addr,
+                    symbol=symbol,
+                    decision=analysis.decision.value,
+                    confidence=analysis.confidence,
+                    risk_score=analysis.risk_score,
+                    reasoning=analysis.reasoning,
+                    strategy_id="scanner",
+                )
+            )
+        if not should_buy:
+            return
+
+        amount = self.config.buy_amount_sol
+        if buy_amount_override is not None and self.config.ai_dynamic_position_sizing:
+            amount = min(buy_amount_override, self.config.buy_amount_sol * 2)
+
+        budget = self.config.scanner_daily_budget_sol or (self.config.buy_amount_sol * 5)
+        auth = self.budget_tracker.authorize_trade(
+            strategy_id="scanner",
+            amount_sol=amount,
+            budget_sol=budget,
+            max_positions=self.config.scanner_max_positions,
+        )
+        if not auth.allowed:
+            self.logger.info(f"Scanner trade blocked for {symbol}: {auth.reason}")
+            return
+
+        success = await self.trading_engine.execute_buy(
+            token_data, amount_sol=amount, strategy_id="scanner"
+        )
+        if success:
+            self.budget_tracker.record_buy("scanner", amount)
+            await self.event_bus.emit(
+                buy_executed_event(
+                    token_address=token_addr,
+                    symbol=symbol,
+                    amount_sol=amount,
+                    entry_price=0.0,
+                    simulation=(self.config.mode == TradingMode.SIMULATION),
+                    strategy_id="scanner",
                 )
             )
 

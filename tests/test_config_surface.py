@@ -35,6 +35,12 @@ _SURFACE_ENV = [
     "GLOBAL_DAILY_SOL_LIMIT",
     "DYNAMIC_PRIORITY_FEE_ENABLED",
     "MAX_PRIORITY_FEE_LAMPORTS",
+    "MARKET_SCANNER_ENABLED",
+    "SCANNER_INTERVAL_SECONDS",
+    "MID_CAP_MIN_USD",
+    "LARGE_CAP_MIN_USD",
+    "SCANNER_MIN_LIQUIDITY_USD",
+    "SCANNER_CATEGORIES",
 ]
 
 
@@ -146,6 +152,24 @@ class TestEnvParsing:
     def test_global_daily_sol_limit_ignores_garbage(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("GLOBAL_DAILY_SOL_LIMIT", "not-a-number")
         assert BotConfig().global_daily_sol_limit == 0.0
+
+    def test_market_scanner_defaults(self) -> None:
+        cfg = BotConfig()
+        assert cfg.market_scanner_enabled is False  # opt-in
+        assert cfg.mid_cap_min_usd == 200_000.0
+        assert cfg.large_cap_min_usd == 1_000_000.0
+        assert cfg.scanner_categories == ["toptraded", "toporganicscore"]
+
+    def test_market_scanner_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MARKET_SCANNER_ENABLED", "true")
+        monkeypatch.setenv("MID_CAP_MIN_USD", "300000")
+        monkeypatch.setenv("LARGE_CAP_MIN_USD", "5000000")
+        monkeypatch.setenv("SCANNER_CATEGORIES", "toptrending, toptraded")
+        cfg = BotConfig()
+        assert cfg.market_scanner_enabled is True
+        assert cfg.mid_cap_min_usd == 300_000.0
+        assert cfg.large_cap_min_usd == 5_000_000.0
+        assert cfg.scanner_categories == ["toptrending", "toptraded"]
 
     def test_explicit_kwarg_preserved_when_env_absent(self) -> None:
         cfg = BotConfig(security_filter_enabled=True, security_min_lp_burned_pct=75.0)
