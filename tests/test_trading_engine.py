@@ -701,3 +701,47 @@ class TestResolveFeeExtras:
         mocks["solana_client"].get_recent_signatures.return_value = []
         mint = Pubkey.from_bytes(bytes([99] * 32))
         assert await live_engine._resolve_fee_extras(mint) is None
+
+
+# ===================================================================
+#  Dynamic priority fee
+# ===================================================================
+
+
+class TestDynamicPriorityFee:
+    @pytest.mark.asyncio
+    async def test_uses_p75_clamped(self, live_engine, mocks):
+        live_engine.config.dynamic_priority_fee_enabled = True
+        live_engine.config.priority_fee_lamports = 100
+        live_engine.config.max_priority_fee_lamports = 10_000
+        # p75 of [0,100,200,...,1000] non-zero -> 800, within clamp
+        mocks["solana_client"].get_recent_prioritization_fees.return_value = list(
+            range(0, 1100, 100)
+        )
+        fee = await live_engine._resolve_priority_fee("sniper")
+        assert fee == 800
+
+    @pytest.mark.asyncio
+    async def test_clamps_to_ceiling(self, live_engine, mocks):
+        live_engine.config.dynamic_priority_fee_enabled = True
+        live_engine.config.priority_fee_lamports = 100
+        live_engine.config.max_priority_fee_lamports = 500
+        mocks["solana_client"].get_recent_prioritization_fees.return_value = [1_000, 2_000, 3_000]
+        fee = await live_engine._resolve_priority_fee("sniper")
+        assert fee == 500  # ceiling
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_floor_when_no_data(self, live_engine, mocks):
+        live_engine.config.dynamic_priority_fee_enabled = True
+        live_engine.config.priority_fee_lamports = 777
+        mocks["solana_client"].get_recent_prioritization_fees.return_value = []
+        fee = await live_engine._resolve_priority_fee("sniper")
+        assert fee == 777
+
+    @pytest.mark.asyncio
+    async def test_disabled_uses_flat_fee(self, live_engine, mocks):
+        live_engine.config.dynamic_priority_fee_enabled = False
+        live_engine.config.priority_fee_lamports = 555
+        fee = await live_engine._resolve_priority_fee("sniper")
+        assert fee == 555
+        mocks["solana_client"].get_recent_prioritization_fees.assert_not_called()

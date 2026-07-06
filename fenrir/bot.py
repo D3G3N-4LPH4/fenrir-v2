@@ -148,6 +148,12 @@ class FenrirBot:
 
         # ── NEW: Budget Tracker ─────────────────────────────────
         self.budget_tracker = BudgetTracker()
+        # Master safety valve: cap net live SOL exposure across ALL strategies.
+        if config.global_daily_sol_limit > 0:
+            self.budget_tracker.set_global_limit(config.global_daily_sol_limit)
+            self.logger.info(
+                f"Global daily SOL limit: {config.global_daily_sol_limit} SOL (all strategies)"
+            )
 
         # Ouroboros / dump recovery detector
         self.dump_detector = PostDumpRecoveryDetector(

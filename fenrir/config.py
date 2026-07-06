@@ -191,6 +191,16 @@ class BotConfig:
     # the bot's strategy loader once the pipeline-wiring PR lands.
     enabled_strategies: list[str] = field(default_factory=lambda: ["sniper"])
     sniper_daily_budget_sol: float = 0.0  # 0 = auto (10 × buy_amount_sol)
+    # Absolute cap on net live SOL exposure across ALL strategies — the master
+    # safety valve above per-strategy budgets. 0 = disabled. Env: GLOBAL_DAILY_SOL_LIMIT.
+    global_daily_sol_limit: float = 0.0
+
+    # Dynamic priority fee: when on, size the compute-unit price from recent
+    # on-chain prioritization fees (percentile) for competitive inclusion,
+    # clamped to [priority_fee_lamports, max_priority_fee_lamports]. Opt-in so
+    # default behavior (the flat priority_fee_lamports) is unchanged.
+    dynamic_priority_fee_enabled: bool = False
+    max_priority_fee_lamports: int = 5_000_000  # 0.005 SOL ceiling
 
     # ── Pre-trade filters (fenrir.filters) ─────────────────────────────
     # Security hard-gate: mint/freeze authority, LP burn, holder concentration.
@@ -313,6 +323,25 @@ class BotConfig:
 
         # ── Execution ──────────────────────────────────────────────────
         self.tx_profiles_enabled = _env_bool("TX_PROFILES_ENABLED", self.tx_profiles_enabled)
+
+        # ── Risk limits ────────────────────────────────────────────────
+        env_global = os.getenv("GLOBAL_DAILY_SOL_LIMIT", "")
+        if env_global:
+            try:
+                self.global_daily_sol_limit = float(env_global)
+            except ValueError:
+                pass
+
+        # ── Execution tuning ───────────────────────────────────────────
+        self.dynamic_priority_fee_enabled = _env_bool(
+            "DYNAMIC_PRIORITY_FEE_ENABLED", self.dynamic_priority_fee_enabled
+        )
+        env_maxfee = os.getenv("MAX_PRIORITY_FEE_LAMPORTS", "")
+        if env_maxfee:
+            try:
+                self.max_priority_fee_lamports = int(env_maxfee)
+            except ValueError:
+                pass
 
     @classmethod
     def from_mode(cls, mode: TradingMode, **overrides) -> BotConfig:  # type: ignore[override]

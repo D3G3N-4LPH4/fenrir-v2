@@ -8,6 +8,7 @@ Every RPC call is a question. This class asks them eloquently.
 
 import asyncio
 
+import aiohttp
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Confirmed
 from solana.rpc.types import TokenAccountOpts, TxOpts
@@ -168,6 +169,31 @@ class SolanaClient:
                     "ui_amount": float(token_amount["uiAmount"] or 0),
                 }
         return None
+
+    async def get_recent_prioritization_fees(self, accounts: list[str] | None = None) -> list[int]:
+        """Recent per-CU prioritization fees (micro-lamports) via raw JSON-RPC.
+
+        solana-py has no binding for getRecentPrioritizationFees, so post it
+        directly. Returns an empty list on any failure; callers fall back to the
+        flat configured fee.
+        """
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getRecentPrioritizationFees",
+            "params": [accounts or []],
+        }
+        try:
+            timeout = aiohttp.ClientTimeout(total=RPC_TIMEOUT_SECONDS)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(self.config.rpc_url, json=body) as resp:
+                    if resp.status != 200:
+                        return []
+                    data = await resp.json()
+            return [int(e["prioritizationFee"]) for e in data.get("result", [])]
+        except Exception as e:
+            self.logger.debug(f"getRecentPrioritizationFees failed: {e}")
+            return []
 
     async def get_signature_statuses(self, signatures: list[str]):
         """Check confirmation status of transaction signatures."""
