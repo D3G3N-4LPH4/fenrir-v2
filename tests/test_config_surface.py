@@ -32,6 +32,9 @@ _SURFACE_ENV = [
     "MARKET_FILTER_ENABLED",
     "MARKET_FAIL_OPEN_ON_FETCH_ERROR",
     "TX_PROFILES_ENABLED",
+    "GLOBAL_DAILY_SOL_LIMIT",
+    "DYNAMIC_PRIORITY_FEE_ENABLED",
+    "MAX_PRIORITY_FEE_LAMPORTS",
 ]
 
 
@@ -134,6 +137,15 @@ class TestEnvParsing:
     def test_helius_key_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HELIUS_API_KEY", "hx-test")
         assert BotConfig().helius_api_key == "hx-test"
+
+    def test_global_daily_sol_limit_default_and_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert BotConfig().global_daily_sol_limit == 0.0  # disabled by default
+        monkeypatch.setenv("GLOBAL_DAILY_SOL_LIMIT", "0.5")
+        assert BotConfig().global_daily_sol_limit == 0.5
+
+    def test_global_daily_sol_limit_ignores_garbage(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GLOBAL_DAILY_SOL_LIMIT", "not-a-number")
+        assert BotConfig().global_daily_sol_limit == 0.0
 
     def test_explicit_kwarg_preserved_when_env_absent(self) -> None:
         cfg = BotConfig(security_filter_enabled=True, security_min_lp_burned_pct=75.0)

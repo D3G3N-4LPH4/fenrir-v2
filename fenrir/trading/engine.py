@@ -85,7 +85,25 @@ class TradingEngine:
     async def _resolve_priority_fee(self, strategy_id: str) -> int:
         if self.tx_config is not None:
             return await self.tx_config.get_priority_fee_lamports(strategy_id)
+        if self.config.dynamic_priority_fee_enabled:
+            return await self._dynamic_priority_fee()
         return self.config.priority_fee_lamports
+
+    async def _dynamic_priority_fee(self) -> int:
+        """Size the priority fee from recent pump-program prioritization fees.
+
+        Uses the 75th percentile of recent non-zero fees for competitive
+        inclusion, clamped to [priority_fee_lamports, max_priority_fee_lamports].
+        Falls back to the flat configured fee when no data is available.
+        """
+        floor = self.config.priority_fee_lamports
+        ceiling = self.config.max_priority_fee_lamports
+        fees = await self.client.get_recent_prioritization_fees([str(PUMP_PROGRAM_ID)])
+        nonzero = sorted(f for f in fees if f > 0)
+        if not nonzero:
+            return floor
+        p75 = nonzero[min(int(len(nonzero) * 0.75), len(nonzero) - 1)]
+        return max(floor, min(p75, ceiling))
 
     def _resolve_slippage_bps(self, strategy_id: str) -> int:
         if self.tx_config is not None:
