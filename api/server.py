@@ -258,6 +258,13 @@ app.add_middleware(
 @app.middleware("http")
 async def verify_api_key(request: Request, call_next):
     """Require X-API-Key header on all endpoints except health checks."""
+    # Let CORS preflights through: browsers send OPTIONS with no credentials or
+    # custom headers by design, so rejecting them here (before CORSMiddleware can
+    # answer) breaks every cross-origin request from the dashboard. Preflights
+    # carry no side effects, so this is safe.
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
     # Skip auth for public endpoints and OpenAPI docs
     public_paths = {"/", "/health", "/docs", "/openapi.json", "/redoc"}
     if request.url.path in public_paths:
