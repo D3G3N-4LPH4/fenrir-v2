@@ -238,16 +238,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS configuration - restrict to specific origins/methods/headers.
-# Add remote dashboard origins (e.g. Replit) via FENRIR_CORS_ORIGINS. Wildcard
-# is unsupported here because allow_credentials=True (browsers reject '*' + creds).
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "X-API-Key", "Authorization"],
-)
+# NOTE: CORSMiddleware is registered LAST (see below) so it wraps the auth and
+# rate-limit middlewares as the outermost layer. Otherwise their early returns
+# (403/429) skip CORS and arrive at the browser with no Access-Control-Allow-Origin
+# header, which surfaces as a misleading "CORS policy" error instead of the real
+# status code.
 
 
 # ===================================================================
@@ -308,6 +303,20 @@ async def rate_limit_middleware(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-RateLimit-Remaining"] = str(rate_limiter.remaining(client_ip))
     return response
+
+
+# CORS — registered last so it is the OUTERMOST middleware and every response
+# (including 403/429 early-returns from the middlewares above) carries the
+# Access-Control-Allow-Origin header. Restricted to specific origins/methods/
+# headers; add remote dashboard origins (e.g. Replit) via FENRIR_CORS_ORIGINS.
+# Wildcard is unsupported because allow_credentials=True (browsers reject '*' + creds).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-API-Key", "Authorization"],
+)
 
 
 # ===================================================================
@@ -855,23 +864,26 @@ async def websocket_updates(websocket: WebSocket):
     to complete the handshake. Alternatively, the X-API-Key header is accepted
     for clients that support custom headers on upgrade requests.
     """
+    # If the client offered an 'authorization.<key>' subprotocol, we MUST echo it
+    # back in the handshake (websocket.accept(subprotocol=...)) — browsers reject
+    # the connection when the server doesn't select one of the offered protocols.
+    offered = [
+        p.strip()
+        for p in websocket.headers.get("sec-websocket-protocol", "").split(",")
+        if p.strip()
+    ]
+    auth_proto = next((p for p in offered if p.startswith("authorization.")), None)
+
     if FENRIR_API_KEY:
-        # Check Sec-WebSocket-Protocol subprotocol (works in browsers)
-        protocols = websocket.headers.get("sec-websocket-protocol", "")
-        api_key = ""
-        for proto in protocols.split(","):
-            proto = proto.strip()
-            if proto.startswith("authorization."):
-                api_key = proto[len("authorization.") :]
-                break
-        # Fallback: check X-API-Key header (works in non-browser clients)
+        # Prefer the subprotocol (works in browsers); fall back to X-API-Key header.
+        api_key = auth_proto[len("authorization.") :] if auth_proto else ""
         if not api_key:
             api_key = websocket.headers.get("x-api-key", "")
         if api_key != FENRIR_API_KEY:
             await websocket.close(code=4003, reason="Invalid API key")
             return
 
-    await websocket.accept()
+    await websocket.accept(subprotocol=auth_proto)
     active_websockets.append(websocket)
 
     try:
