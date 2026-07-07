@@ -15,10 +15,16 @@ from enum import Enum
 from logging.handlers import RotatingFileHandler
 from typing import TYPE_CHECKING, Any, TypedDict
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+# Load .env so the server's own settings (FENRIR_API_KEY, FENRIR_DEV_MODE,
+# FENRIR_CORS_ORIGINS, rate limits) can be set there — they're read via
+# os.getenv at import time, before any BotConfig loads .env itself.
+load_dotenv()
 
 # Import Fenrir bot components. The real symbols are imported unconditionally
 # for type checking; at runtime they may be absent, in which case fallbacks are
