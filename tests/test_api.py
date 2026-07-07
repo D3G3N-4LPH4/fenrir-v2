@@ -1174,3 +1174,39 @@ class TestStrategySwitching:
     async def test_enable_when_stopped_400(self, client_no_auth: AsyncClient):
         resp = await client_no_auth.post("/bot/strategies/sniper/enable")
         assert resp.status_code == 400
+
+
+# ===================================================================
+#  CORS origins (dashboard access, incl. remote/Replit)
+# ===================================================================
+
+
+class TestCorsOrigins:
+    def test_defaults_when_unset(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("FENRIR_CORS_ORIGINS", raising=False)
+        origins = server_module._parse_cors_origins()
+        assert "http://localhost:5173" in origins
+        assert all(o.startswith("http://localhost") for o in origins)
+
+    def test_extra_origins_from_env_appended_and_deduped(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv(
+            "FENRIR_CORS_ORIGINS",
+            "https://foo.repl.co, https://foo.replit.app , http://localhost:5173",
+        )
+        origins = server_module._parse_cors_origins()
+        assert "https://foo.repl.co" in origins
+        assert "https://foo.replit.app" in origins
+        # localhost:5173 is a default — must not be duplicated
+        assert origins.count("http://localhost:5173") == 1
+
+    def test_no_wildcard_accepted(self, monkeypatch: pytest.MonkeyPatch):
+        # '*' would be a literal origin string, never a wildcard — credentials
+        # mode means it can't match all origins anyway. Just assert it's opt-in.
+        monkeypatch.delenv("FENRIR_CORS_ORIGINS", raising=False)
+        assert "*" not in server_module._parse_cors_origins()
+
+    @pytest.mark.asyncio
+    async def test_middleware_echoes_allowed_origin(self, client_no_auth: AsyncClient):
+        resp = await client_no_auth.get("/health", headers={"Origin": "http://localhost:5173"})
+        assert resp.status_code == 200
+        assert resp.headers.get("access-control-allow-origin") == "http://localhost:5173"
