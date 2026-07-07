@@ -147,7 +147,7 @@ def register_cors_origin(url: str) -> None:
     Only touches that one key; other lines (secrets) are preserved untouched and
     never printed.
     """
-    lines = ENV_FILE.read_text().splitlines() if ENV_FILE.exists() else []
+    lines = ENV_FILE.read_text(encoding="utf-8").splitlines() if ENV_FILE.exists() else []
     key = "FENRIR_CORS_ORIGINS="
     out: list[str] = []
     found = False
@@ -165,7 +165,7 @@ def register_cors_origin(url: str) -> None:
             out.append("")
         out.append("# Remote dashboard origin(s) allowed by CORS (added by scripts/tunnel.py)")
         out.append(key + url)
-    ENV_FILE.write_text("\n".join(out) + "\n")
+    ENV_FILE.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
 def print_notes(url: str) -> None:
