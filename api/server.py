@@ -867,7 +867,11 @@ async def websocket_updates(websocket: WebSocket):
     # If the client offered an 'authorization.<key>' subprotocol, we MUST echo it
     # back in the handshake (websocket.accept(subprotocol=...)) — browsers reject
     # the connection when the server doesn't select one of the offered protocols.
-    offered = [p.strip() for p in websocket.headers.get("sec-websocket-protocol", "").split(",") if p.strip()]
+    offered = [
+        p.strip()
+        for p in websocket.headers.get("sec-websocket-protocol", "").split(",")
+        if p.strip()
+    ]
     auth_proto = next((p for p in offered if p.startswith("authorization.")), None)
 
     if FENRIR_API_KEY:
