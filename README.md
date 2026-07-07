@@ -182,6 +182,10 @@ DYNAMIC_PRIORITY_FEE_ENABLED=false
 # Web API
 FENRIR_API_KEY=your_secret_key
 FENRIR_DEV_MODE=false       # set true to skip auth locally
+# Extra browser origins allowed to call the API (comma-separated) — e.g. a
+# remote/Replit-hosted dashboard. localhost dev ports are always allowed.
+# No wildcard: allow_credentials is on, so origins must be listed explicitly.
+FENRIR_CORS_ORIGINS=https://your-repl.replit.app,https://your-repl.repl.co
 ```
 
 Key `BotConfig` fields (can also be set in `config/default.json`):

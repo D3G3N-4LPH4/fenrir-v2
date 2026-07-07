@@ -147,6 +147,24 @@ rate_limiter = RateLimiter(max_requests=_rate_limit_max, window_seconds=_rate_li
 FENRIR_API_KEY = os.getenv("FENRIR_API_KEY", "")
 FENRIR_DEV_MODE = os.getenv("FENRIR_DEV_MODE", "false").lower() == "true"
 
+
+def _parse_cors_origins() -> list[str]:
+    """Allowed browser origins for the dashboard.
+
+    Local dev ports by default; add remote origins (e.g. a Replit-hosted
+    dashboard) via FENRIR_CORS_ORIGINS as a comma-separated list. A wildcard
+    ('*') is intentionally NOT supported because allow_credentials=True — the
+    browser rejects the wildcard+credentials combination, so origins must be
+    listed explicitly.
+    """
+    defaults = ["http://localhost:5173", "http://localhost:5174", "http://localhost:3001"]
+    extra = [o.strip() for o in os.getenv("FENRIR_CORS_ORIGINS", "").split(",") if o.strip()]
+    # De-dupe while preserving order.
+    return list(dict.fromkeys(defaults + extra))
+
+
+CORS_ORIGINS = _parse_cors_origins()
+
 # Global bot instance and state
 bot_instance: FenrirBot | None = None
 bot_task: asyncio.Task | None = None
@@ -214,10 +232,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS configuration - restrict to specific methods and headers
+# CORS configuration - restrict to specific origins/methods/headers.
+# Add remote dashboard origins (e.g. Replit) via FENRIR_CORS_ORIGINS. Wildcard
+# is unsupported here because allow_credentials=True (browsers reject '*' + creds).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3001"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "X-API-Key", "Authorization"],
