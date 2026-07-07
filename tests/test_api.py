@@ -284,6 +284,21 @@ class TestBotStatusEndpoint:
         assert body["status"] == "error"
         assert body["error"] == "Connection lost"
 
+    @pytest.mark.asyncio
+    async def test_status_ok_with_staged_config_without_mode(self, client_no_auth: AsyncClient):
+        """A config staged via POST /bot/config while stopped has no 'mode' key.
+
+        Regression: /bot/status did bot_state["config"]["mode"], which raised
+        KeyError('mode') → 500 on every poll once the dashboard saved a setting
+        while the bot was stopped.
+        """
+        server_module.bot_state["status"] = "stopped"
+        server_module.bot_state["config"] = {"market_scanner_enabled": True, "buy_amount_sol": 0.01}
+
+        resp = await client_no_auth.get("/bot/status")
+        assert resp.status_code == 200
+        assert resp.json()["mode"] is None
+
 
 class TestBotPositionsEndpoint:
     """Tests for GET /bot/positions."""
