@@ -173,6 +173,25 @@ class TestAuthMiddleware:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
+    async def test_cors_preflight_not_blocked_by_auth(self, client_with_key: AsyncClient):
+        """OPTIONS preflight must pass the auth middleware so CORS can answer it.
+
+        Browsers send preflight requests without the X-API-Key header; if the
+        auth middleware rejects them with 403, every cross-origin request from
+        the dashboard fails. The preflight should reach CORSMiddleware (200).
+        """
+        resp = await client_with_key.options(
+            "/bot/status",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "x-api-key",
+            },
+        )
+        assert resp.status_code != 403, "preflight was blocked by the auth middleware"
+        assert resp.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+    @pytest.mark.asyncio
     async def test_no_key_no_dev_mode_returns_500(self):
         """When FENRIR_API_KEY is empty AND dev mode is off, middleware returns 500."""
         original_key = server_module.FENRIR_API_KEY
