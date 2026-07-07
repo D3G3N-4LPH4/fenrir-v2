@@ -55,11 +55,13 @@ export default function SettingsPanel({ config, onSave }: Props) {
 
       <div className="setting-row">
         <div className="setting-label">
-          <span className="setting-name">Market scanner</span>
+          <label className="setting-name" htmlFor="market_scanner_enabled">Market scanner</label>
           <span className="setting-hint">MARKET_SCANNER_ENABLED</span>
         </div>
         <label className="toggle">
           <input
+            id="market_scanner_enabled"
+            name="market_scanner_enabled"
             type="checkbox"
             checked={form.market_scanner_enabled}
             onChange={e => set('market_scanner_enabled', e.target.checked)}
@@ -70,10 +72,11 @@ export default function SettingsPanel({ config, onSave }: Props) {
 
       <div className="setting-row">
         <div className="setting-label">
-          <span className="setting-name">Global daily SOL limit</span>
+          <label className="setting-name" htmlFor="global_daily_sol_limit">Global daily SOL limit</label>
           <span className="setting-hint">GLOBAL_DAILY_SOL_LIMIT · 0 = disabled</span>
         </div>
         <input
+          id="global_daily_sol_limit" name="global_daily_sol_limit"
           type="number" step="0.1" min="0" className="setting-input"
           value={form.global_daily_sol_limit}
           onChange={e => set('global_daily_sol_limit', Number(e.target.value))}
@@ -82,10 +85,11 @@ export default function SettingsPanel({ config, onSave }: Props) {
 
       <div className="setting-row">
         <div className="setting-label">
-          <span className="setting-name">Buy amount</span>
+          <label className="setting-name" htmlFor="buy_amount_sol">Buy amount</label>
           <span className="setting-hint">BUY_AMOUNT_SOL per trade</span>
         </div>
         <input
+          id="buy_amount_sol" name="buy_amount_sol"
           type="number" step="0.01" min="0" className="setting-input"
           value={form.buy_amount_sol}
           onChange={e => set('buy_amount_sol', Number(e.target.value))}
@@ -94,10 +98,11 @@ export default function SettingsPanel({ config, onSave }: Props) {
 
       <div className="setting-row">
         <div className="setting-label">
-          <span className="setting-name">Mid-cap min USD</span>
+          <label className="setting-name" htmlFor="mid_cap_min_usd">Mid-cap min USD</label>
           <span className="setting-hint">mid_cap_min_usd</span>
         </div>
         <input
+          id="mid_cap_min_usd" name="mid_cap_min_usd"
           type="number" step="10000" min="0" className="setting-input"
           value={form.mid_cap_min_usd}
           onChange={e => set('mid_cap_min_usd', Number(e.target.value))}
@@ -106,10 +111,11 @@ export default function SettingsPanel({ config, onSave }: Props) {
 
       <div className="setting-row">
         <div className="setting-label">
-          <span className="setting-name">Large-cap min USD</span>
+          <label className="setting-name" htmlFor="large_cap_min_usd">Large-cap min USD</label>
           <span className="setting-hint">large_cap_min_usd</span>
         </div>
         <input
+          id="large_cap_min_usd" name="large_cap_min_usd"
           type="number" step="50000" min="0" className="setting-input"
           value={form.large_cap_min_usd}
           onChange={e => set('large_cap_min_usd', Number(e.target.value))}
@@ -118,10 +124,11 @@ export default function SettingsPanel({ config, onSave }: Props) {
 
       <div className="setting-row">
         <div className="setting-label">
-          <span className="setting-name">Scanner max positions</span>
+          <label className="setting-name" htmlFor="scanner_max_positions">Scanner max positions</label>
           <span className="setting-hint">scanner_max_positions</span>
         </div>
         <input
+          id="scanner_max_positions" name="scanner_max_positions"
           type="number" step="1" min="0" className="setting-input"
           value={form.scanner_max_positions}
           onChange={e => set('scanner_max_positions', Math.round(Number(e.target.value)))}
@@ -130,10 +137,11 @@ export default function SettingsPanel({ config, onSave }: Props) {
 
       <div className="setting-row setting-row-range">
         <div className="setting-label">
-          <span className="setting-name">Confidence gate</span>
+          <label className="setting-name" htmlFor="ai_min_confidence_to_buy">Confidence gate</label>
           <span className="setting-hint">ai_min_confidence_to_buy — {form.ai_min_confidence_to_buy.toFixed(2)}</span>
         </div>
         <input
+          id="ai_min_confidence_to_buy" name="ai_min_confidence_to_buy"
           type="range" min="0" max="1" step="0.01" className="setting-range"
           value={form.ai_min_confidence_to_buy}
           onChange={e => set('ai_min_confidence_to_buy', Number(e.target.value))}

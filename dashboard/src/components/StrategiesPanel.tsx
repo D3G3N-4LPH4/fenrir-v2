@@ -51,6 +51,9 @@ export default function StrategiesPanel({ strategies, isRunning, onToggle }: Pro
               </div>
               <label className="strat-toggle">
                 <input
+                  id={`strategy-${s.strategy_id}`}
+                  name={`strategy-${s.strategy_id}`}
+                  aria-label={`Enable ${s.display_name}`}
                   type="checkbox"
                   checked={s.active}
                   disabled={!isRunning || pending[s.strategy_id]}

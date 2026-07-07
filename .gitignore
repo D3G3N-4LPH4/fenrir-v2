@@ -8,6 +8,9 @@ dist/
 build/
 *.egg
 
+# TypeScript incremental build cache (dashboard)
+*.tsbuildinfo
+
 # Virtual environments
 venv/
 .venv/

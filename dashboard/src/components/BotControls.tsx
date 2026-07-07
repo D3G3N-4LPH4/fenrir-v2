@@ -25,6 +25,9 @@ export default function BotControls({ status, strategies, onStart, onStop, onPau
         {!running ? (
           <div className="ctrl-start">
             <select
+              id="bot-mode"
+              name="mode"
+              aria-label="Trading mode"
               value={selectedMode}
               onChange={e => setSelectedMode(e.target.value)}
               className="mode-select"
