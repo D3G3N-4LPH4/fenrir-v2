@@ -243,6 +243,31 @@ npm run dev
 > Run the API server on a different port: `uvicorn api.server:app --port 8001`
 > and update `dashboard/vite.config.ts` proxy target accordingly.
 
+### Remote dashboard (e.g. Replit) via an HTTPS tunnel
+
+A dashboard served over **HTTPS** (like a Replit-hosted page) can't call an
+`http://localhost` bot API — browsers block mixed content, and `wss://` needs TLS
+too. Expose the local API over HTTPS with a tunnel:
+
+```bash
+# Install cloudflared (no signup) or ngrok, then:
+python scripts/tunnel.py            # auto-detects provider, tunnels :8000
+```
+
+The script grabs the public `https://…` URL, adds it to `FENRIR_CORS_ORIGINS` in
+`.env`, and prints the next steps. Then:
+
+1. **(Re)start the API** so it reads the updated `.env` (`python -m api.server`).
+2. Point the remote dashboard's API base at the tunnel URL (`https://…`) and its
+   WebSocket at `wss://<same-host>/ws/updates`.
+3. Send your `FENRIR_API_KEY` as the `X-API-Key` header (or `FENRIR_DEV_MODE=true`
+   while testing).
+4. Also add the **dashboard's own origin** to `FENRIR_CORS_ORIGINS` (the script
+   adds the tunnel URL; the browser page's origin must be listed too).
+
+> Quick-tunnel URLs are random per run. For a stable URL use a named Cloudflare
+> tunnel or an ngrok reserved/static domain.
+
 ### Local model setup (OBLITERATUS)
 
 Run the AI brain fully offline on your own GPU with safety guardrails removed:
