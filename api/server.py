@@ -561,7 +561,10 @@ async def get_bot_status():
 
         return BotStatusResponse(
             status=bot_state["status"],
-            mode=bot_state["config"]["mode"] if bot_state["config"] else None,
+            # .get() not [...]: a config staged via POST /bot/config while the bot
+            # is stopped is a partial surface dict with no "mode" key. Using [...]
+            # there raised KeyError('mode') → every /bot/status poll 500'd.
+            mode=bot_state["config"].get("mode") if bot_state["config"] else None,
             uptime_seconds=get_uptime(),
             positions_count=positions_count,
             portfolio=portfolio,
