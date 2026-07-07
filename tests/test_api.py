@@ -192,6 +192,26 @@ class TestAuthMiddleware:
         assert resp.headers.get("access-control-allow-origin") == "http://localhost:5173"
 
     @pytest.mark.asyncio
+    async def test_rate_limited_response_has_cors_header(self, client_with_key: AsyncClient):
+        """A 429 must still carry Access-Control-Allow-Origin.
+
+        CORSMiddleware is the outermost middleware, so even the rate-limiter's
+        early 429 return gets CORS headers. Otherwise the browser reports a
+        misleading "No 'Access-Control-Allow-Origin'" error instead of the 429.
+        """
+        original_max = server_module.rate_limiter.max_requests
+        server_module.rate_limiter.max_requests = 0  # force an immediate 429
+        try:
+            resp = await client_with_key.get(
+                "/bot/status",
+                headers={"X-API-Key": "test-secret-key", "Origin": "http://localhost:5173"},
+            )
+            assert resp.status_code == 429
+            assert resp.headers.get("access-control-allow-origin") == "http://localhost:5173"
+        finally:
+            server_module.rate_limiter.max_requests = original_max
+
+    @pytest.mark.asyncio
     async def test_no_key_no_dev_mode_returns_500(self):
         """When FENRIR_API_KEY is empty AND dev mode is off, middleware returns 500."""
         original_key = server_module.FENRIR_API_KEY
@@ -825,8 +845,11 @@ class TestWebSocket:
             sync_client = TestClient(app)
             with sync_client.websocket_connect(
                 "/ws/updates",
-                headers={"Sec-WebSocket-Protocol": "authorization.ws-secret-key"},
+                subprotocols=["authorization.ws-secret-key"],
             ) as ws:
+                # The server MUST echo the offered subprotocol back, or real
+                # browsers reject the handshake (TestClient is more lenient).
+                assert ws.accepted_subprotocol == "authorization.ws-secret-key"
                 data = ws.receive_json()
                 assert data["event"] == "connected"
         finally:
