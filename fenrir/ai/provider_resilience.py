@@ -88,6 +88,42 @@ OVERFLOW_MARKERS = (
 _TERMINAL_STATUS = frozenset({400, 401, 403, 404, 422})
 _TRANSIENT_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 
+# Model-unavailable: a terminal error where a DIFFERENT model would likely
+# succeed — the current model is out of credits, unfunded (BYOK), or has no
+# reachable provider for this account. These drive model fallover (not plain
+# retry). An auth error (bad key) or a schema error is NOT here: those fail on
+# every model, so they stay classified 'terminal' and abort.
+MODEL_UNAVAILABLE_MARKERS = (
+    "credit balance",
+    "insufficient credit",
+    "requires more credit",
+    "purchase credits",
+    "add credits",
+    "more credits",
+    "payment required",
+    "no allowed providers",
+    "no allowed provider",
+    "no endpoints found",
+    "quota",
+    "billing",
+)
+
+
+class ModelUnavailableError(Exception):
+    """Raised when a model is out of credits / has no reachable provider.
+
+    Signals the fallback loop to try the next candidate model rather than abort.
+    """
+
+
+def is_model_unavailable(status: int | None, body: str) -> bool:
+    """True when the failure is model-specific (credits/provider) — try another model."""
+    if status == 402:
+        return True
+    b = body.lower()
+    return any(m in b for m in MODEL_UNAVAILABLE_MARKERS)
+
+
 # Backoff: 200ms × 2^min(attempt-1, 5) → 0.2, 0.4, 0.8 … capped ~6.4s.
 _BACKOFF_BASE_S = 0.200
 _BACKOFF_CAP_EXP = 5
@@ -146,6 +182,8 @@ class ProviderResilientCaller:
         http_referer: str | None = None,
         app_title: str | None = None,
         breaker: CircuitBreaker | None = None,
+        models: list[str] | None = None,
+        reprobe_interval_s: float = 300.0,
     ):
         self.api_key = api_key
         self.session = session
@@ -157,6 +195,16 @@ class ProviderResilientCaller:
         # Degradation state — survives across calls in this session
         self.allow_structured: bool = True
         self.allow_tools: bool = True
+
+        # Credit-aware model fallback. `models` is the ordered candidate list
+        # (primary first). When the preferred model is out of credits / has no
+        # provider, calls fail over to the next candidate and stick to it. Every
+        # `reprobe_interval_s` the preference resets to the primary so a
+        # topped-up primary is picked back up automatically.
+        self.models: list[str] = [m for m in (models or []) if m]
+        self.reprobe_interval_s = reprobe_interval_s
+        self._preferred_idx: int = 0
+        self._last_reprobe: float = time.monotonic()
 
     def _headers(self) -> dict:
         h = {
@@ -179,8 +227,75 @@ class ProviderResilientCaller:
         transient_retries: int = 2,
         deadline_s: float | None = None,
     ) -> dict[str, Any]:
+        """POST with credit-aware model fallback across the configured candidates.
+
+        Tries the preferred model first; on a model-unavailable error (out of
+        credits / no provider for this account) fails over to the next candidate
+        and sticks to the winner for subsequent calls. Preference resets to the
+        primary every ``reprobe_interval_s`` so a topped-up primary is picked back
+        up. The per-model retry/degradation machinery lives in
+        :meth:`_post_single_model`.
         """
-        POST to OpenRouter with capability degradation AND transient retry.
+        if self._breaker:
+            self._breaker.check()
+
+        candidates: list[str] = list(self.models)
+        if not candidates:
+            fallback_model = payload.get("model")
+            if isinstance(fallback_model, str) and fallback_model:
+                candidates = [fallback_model]
+        if not candidates:
+            raise RuntimeError("ProviderResilientCaller.post: no model to call")
+
+        now = time.monotonic()
+        if now - self._last_reprobe >= self.reprobe_interval_s:
+            self._preferred_idx = 0
+            self._last_reprobe = now
+        start_idx = min(self._preferred_idx, len(candidates) - 1)
+
+        last_unavailable: ModelUnavailableError | None = None
+        for idx in range(start_idx, len(candidates)):
+            model = candidates[idx]
+            try:
+                result = await self._post_single_model(
+                    model,
+                    payload,
+                    response_format,
+                    tools,
+                    tool_choice,
+                    max_retries,
+                    transient_retries,
+                    deadline_s,
+                )
+                if idx != self._preferred_idx:
+                    logger.warning("Model fallback active: now using '%s' (index %d)", model, idx)
+                self._preferred_idx = idx
+                return result
+            except ModelUnavailableError as exc:
+                last_unavailable = exc
+                logger.warning("Model '%s' unavailable (%s); trying next candidate", model, exc)
+                continue
+
+        # Every candidate from the preferred index onward is unavailable.
+        if self._breaker:
+            self._breaker.record_failure("all_models_unavailable")
+        if last_unavailable is not None:
+            raise last_unavailable
+        raise RuntimeError("ProviderResilientCaller: no model candidates to call")
+
+    async def _post_single_model(
+        self,
+        model: str,
+        payload: dict,
+        response_format: dict | None = None,
+        tools: list | None = None,
+        tool_choice: str = "auto",
+        max_retries: int = 3,
+        transient_retries: int = 2,
+        deadline_s: float | None = None,
+    ) -> dict[str, Any]:
+        """
+        POST one model to OpenRouter with capability degradation AND transient retry.
 
         Two independent retry mechanisms layered here:
 
@@ -218,11 +333,9 @@ class ProviderResilientCaller:
             Raw JSON response dict from OpenRouter.
 
         Raises:
+            ModelUnavailableError: this model is out of credits / has no provider.
             aiohttp.ClientResponseError / network error: after retries exhausted.
         """
-        if self._breaker:
-            self._breaker.check()
-
         headers = self._headers()
         start = time.monotonic()
         degraded_attempts = 0
@@ -231,8 +344,9 @@ class ProviderResilientCaller:
         hard_cap = max_retries + transient_retries + 2
 
         for _ in range(hard_cap):
-            # Build the final request for this attempt
+            # Build the final request for this attempt (model per candidate)
             request: dict = dict(payload)
+            request["model"] = model
             if response_format and self.allow_structured:
                 request["response_format"] = response_format
             if tools and self.allow_tools:
@@ -287,6 +401,12 @@ class ProviderResilientCaller:
                 transient_attempts += 1
                 await self._backoff_sleep(transient_attempts, transient_retries, f"HTTP {status}")
                 continue
+
+            # Model-specific failure (out of credits / no provider) → signal the
+            # fallback loop to try the next candidate. Not a breaker failure —
+            # it's expected and another model will likely succeed.
+            if is_model_unavailable(status, error_text):
+                raise ModelUnavailableError(f"HTTP {status}: {error_text[:160]}")
 
             # Terminal, overflow, or transient budget exhausted → give up.
             if self._breaker:

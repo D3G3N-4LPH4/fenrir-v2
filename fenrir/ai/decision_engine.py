@@ -143,9 +143,12 @@ class AITradingAnalyst:
         timeout_seconds: int = 30,
         breaker=None,
         db_path: str = "fenrir_trades.db",
+        fallback_models: list[str] | None = None,
     ):
         self.api_key = api_key
         self.model = model
+        # Ordered fallbacks tried when `model` is out of credits / has no provider.
+        self.fallback_models = list(fallback_models or [])
         self.temperature = temperature
         self.timeout = timeout_seconds
         self._breaker = breaker
@@ -173,6 +176,7 @@ class AITradingAnalyst:
                 session=self.session,
                 url=self.OPENROUTER_API,
                 breaker=self._breaker,
+                models=[self.model, *self.fallback_models],
             )
 
     async def close(self):
