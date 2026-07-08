@@ -144,6 +144,15 @@ class TestEnvParsing:
         monkeypatch.setenv("HELIUS_API_KEY", "hx-test")
         assert BotConfig().helius_api_key == "hx-test"
 
+    def test_ai_model_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert BotConfig().ai_model == "anthropic/claude-haiku-4-5"  # default
+        monkeypatch.setenv("AI_MODEL", "meta-llama/llama-3.3-70b-instruct")
+        assert BotConfig().ai_model == "meta-llama/llama-3.3-70b-instruct"
+
+    def test_ai_model_blank_env_keeps_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AI_MODEL", "   ")
+        assert BotConfig().ai_model == "anthropic/claude-haiku-4-5"
+
     def test_global_daily_sol_limit_default_and_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         assert BotConfig().global_daily_sol_limit == 0.0  # disabled by default
         monkeypatch.setenv("GLOBAL_DAILY_SOL_LIMIT", "0.5")

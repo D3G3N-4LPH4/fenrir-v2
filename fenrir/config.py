@@ -300,6 +300,12 @@ class BotConfig:
                 "ANTHROPIC_API_KEY", ""
             )
 
+        # Model is env-overridable so the operator can switch providers/models
+        # (e.g. off an out-of-credit BYOK model) without a code change.
+        env_ai_model = os.getenv("AI_MODEL", "").strip()
+        if env_ai_model:
+            self.ai_model = env_ai_model
+
         if not self.ai_local_model_url:
             self.ai_local_model_url = os.getenv(
                 "AI_LOCAL_MODEL_URL", "http://localhost:8000/v1/chat/completions"
