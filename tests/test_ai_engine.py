@@ -394,6 +394,47 @@ class TestAITradingAnalystTrackPrediction:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+class TestMarketSignalContext:
+    """Tests for ClaudeBrain._build_market_signal_context (AI decision context)."""
+
+    def test_none_when_no_signals(self, ai_enabled_config, mock_logger):
+        brain = ClaudeBrain(ai_enabled_config, mock_logger)
+        assert brain._build_market_signal_context({"token_address": "T"}) is None
+
+    def test_momentum_block(self, ai_enabled_config, mock_logger):
+        brain = ClaudeBrain(ai_enabled_config, mock_logger)
+        ctx = brain._build_market_signal_context(
+            {
+                "dex_volume_5m_usd": 30000.0,
+                "dex_txns_5m_buys": 120,
+                "dex_txns_5m_sells": 40,
+                "dex_buy_pressure_5m": 0.75,
+                "dex_price_change_1h_pct": 12.0,
+                "dex_liquidity_usd": 50000.0,
+            }
+        )
+        assert ctx is not None
+        assert "DexScreener momentum" in ctx
+        assert "120/40" in ctx
+        assert "75% buy pressure" in ctx
+        assert "1h +12.0%" in ctx
+
+    def test_rugcheck_block(self, ai_enabled_config, mock_logger):
+        brain = ClaudeBrain(ai_enabled_config, mock_logger)
+        ctx = brain._build_market_signal_context(
+            {"rugcheck_score": 7, "rugcheck_risks": [{"name": "Mutable metadata", "level": "warn"}]}
+        )
+        assert ctx is not None
+        assert "RugCheck risk 7/100" in ctx
+        assert "Mutable metadata" in ctx
+
+    def test_rugcheck_score_zero_with_no_risks(self, ai_enabled_config, mock_logger):
+        brain = ClaudeBrain(ai_enabled_config, mock_logger)
+        ctx = brain._build_market_signal_context({"rugcheck_score": 0, "rugcheck_risks": []})
+        assert ctx is not None
+        assert "none flagged" in ctx
+
+
 class TestClaudeBrainEvaluateEntry:
     """Tests for ClaudeBrain.evaluate_entry."""
 

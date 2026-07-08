@@ -382,6 +382,10 @@ class FenrirBot:
             if not sec.passed:
                 self.logger.info(f"Security filter rejected {symbol}: {sec}")
                 return
+            # Surface RugCheck signals to the AI decision context.
+            if "rugcheck_score" in sec.details:
+                token_data["rugcheck_score"] = sec.details.get("rugcheck_score")
+                token_data["rugcheck_risks"] = sec.details.get("rugcheck_risks")
 
         # ── Market data snapshot (data source + optional gate) ────────
         market_data = None
@@ -392,6 +396,14 @@ class FenrirBot:
             if self.config.market_filter_enabled and not mkt.passed:
                 self.logger.info(f"Market filter rejected {symbol}: {mkt}")
                 return
+            # Surface DexScreener momentum to the AI decision context.
+            if market_data is not None:
+                token_data["dex_volume_5m_usd"] = market_data.volume_5m_usd
+                token_data["dex_txns_5m_buys"] = market_data.txns_5m_buys
+                token_data["dex_txns_5m_sells"] = market_data.txns_5m_sells
+                token_data["dex_buy_pressure_5m"] = market_data.buy_pressure_5m
+                token_data["dex_price_change_1h_pct"] = market_data.price_change_1h_pct
+                token_data["dex_liquidity_usd"] = market_data.liquidity_usd
 
         # Route through each active strategy
         for strategy in self.strategies:

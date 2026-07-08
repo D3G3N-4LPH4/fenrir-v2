@@ -216,8 +216,11 @@ class ClaudeBrain:
             portfolio_context = self.memory.build_portfolio_context(positions)
             risk_context = self.memory.get_risk_appetite_adjustment()
 
-            # Merge optional strategy/historical context into memory_context
+            # Merge optional market-signal / strategy / historical context.
             extra_blocks = []
+            market_signal = self._build_market_signal_context(token_data)
+            if market_signal:
+                extra_blocks.append(market_signal)
             if strategy_context:
                 extra_blocks.append(strategy_context)
             if historical_context:
@@ -493,6 +496,43 @@ class ClaudeBrain:
         # Remove markdown heading syntax that could be misinterpreted
         value = value.replace("#", "").replace("```", "")
         return value.strip()
+
+    def _build_market_signal_context(self, token_data: dict) -> str | None:
+        """Concise DexScreener-momentum + RugCheck-risk block for the AI prompt.
+
+        Best-effort: emits only the lines whose signals are present in token_data
+        (populated by the bot from the market filter + security gate). Returns
+        None when neither is available so no empty block is injected.
+        """
+        lines: list[str] = []
+
+        vol_5m = token_data.get("dex_volume_5m_usd")
+        if vol_5m is not None:
+            parts = [f"5m vol ${vol_5m:,.0f}"]
+            buys = token_data.get("dex_txns_5m_buys")
+            sells = token_data.get("dex_txns_5m_sells")
+            if buys is not None and sells is not None:
+                parts.append(f"buys/sells {buys}/{sells}")
+            bp = token_data.get("dex_buy_pressure_5m")
+            if bp is not None:
+                parts.append(f"{bp * 100:.0f}% buy pressure")
+            ch_1h = token_data.get("dex_price_change_1h_pct")
+            if ch_1h is not None:
+                parts.append(f"1h {ch_1h:+.1f}%")
+            liq = token_data.get("dex_liquidity_usd")
+            if liq is not None:
+                parts.append(f"liq ${liq:,.0f}")
+            lines.append("DexScreener momentum: " + ", ".join(parts))
+
+        score = token_data.get("rugcheck_score")
+        if score is not None:
+            risks = token_data.get("rugcheck_risks") or []
+            risk_names = (
+                ", ".join(str(r.get("name", "?")) for r in risks) if risks else "none flagged"
+            )
+            lines.append(f"RugCheck risk {score}/100 (lower = safer); flags: {risk_names}")
+
+        return "\n".join(lines) if lines else None
 
     def _build_token_metadata(self, token_data: dict) -> TokenMetadata:
         """Convert PumpFunMonitor token_data dict to TokenMetadata for AI analysis."""
