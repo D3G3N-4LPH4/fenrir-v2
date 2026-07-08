@@ -276,6 +276,70 @@ class TestSecurityFilter:
         assert result.passed is False
         assert any("Top-10 holders" in f for f in result.failures)
 
+    # ── RugCheck gate ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _passing_sf(**cfg: object) -> SecurityFilter:
+        """SecurityFilter whose on-chain checks all pass, for RugCheck-only tests."""
+        sf = SecurityFilter(SecurityFilterConfig(**cfg), RPC_URL)  # type: ignore[arg-type]
+        sf._fetch_mint_info = AsyncMock(return_value=_clean_mint_info())  # type: ignore[method-assign]
+        sf._fetch_lp_burned_pct = AsyncMock(return_value=99.0)  # type: ignore[method-assign]
+        sf._fetch_top10_holder_pct = AsyncMock(return_value=12.0)  # type: ignore[method-assign]
+        return sf
+
+    async def test_rugcheck_disabled_not_called(self) -> None:
+        sf = self._passing_sf()  # rugcheck_enabled defaults False
+        sf._fetch_rugcheck_summary = AsyncMock(return_value={"score_normalised": 99})  # type: ignore[method-assign]
+        result = await sf.check(TOKEN, LP_MINT)
+        assert result.passed is True
+        sf._fetch_rugcheck_summary.assert_not_called()  # type: ignore[attr-defined]
+        assert "rugcheck_score" not in result.details
+
+    async def test_rugcheck_low_score_passes(self) -> None:
+        sf = self._passing_sf(rugcheck_enabled=True, rugcheck_max_score=40.0)
+        summary = {
+            "score_normalised": 7,
+            "risks": [{"name": "Mutable metadata", "level": "warn"}],
+            "lpLockedPct": 3.1,
+        }
+        sf._fetch_rugcheck_summary = AsyncMock(return_value=summary)  # type: ignore[method-assign]
+        result = await sf.check(TOKEN, LP_MINT)
+        assert result.passed is True
+        assert result.details["rugcheck_score"] == 7
+        assert result.details["lp_locked_pct"] == 3.1
+
+    async def test_rugcheck_high_score_fails(self) -> None:
+        sf = self._passing_sf(rugcheck_enabled=True, rugcheck_max_score=40.0)
+        sf._fetch_rugcheck_summary = AsyncMock(return_value={"score_normalised": 80, "risks": []})  # type: ignore[method-assign]
+        result = await sf.check(TOKEN, LP_MINT)
+        assert result.passed is False
+        assert any("RugCheck risk score" in f for f in result.failures)
+
+    async def test_rugcheck_danger_risk_fails_despite_low_score(self) -> None:
+        sf = self._passing_sf(rugcheck_enabled=True, rugcheck_max_score=40.0)
+        summary = {
+            "score_normalised": 5,
+            "risks": [{"name": "Mint authority still enabled", "level": "danger"}],
+        }
+        sf._fetch_rugcheck_summary = AsyncMock(return_value=summary)  # type: ignore[method-assign]
+        result = await sf.check(TOKEN, LP_MINT)
+        assert result.passed is False
+        assert any("danger" in f.lower() for f in result.failures)
+
+    async def test_rugcheck_unavailable_fail_open_passes(self) -> None:
+        sf = self._passing_sf(rugcheck_enabled=True, rugcheck_fail_open=True)
+        sf._fetch_rugcheck_summary = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        result = await sf.check(TOKEN, LP_MINT)
+        assert result.passed is True
+        assert any("RugCheck unavailable" in w for w in result.warnings)
+
+    async def test_rugcheck_unavailable_fail_closed_fails(self) -> None:
+        sf = self._passing_sf(rugcheck_enabled=True, rugcheck_fail_open=False)
+        sf._fetch_rugcheck_summary = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        result = await sf.check(TOKEN, LP_MINT)
+        assert result.passed is False
+        assert any("RugCheck unavailable" in f for f in result.failures)
+
     async def test_holder_fetch_error_fail_closed(self) -> None:
         sf = SecurityFilter(SecurityFilterConfig(fail_open_on_holder_fetch_error=False), RPC_URL)
         sf._fetch_mint_info = AsyncMock(return_value=_clean_mint_info())  # type: ignore[method-assign]

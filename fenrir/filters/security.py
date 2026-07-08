@@ -26,6 +26,9 @@ from typing import Any
 
 logger = logging.getLogger("FENRIR.SecurityFilter")
 
+# RugCheck (rugcheck.xyz) — keyless risk-scoring API for Solana tokens.
+RUGCHECK_API = "https://api.rugcheck.xyz/v1"
+
 # Well-known Solana burn / dead addresses
 BURN_ADDRESSES: frozenset[str] = frozenset(
     {
@@ -69,6 +72,20 @@ class SecurityFilterConfig:
     fail_open_on_holder_fetch_error: bool = False
     # Timeout for each RPC call in seconds
     rpc_timeout_seconds: float = 3.0
+
+    # ── RugCheck (rugcheck.xyz) third-party risk score — optional gate ──
+    # Off by default. When on, fetch RugCheck's keyless risk summary and reject
+    # tokens above a normalised risk score or with a "danger"-level risk.
+    rugcheck_enabled: bool = False
+    # Reject if the normalised risk score exceeds this (0-100, LOWER = safer;
+    # a safe blue-chip meme like BONK scores ~7).
+    rugcheck_max_score: float = 40.0
+    # Reject if RugCheck flags any risk at "danger" level (e.g. mint live, LP unlocked).
+    rugcheck_reject_on_danger: bool = True
+    # If RugCheck is unreachable, warn and continue (True) vs reject (False).
+    # Defaults True so a third-party outage can't wedge trading.
+    rugcheck_fail_open: bool = True
+    rugcheck_timeout_seconds: float = 4.0
 
 
 class SecurityFilter:
@@ -182,7 +199,67 @@ class SecurityFilter:
                     f"Top-10 holders own {top10_pct:.1f}% > max {self.config.max_top10_holder_pct:.0f}%"
                 )
 
+        # 5. RugCheck third-party risk score (optional). Only when still passing
+        # — no point scoring a token the on-chain checks already rejected.
+        if self.config.rugcheck_enabled and result.passed:
+            await self._run_rugcheck(token_address, result)
+
         return result
+
+    # ── RugCheck helpers ──────────────────────────────────────────────
+
+    async def _fetch_rugcheck_summary(self, token_address: str) -> dict[str, Any] | None:
+        """Fetch RugCheck's keyless risk summary. Returns parsed dict or None on error."""
+        try:
+            session = await self._get_session()
+            url = f"{RUGCHECK_API}/tokens/{token_address}/report/summary"
+            async with session.get(url, timeout=self.config.rugcheck_timeout_seconds) as resp:
+                if resp.status != 200:
+                    logger.warning(f"RugCheck HTTP {resp.status} for {token_address[:8]}...")
+                    return None
+                data = await resp.json()
+                return data if isinstance(data, dict) else None
+        except TimeoutError:
+            logger.warning(f"Timeout fetching RugCheck for {token_address[:8]}...")
+            return None
+        except Exception as e:
+            logger.warning(f"Error fetching RugCheck for {token_address[:8]}...: {e}")
+            return None
+
+    async def _run_rugcheck(self, token_address: str, result: SecurityCheckResult) -> None:
+        """Evaluate RugCheck's risk summary and mutate `result` in place.
+
+        A higher normalised score means MORE risk. Records the score, flagged
+        risks, and LP-locked % into result.details so the AI layer can read them.
+        """
+        summary = await self._fetch_rugcheck_summary(token_address)
+        if summary is None:
+            if self.config.rugcheck_fail_open:
+                result.warnings.append("RugCheck unavailable — skipping risk score")
+            else:
+                result.passed = False
+                result.failures.append("RugCheck unavailable (fail-closed)")
+            return
+
+        score = summary.get("score_normalised")
+        risks = summary.get("risks") or []
+        danger = [r.get("name", "?") for r in risks if str(r.get("level", "")).lower() == "danger"]
+
+        result.details["rugcheck_score"] = score
+        result.details["rugcheck_risks"] = [
+            {"name": r.get("name"), "level": r.get("level")} for r in risks
+        ]
+        result.details["lp_locked_pct"] = summary.get("lpLockedPct")
+
+        if self.config.rugcheck_reject_on_danger and danger:
+            result.passed = False
+            result.failures.append(f"RugCheck danger risks: {', '.join(danger)}")
+            return
+        if score is not None and score > self.config.rugcheck_max_score:
+            result.passed = False
+            result.failures.append(
+                f"RugCheck risk score {score} > max {self.config.rugcheck_max_score:.0f}"
+            )
 
     # ── RPC helpers ───────────────────────────────────────────────────
 

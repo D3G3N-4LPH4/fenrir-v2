@@ -228,6 +228,13 @@ class BotConfig:
     security_min_lp_burned_pct: float = 90.0
     security_max_top10_holder_pct: float = 30.0
     security_fail_open_on_holder_fetch_error: bool = False
+    # RugCheck (rugcheck.xyz) keyless third-party risk score — optional add-on to
+    # the security gate. Off by default; rejects tokens above a normalised risk
+    # score (0-100, lower = safer) or with a "danger"-level risk.
+    rugcheck_enabled: bool = False
+    rugcheck_max_score: float = 40.0
+    rugcheck_reject_on_danger: bool = True
+    rugcheck_fail_open: bool = True
     # Optional Helius key for enriched holder data (falls back to public RPC).
     helius_api_key: str = ""
     # Two-tier DexScreener market-condition filter.
@@ -329,6 +336,12 @@ class BotConfig:
             "SECURITY_FAIL_OPEN_ON_HOLDER_FETCH_ERROR",
             self.security_fail_open_on_holder_fetch_error,
         )
+        self.rugcheck_enabled = _env_bool("RUGCHECK_ENABLED", self.rugcheck_enabled)
+        self.rugcheck_max_score = _env_float("RUGCHECK_MAX_SCORE", self.rugcheck_max_score)
+        self.rugcheck_reject_on_danger = _env_bool(
+            "RUGCHECK_REJECT_ON_DANGER", self.rugcheck_reject_on_danger
+        )
+        self.rugcheck_fail_open = _env_bool("RUGCHECK_FAIL_OPEN", self.rugcheck_fail_open)
         if not self.helius_api_key:
             self.helius_api_key = os.getenv("HELIUS_API_KEY", "")
         self.market_filter_enabled = _env_bool("MARKET_FILTER_ENABLED", self.market_filter_enabled)
@@ -399,6 +412,10 @@ class BotConfig:
             min_lp_burned_pct=self.security_min_lp_burned_pct,
             max_top10_holder_pct=self.security_max_top10_holder_pct,
             fail_open_on_holder_fetch_error=self.security_fail_open_on_holder_fetch_error,
+            rugcheck_enabled=self.rugcheck_enabled,
+            rugcheck_max_score=self.rugcheck_max_score,
+            rugcheck_reject_on_danger=self.rugcheck_reject_on_danger,
+            rugcheck_fail_open=self.rugcheck_fail_open,
         )
 
     def build_market_filter_config(self) -> MarketFilterConfig:
@@ -497,5 +514,8 @@ class BotConfig:
 
         if not (0.0 <= self.security_max_top10_holder_pct <= 100.0):
             errors.append("security_max_top10_holder_pct must be between 0 and 100")
+
+        if not (0.0 <= self.rugcheck_max_score <= 100.0):
+            errors.append("rugcheck_max_score must be between 0 and 100")
 
         return errors
