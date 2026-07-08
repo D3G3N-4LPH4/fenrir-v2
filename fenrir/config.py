@@ -219,6 +219,11 @@ class BotConfig:
     scanner_cooldown_minutes: float = 30.0
     scanner_daily_budget_sol: float = 0.0  # 0 = auto (5 × buy_amount_sol)
     scanner_max_positions: int = 3
+    # DexScreener "boosts" as an extra discovery source: memes actively paying for
+    # visibility. Off by default; enriched via DexScreener pair data and tiered by
+    # mcap like the Jupiter feed. Env: SCANNER_DEX_BOOSTS_ENABLED.
+    scanner_dex_boosts_enabled: bool = False
+    scanner_dex_timeout_seconds: float = 6.0
 
     # ── Pre-trade filters (fenrir.filters) ─────────────────────────────
     # Security hard-gate: mint/freeze authority, LP burn, holder concentration.
@@ -389,6 +394,9 @@ class BotConfig:
         env_scan_strats = os.getenv("SCANNER_CATEGORIES", "")
         if env_scan_strats:
             self.scanner_categories = [s.strip() for s in env_scan_strats.split(",") if s.strip()]
+        self.scanner_dex_boosts_enabled = _env_bool(
+            "SCANNER_DEX_BOOSTS_ENABLED", self.scanner_dex_boosts_enabled
+        )
 
     @classmethod
     def from_mode(cls, mode: TradingMode, **overrides) -> BotConfig:  # type: ignore[override]

@@ -24,6 +24,19 @@ from fenrir.logger import FenrirLogger
 
 __all__ = ["MarketScanner"]
 
+# DexScreener boosts = tokens actively paying for visibility (a meme marketing
+# signal). The list is chain-agnostic; we keep Solana and enrich each via the
+# tokens endpoint for mcap/liquidity/momentum.
+DEXSCREENER_BOOSTS_TOP = "https://api.dexscreener.com/token-boosts/top/v1"
+DEXSCREENER_TOKENS = "https://api.dexscreener.com/latest/dex/tokens/"
+
+
+def _to_float(value: object) -> float | None:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
 
 class MarketScanner:
     """Periodic mid/large-cap candidate discovery via Jupiter trending lists."""
@@ -34,6 +47,7 @@ class MarketScanner:
         self.logger = logger
         self.running = False
         self._cooldown: dict[str, datetime] = {}
+        self._dex_session: Any = None  # aiohttp session for DexScreener, lazy
 
     async def start_scanning(self, on_candidate: Callable[[dict], Awaitable[None]]) -> None:
         """Loop: scan on a cadence and emit tiered candidates to on_candidate."""
@@ -51,6 +65,8 @@ class MarketScanner:
 
     async def stop(self) -> None:
         self.running = False
+        if self._dex_session is not None and not self._dex_session.closed:
+            await self._dex_session.close()
 
     async def _scan_once(self, on_candidate: Callable[[dict], Awaitable[None]]) -> None:
         now = datetime.now()
@@ -75,8 +91,137 @@ class MarketScanner:
                 self._cooldown[mint] = now
                 await on_candidate(candidate)
                 emitted += 1
+        # DexScreener boosts — actively-marketed memes (opt-in extra source).
+        if self.config.scanner_dex_boosts_enabled:
+            emitted += await self._scan_dex_boosts(on_candidate, now, seen, emitted)
         if emitted:
             self.logger.info(f"Scanner emitted {emitted} candidate(s) this cycle")
+
+    # ── DexScreener boosts discovery ──────────────────────────────────
+
+    async def _get_dex_session(self) -> Any:
+        if self._dex_session is None or self._dex_session.closed:
+            import aiohttp
+
+            self._dex_session = aiohttp.ClientSession()
+        return self._dex_session
+
+    async def _scan_dex_boosts(
+        self,
+        on_candidate: Callable[[dict], Awaitable[None]],
+        now: datetime,
+        seen: set[str],
+        already_emitted: int,
+    ) -> int:
+        """Fetch boosted Solana tokens, enrich + tier them, emit survivors."""
+        cap = self.config.scanner_max_candidates_per_cycle
+        emitted = 0
+        try:
+            boosts = await self._fetch_dex_boosts()
+        except Exception as e:
+            self.logger.error("DexScreener boosts fetch failed", e)
+            return 0
+        for boost in boosts:
+            if already_emitted + emitted >= cap:
+                break
+            mint = boost.get("tokenAddress")
+            if not mint or mint in seen:
+                continue
+            seen.add(mint)
+            pair = await self._fetch_dex_pair(mint)
+            if pair is None:
+                continue
+            candidate = self._evaluate_dex(boost, pair, now)
+            if candidate is None:
+                continue
+            self._cooldown[mint] = now
+            await on_candidate(candidate)
+            emitted += 1
+        return emitted
+
+    async def _fetch_dex_boosts(self) -> list[dict]:
+        """Return the top boosted tokens on Solana (or [] on error)."""
+        session = await self._get_dex_session()
+        async with session.get(
+            DEXSCREENER_BOOSTS_TOP, timeout=self.config.scanner_dex_timeout_seconds
+        ) as resp:
+            if resp.status != 200:
+                self.logger.warning(f"DexScreener boosts HTTP {resp.status}")
+                return []
+            data = await resp.json()
+        if not isinstance(data, list):
+            return []
+        return [b for b in data if isinstance(b, dict) and b.get("chainId") == "solana"]
+
+    async def _fetch_dex_pair(self, address: str) -> dict | None:
+        """Fetch a token's deepest-liquidity DexScreener pair (or None)."""
+        session = await self._get_dex_session()
+        url = f"{DEXSCREENER_TOKENS}{address}"
+        async with session.get(url, timeout=self.config.scanner_dex_timeout_seconds) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+        pairs = data.get("pairs") if isinstance(data, dict) else None
+        if not pairs:
+            return None
+        best: dict = max(pairs, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0.0)
+        return best
+
+    def _evaluate_dex(self, boost: dict, pair: dict, now: datetime) -> dict | None:
+        """Apply cooldown/tier/liquidity filters to a boosted token."""
+        mint = boost.get("tokenAddress")
+        if not mint:
+            return None
+        last = self._cooldown.get(mint)
+        if last and (now - last).total_seconds() < self.config.scanner_cooldown_minutes * 60:
+            return None
+        mcap = _to_float(pair.get("marketCap")) or _to_float(pair.get("fdv")) or 0.0
+        liquidity = _to_float((pair.get("liquidity") or {}).get("usd")) or 0.0
+        tier = self._tier(mcap)
+        if tier is None:
+            return None
+        if liquidity < self.config.scanner_min_liquidity_usd:
+            return None
+        return self._build_dex_candidate(boost, pair, tier)
+
+    @staticmethod
+    def _build_dex_candidate(boost: dict, pair: dict, tier: str) -> dict:
+        """Shape a boosted token + its pair into the token_data dict the AI/engine use.
+
+        The dex_* keys mirror what the bot attaches on the launch path so the AI's
+        market-signal context works for scanner candidates too. decimals defaults
+        to 6: boosted memes are overwhelmingly pump.fun-origin (always 6-decimal),
+        and the engine falls back to 6 when unset.
+        """
+        base = pair.get("baseToken") or {}
+        vol = pair.get("volume") or {}
+        txns_5m = (pair.get("txns") or {}).get("m5") or {}
+        price_change = pair.get("priceChange") or {}
+        liquidity = _to_float((pair.get("liquidity") or {}).get("usd"))
+        buys = int(txns_5m.get("buys") or 0)
+        sells = int(txns_5m.get("sells") or 0)
+        total = buys + sells
+        return {
+            "token_address": boost.get("tokenAddress"),
+            "symbol": base.get("symbol", "???"),
+            "name": base.get("name", "Unknown"),
+            "tier": tier,
+            "market_cap_usd": _to_float(pair.get("marketCap")) or _to_float(pair.get("fdv")),
+            "liquidity_usd": liquidity,
+            "usd_price": _to_float(pair.get("priceUsd")),
+            "decimals": 6,
+            "source": "dexscreener_boost",
+            "boost_amount": boost.get("totalAmount"),
+            "migrated": True,  # boosted tokens trade on an AMM, not a pump curve
+            "bonding_curve_state": None,
+            # DexScreener momentum → AI decision context (read by brain).
+            "dex_volume_5m_usd": _to_float(vol.get("m5")) or 0.0,
+            "dex_txns_5m_buys": buys,
+            "dex_txns_5m_sells": sells,
+            "dex_buy_pressure_5m": (buys / total) if total > 0 else 0.5,
+            "dex_price_change_1h_pct": _to_float(price_change.get("h1")) or 0.0,
+            "dex_liquidity_usd": liquidity or 0.0,
+        }
 
     def _tier(self, mcap_usd: float) -> str | None:
         if mcap_usd >= self.config.large_cap_min_usd:
