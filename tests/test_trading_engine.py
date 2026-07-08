@@ -803,6 +803,43 @@ class TestNonCurveBuy:
         mocks["positions"].open_position.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_execute_buy_via_jupiter_uses_onchain_decimals(self, live_engine, mocks):
+        """On-chain decimals override a wrong token_data hint for correct sizing."""
+        mocks["solana_client"].get_balance.return_value = 10.0
+        mocks["solana_client"].get_token_decimals.return_value = 9  # authoritative
+        # outAmount 2e9 base units at 9 decimals -> 2.0 whole tokens (not 2000 at 6)
+        mocks["jupiter"].get_quote.return_value = {"outAmount": "2000000000"}
+        mocks["jupiter"].get_swap_transaction.return_value = "b64tx"
+        td = {"token_address": FAKE_TOKEN, "tier": "large", "symbol": "BIG", "decimals": 6}
+        with (
+            patch.object(live_engine, "_sign_send_jupiter_swap", new=AsyncMock(return_value="sig")),
+            patch.object(live_engine, "_confirm_transaction", new=AsyncMock(return_value=True)),
+        ):
+            result = await live_engine.execute_buy_via_jupiter(td, 0.01, "default")
+        assert result is True
+        kwargs = mocks["positions"].open_position.call_args.kwargs
+        assert kwargs["amount_tokens"] == pytest.approx(2.0)  # 9 decimals used, not 6
+        assert kwargs["entry_price"] == pytest.approx(0.01 / 2.0)
+
+    @pytest.mark.asyncio
+    async def test_resolve_decimals_prefers_onchain(self, live_engine, mocks):
+        mocks["solana_client"].get_token_decimals.return_value = 9
+        got = await live_engine._resolve_decimals({"token_address": FAKE_TOKEN, "decimals": 6})
+        assert got == 9
+
+    @pytest.mark.asyncio
+    async def test_resolve_decimals_falls_back_to_hint(self, live_engine, mocks):
+        mocks["solana_client"].get_token_decimals.return_value = None
+        got = await live_engine._resolve_decimals({"token_address": FAKE_TOKEN, "decimals": 8})
+        assert got == 8
+
+    @pytest.mark.asyncio
+    async def test_resolve_decimals_defaults_to_6(self, live_engine, mocks):
+        mocks["solana_client"].get_token_decimals.return_value = None
+        got = await live_engine._resolve_decimals({"token_address": FAKE_TOKEN})
+        assert got == 6
+
+    @pytest.mark.asyncio
     async def test_sell_no_curve_routes_to_jupiter(self, live_engine, mocks):
         position = _make_position()
         mocks["positions"].positions = {FAKE_TOKEN: position}

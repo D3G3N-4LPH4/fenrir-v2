@@ -621,6 +621,24 @@ class TradingEngine:
         (migrated mid-caps and scanner-surfaced mid/large caps)."""
         return bool(token_data.get("migrated")) or token_data.get("tier") in ("mid", "large")
 
+    async def _resolve_decimals(self, token_data: dict) -> int:
+        """Authoritative on-chain token decimals, falling back to token_data/6.
+
+        DexScreener-sourced candidates carry only a guessed decimals (6); reading
+        the mint on-chain keeps position sizing and entry-price scale correct for
+        any token (e.g. 9-decimal established tokens). Falls back to the token_data
+        hint (or 6) when the RPC read is unavailable.
+        """
+        try:
+            on_chain = await self.client.get_token_decimals(
+                Pubkey.from_string(token_data["token_address"])
+            )
+        except Exception:
+            on_chain = None
+        if isinstance(on_chain, int) and 0 <= on_chain <= 18:
+            return on_chain
+        return int(token_data.get("decimals", 6))
+
     async def _execute_buy_non_curve(
         self, token_data: dict, amount_sol: float, strategy_id: str
     ) -> bool:
@@ -642,7 +660,7 @@ class TradingEngine:
         if not quote or "outAmount" not in quote:
             self.logger.warning(f"Sim buy: no Jupiter quote for {token_address[:8]}...")
             return False
-        decimals = int(token_data.get("decimals", 6))
+        decimals = await self._resolve_decimals(token_data)
         out_ui = int(quote["outAmount"]) / (10**decimals)
         if out_ui <= 0:
             return False
@@ -699,7 +717,7 @@ class TradingEngine:
             # Size the position from the quote's expected output (known now, no
             # lagging balance read — the freshly created ATA often isn't indexed
             # for several seconds). The sell later uses the real on-chain balance.
-            decimals = int(token_data.get("decimals", 6))
+            decimals = await self._resolve_decimals(token_data)
             out_base = int(quote.get("outAmount", 0))
             ui_amount = out_base / (10**decimals)
             if ui_amount <= 0:

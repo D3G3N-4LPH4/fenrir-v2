@@ -170,6 +170,13 @@ class SolanaClient:
                 }
         return None
 
+    async def get_token_decimals(self, mint: Pubkey) -> int | None:
+        """Fetch a token mint's on-chain decimals (authoritative). None on failure."""
+        resp = await self._rpc(self.client.get_token_supply(mint), f"get_token_supply:{mint}")
+        if resp and resp.value is not None:
+            return int(resp.value.decimals)
+        return None
+
     async def get_recent_prioritization_fees(self, accounts: list[str] | None = None) -> list[int]:
         """Recent per-CU prioritization fees (micro-lamports) via raw JSON-RPC.
 
