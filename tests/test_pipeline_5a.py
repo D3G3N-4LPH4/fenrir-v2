@@ -186,7 +186,18 @@ class TestDispatch:
 
         strat.evaluate_token.assert_called_once()
         assert strat.evaluate_token.call_args.args[1] is md
-        eval_mock.assert_awaited_once_with(strat, dict(_TD), signal_context="CTX")
+        # token_data is enriched with the DexScreener momentum snapshot (defaults
+        # here, since md is a default MarketData) before AI evaluation.
+        expected_td = {
+            **_TD,
+            "dex_volume_5m_usd": 0.0,
+            "dex_txns_5m_buys": 0,
+            "dex_txns_5m_sells": 0,
+            "dex_buy_pressure_5m": 0.5,
+            "dex_price_change_1h_pct": 0.0,
+            "dex_liquidity_usd": 0.0,
+        }
+        eval_mock.assert_awaited_once_with(strat, expected_td, signal_context="CTX")
 
     async def test_signal_none_skips_execution(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
