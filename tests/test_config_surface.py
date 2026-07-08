@@ -41,6 +41,8 @@ _SURFACE_ENV = [
     "LARGE_CAP_MIN_USD",
     "SCANNER_MIN_LIQUIDITY_USD",
     "SCANNER_CATEGORIES",
+    "AI_MODEL",
+    "AI_MODEL_FALLBACKS",
 ]
 
 
@@ -152,6 +154,16 @@ class TestEnvParsing:
     def test_ai_model_blank_env_keeps_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AI_MODEL", "   ")
         assert BotConfig().ai_model == "anthropic/claude-haiku-4-5"
+
+    def test_ai_model_fallbacks_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert BotConfig().ai_model_fallbacks == []  # none by default
+        monkeypatch.setenv(
+            "AI_MODEL_FALLBACKS", "meta-llama/llama-3.3-70b-instruct, openai/gpt-4o-mini"
+        )
+        assert BotConfig().ai_model_fallbacks == [
+            "meta-llama/llama-3.3-70b-instruct",
+            "openai/gpt-4o-mini",
+        ]
 
     def test_global_daily_sol_limit_default_and_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         assert BotConfig().global_daily_sol_limit == 0.0  # disabled by default

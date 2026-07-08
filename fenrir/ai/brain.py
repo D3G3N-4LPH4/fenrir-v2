@@ -132,6 +132,7 @@ class ClaudeBrain:
                     timeout_seconds=int(self.config.ai_entry_timeout_seconds) + 2,
                     breaker=self._breaker,
                     db_path=self._db_path,
+                    fallback_models=self.config.ai_model_fallbacks,
                 )
                 await self.analyst.initialize()
                 self.logger.info(
@@ -150,6 +151,7 @@ class ClaudeBrain:
                 timeout_seconds=int(self.config.ai_entry_timeout_seconds) + 2,
                 breaker=self._breaker,
                 db_path=self._db_path,
+                fallback_models=self.config.ai_model_fallbacks,
             )
             await self.analyst.initialize()
             self.logger.info(
