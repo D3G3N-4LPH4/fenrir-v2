@@ -156,6 +156,24 @@ class TestIsNonCurve:
         assert await tracker._is_non_curve(MINT) is False
 
 
+class TestDetectSells:
+    def test_sell_detected(self, tracker):
+        tx = _tx([_bal(WALLET, MINT, 100.0)], [_bal(WALLET, MINT, 10.0)])  # reduced
+        assert tracker._detect_sells(tx, WALLET) == [MINT]
+
+    def test_full_dump_detected(self, tracker):
+        tx = _tx([_bal(WALLET, MINT, 100.0)], [])  # gone to zero
+        assert tracker._detect_sells(tx, WALLET) == [MINT]
+
+    def test_buy_is_not_a_sell(self, tracker):
+        tx = _tx([], [_bal(WALLET, MINT, 100.0)])  # increase
+        assert tracker._detect_sells(tx, WALLET) == []
+
+    def test_wsol_excluded(self, tracker):
+        tx = _tx([_bal(WALLET, WSOL_MINT, 5.0)], [_bal(WALLET, WSOL_MINT, 0.0)])
+        assert tracker._detect_sells(tx, WALLET) == []
+
+
 class TestNewBuys:
     @pytest.mark.asyncio
     async def test_dedup_seen_signatures(self, tracker):
@@ -163,18 +181,35 @@ class TestNewBuys:
         tracker.client.get_recent_signatures = AsyncMock(return_value=[sig])
         tracker.client.get_transaction = AsyncMock(return_value=_tx([], [_bal(WALLET, MINT, 10.0)]))
 
-        first = await tracker._new_buys(WALLET)
-        assert first == [(MINT, 0.0)]
-        second = await tracker._new_buys(WALLET)  # same sig already seen
-        assert second == []
+        buys, sells = await tracker._new_buys(WALLET)
+        assert buys == [(MINT, 0.0)]
+        assert sells == []
+        buys2, _ = await tracker._new_buys(WALLET)  # same sig already seen
+        assert buys2 == []
 
     @pytest.mark.asyncio
     async def test_failed_tx_skipped(self, tracker):
         sig = SimpleNamespace(signature="SIGERR", err={"e": 1})
         tracker.client.get_recent_signatures = AsyncMock(return_value=[sig])
         tracker.client.get_transaction = AsyncMock(return_value=_tx([], [_bal(WALLET, MINT, 10.0)]))
-        assert await tracker._new_buys(WALLET) == []
+        assert await tracker._new_buys(WALLET) == ([], [])
         tracker.client.get_transaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sell_surfaced_via_on_sell(self, tracker):
+        sig = SimpleNamespace(signature="SELL1", err=None)
+        tracker.client.get_recent_signatures = AsyncMock(return_value=[sig])
+        tracker.client.get_transaction = AsyncMock(
+            return_value=_tx([_bal(WALLET, MINT, 100.0)], [_bal(WALLET, MINT, 0.0)])
+        )
+        sold: list = []
+
+        async def on_sell(mint, wallet):
+            sold.append((mint, wallet))
+
+        tracker._on_sell = on_sell
+        await tracker._poll_once(AsyncMock())
+        assert sold == [(MINT, WALLET)]
 
 
 class TestPollOnce:

@@ -356,7 +356,7 @@ class FenrirBot:
         # Smart-money / whale wallet tracker — opt-in, needs a wallet list.
         if self.config.smart_money_enabled and self.config.smart_money_wallets:
             self._smart_money_task = asyncio.create_task(
-                self.smart_money.start_tracking(self._on_candidate)
+                self.smart_money.start_tracking(self._on_candidate, self._on_smart_money_sell)
             )
             tasks.append(self._smart_money_task)
 
@@ -768,6 +768,30 @@ class FenrirBot:
                     strategy_id=strat_id,
                 )
             )
+
+    async def _on_smart_money_sell(self, mint: str, wallet: str) -> None:
+        """A tracked wallet SOLD a token — if we hold it, route to the AI exit evaluator.
+
+        We don't blindly dump: the sell is fed to the AI as a strong exit trigger,
+        and the AI can still OVERRIDE_HOLD (e.g. strong momentum, other holders in).
+        """
+        position = self.positions.positions.get(mint)
+        if not position:
+            return  # we don't hold it — nothing to do
+        self.logger.warning(
+            f"Smart money {wallet[:6]}… SOLD {mint[:8]}… which we hold → AI exit check"
+        )
+        trigger = (
+            f"A tracked smart-money wallet ({wallet[:6]}…) just SOLD/reduced this token — "
+            f"a strong exit signal; decide whether to follow it out."
+        )
+        action, ai_reason = await self.claude_brain.evaluate_exit(
+            mint, position, mechanical_trigger=trigger
+        )
+        if action == "OVERRIDE_HOLD":
+            self.logger.info(f"AI holds {mint[:8]}… despite smart-money exit: {ai_reason}")
+            return
+        await self._execute_exit(mint, position, ai_reason or f"smart-money exit ({wallet[:6]}…)")
 
     async def _position_management_loop(self):
         """
