@@ -61,6 +61,7 @@ from fenrir.strategies.base import TradingStrategy
 from fenrir.trading.engine import TradingEngine
 from fenrir.trading.monitor import PumpFunMonitor
 from fenrir.trading.scanner import MarketScanner
+from fenrir.trading.smart_money import SmartMoneyTracker
 
 
 class SignalStrategy(Protocol):
@@ -131,6 +132,12 @@ class FenrirBot:
         # Handle to the running scanner task so it can be started/stopped live
         # from apply_config_update() without restarting the bot.
         self._scanner_task: asyncio.Task | None = None
+
+        # Smart-money / whale wallet tracker (follow curated wallets; opt-in).
+        self.smart_money = SmartMoneyTracker(
+            config, self.solana_client, self.trading_engine.pumpfun, self.logger
+        )
+        self._smart_money_task: asyncio.Task | None = None
 
         # ── NEW: Event Bus ──────────────────────────────────────
         self.event_bus = EventBus()
@@ -345,6 +352,13 @@ class FenrirBot:
                 self.scanner.start_scanning(self._on_candidate)
             )
             tasks.append(self._scanner_task)
+
+        # Smart-money / whale wallet tracker — opt-in, needs a wallet list.
+        if self.config.smart_money_enabled and self.config.smart_money_wallets:
+            self._smart_money_task = asyncio.create_task(
+                self.smart_money.start_tracking(self._on_candidate)
+            )
+            tasks.append(self._smart_money_task)
 
         await asyncio.gather(*tasks)
 
@@ -644,11 +658,24 @@ class FenrirBot:
             f"'FOMO trap'. Judge on relative strength, not on launch-sniping heuristics."
         )
 
-    async def _on_candidate(self, token_data: dict) -> None:
-        """Evaluate a scanner-surfaced mid/large-cap token and trade it via Jupiter.
+    def _smart_money_context(self, token_data: dict) -> str:
+        """Frame the AI prompt for a token a tracked smart-money wallet just bought."""
+        wallet = token_data.get("smart_money_wallet", "?")
+        venue = "an AMM (migrated)" if token_data.get("migrated") else "the pump.fun bonding curve"
+        return (
+            f"SMART-MONEY SIGNAL — a wallet you track as a proven early buyer "
+            f"({wallet[:6]}…{wallet[-4:] if len(wallet) > 10 else ''}) just BOUGHT this token on "
+            f"{venue}. Treat this as a STRONG positive signal (you follow this wallet into early "
+            f"entries), but still assess rug/liquidity risk independently — smart wallets take "
+            f"losers too. Weight the wallet's conviction, not launch-sniping heuristics."
+        )
 
-        Parallel to _on_token_launch but for AMM-traded tokens: reframes the AI
-        for the tier, gates on budget, and executes through the Jupiter buy path.
+    async def _on_candidate(self, token_data: dict) -> None:
+        """Evaluate a discovery candidate (scanner mid/large-cap OR smart-money buy).
+
+        Parallel to _on_token_launch: reframes the AI for the source, gates on the
+        per-source budget, and executes via the engine (which routes curve vs
+        Jupiter automatically).
         """
         token_addr = token_data["token_address"]
         symbol = token_data.get("symbol", "???")
@@ -666,9 +693,22 @@ class FenrirBot:
             )
         )
 
-        strategy_positions = self.positions.get_by_strategy("scanner")
+        # Source-specific framing + budget: smart-money follows tracked wallets,
+        # the scanner surfaces mid/large caps by market cap.
+        if token_data.get("source") == "smart_money":
+            strat_id = "smart_money"
+            context = self._smart_money_context(token_data)
+            budget = self.config.smart_money_daily_budget_sol or (self.config.buy_amount_sol * 5)
+            max_positions = self.config.smart_money_max_positions
+        else:
+            strat_id = "scanner"
+            context = self._tier_context(token_data)
+            budget = self.config.scanner_daily_budget_sol or (self.config.buy_amount_sol * 5)
+            max_positions = self.config.scanner_max_positions
+
+        strategy_positions = self.positions.get_by_strategy(strat_id)
         should_buy, analysis, buy_amount_override = await self.claude_brain.evaluate_entry(
-            token_data, strategy_positions, strategy_context=self._tier_context(token_data)
+            token_data, strategy_positions, strategy_context=context
         )
         if analysis:
             await self.event_bus.emit(
@@ -679,7 +719,7 @@ class FenrirBot:
                     confidence=analysis.confidence,
                     risk_score=analysis.risk_score,
                     reasoning=analysis.reasoning,
-                    strategy_id="scanner",
+                    strategy_id=strat_id,
                 )
             )
         if not should_buy:
@@ -689,22 +729,21 @@ class FenrirBot:
         if buy_amount_override is not None and self.config.ai_dynamic_position_sizing:
             amount = min(buy_amount_override, self.config.buy_amount_sol * 2)
 
-        budget = self.config.scanner_daily_budget_sol or (self.config.buy_amount_sol * 5)
         auth = self.budget_tracker.authorize_trade(
-            strategy_id="scanner",
+            strategy_id=strat_id,
             amount_sol=amount,
             budget_sol=budget,
-            max_positions=self.config.scanner_max_positions,
+            max_positions=max_positions,
         )
         if not auth.allowed:
-            self.logger.info(f"Scanner trade blocked for {symbol}: {auth.reason}")
+            self.logger.info(f"{strat_id} trade blocked for {symbol}: {auth.reason}")
             return
 
         success = await self.trading_engine.execute_buy(
-            token_data, amount_sol=amount, strategy_id="scanner"
+            token_data, amount_sol=amount, strategy_id=strat_id
         )
         if success:
-            self.budget_tracker.record_buy("scanner", amount)
+            self.budget_tracker.record_buy(strat_id, amount)
             await self.event_bus.emit(
                 buy_executed_event(
                     token_address=token_addr,
@@ -712,7 +751,7 @@ class FenrirBot:
                     amount_sol=amount,
                     entry_price=0.0,
                     simulation=(self.config.mode == TradingMode.SIMULATION),
-                    strategy_id="scanner",
+                    strategy_id=strat_id,
                 )
             )
 
@@ -924,6 +963,10 @@ class FenrirBot:
         if self._scanner_task is not None:
             self._scanner_task.cancel()
             self._scanner_task = None
+        await self.smart_money.stop()
+        if self._smart_money_task is not None:
+            self._smart_money_task.cancel()
+            self._smart_money_task = None
         await self.trading_engine.close()
         await self.claude_brain.close()
         await self.solana_client.close()

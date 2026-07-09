@@ -225,6 +225,20 @@ class BotConfig:
     scanner_dex_boosts_enabled: bool = False
     scanner_dex_timeout_seconds: float = 6.0
 
+    # ── Smart-money / whale wallet tracking ────────────────────────────
+    # Off by default. Follows a curated list of wallets; when a tracked wallet
+    # buys a pump.fun token on the bonding curve, surfaces that token as a
+    # candidate with a strong-signal AI context (you follow proven early buyers
+    # into fresh launches). Env: SMART_MONEY_ENABLED / SMART_MONEY_WALLETS
+    # (comma-separated) / SMART_MONEY_POLL_SECONDS.
+    smart_money_enabled: bool = False
+    smart_money_wallets: list[str] = field(default_factory=list)
+    smart_money_poll_seconds: float = 20.0
+    smart_money_cooldown_minutes: float = 60.0
+    smart_money_max_candidates_per_cycle: int = 3
+    smart_money_daily_budget_sol: float = 0.0  # 0 = auto (5 × buy_amount_sol)
+    smart_money_max_positions: int = 3
+
     # ── Pre-trade filters (fenrir.filters) ─────────────────────────────
     # Security hard-gate: mint/freeze authority, LP burn, holder concentration.
     security_filter_enabled: bool = False
@@ -410,6 +424,13 @@ class BotConfig:
             self.scanner_categories = [s.strip() for s in env_scan_strats.split(",") if s.strip()]
         self.scanner_dex_boosts_enabled = _env_bool(
             "SCANNER_DEX_BOOSTS_ENABLED", self.scanner_dex_boosts_enabled
+        )
+        self.smart_money_enabled = _env_bool("SMART_MONEY_ENABLED", self.smart_money_enabled)
+        env_wallets = os.getenv("SMART_MONEY_WALLETS", "")
+        if env_wallets:
+            self.smart_money_wallets = [w.strip() for w in env_wallets.split(",") if w.strip()]
+        self.smart_money_poll_seconds = _env_float(
+            "SMART_MONEY_POLL_SECONDS", self.smart_money_poll_seconds
         )
 
     @classmethod

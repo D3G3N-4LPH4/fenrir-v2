@@ -43,6 +43,9 @@ _SURFACE_ENV = [
     "SCANNER_CATEGORIES",
     "AI_MODEL",
     "AI_MODEL_FALLBACKS",
+    "SMART_MONEY_ENABLED",
+    "SMART_MONEY_WALLETS",
+    "SMART_MONEY_POLL_SECONDS",
 ]
 
 
@@ -154,6 +157,17 @@ class TestEnvParsing:
     def test_ai_model_blank_env_keeps_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AI_MODEL", "   ")
         assert BotConfig().ai_model == "anthropic/claude-haiku-4-5"
+
+    def test_smart_money_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert BotConfig().smart_money_enabled is False  # opt-in
+        assert BotConfig().smart_money_wallets == []
+        monkeypatch.setenv("SMART_MONEY_ENABLED", "true")
+        monkeypatch.setenv("SMART_MONEY_WALLETS", "Wallet1, Wallet2 ,Wallet3")
+        monkeypatch.setenv("SMART_MONEY_POLL_SECONDS", "10")
+        cfg = BotConfig()
+        assert cfg.smart_money_enabled is True
+        assert cfg.smart_money_wallets == ["Wallet1", "Wallet2", "Wallet3"]
+        assert cfg.smart_money_poll_seconds == 10.0
 
     def test_ai_model_fallbacks_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         assert BotConfig().ai_model_fallbacks == []  # none by default

@@ -534,6 +534,10 @@ class ClaudeBrain:
             )
             lines.append(f"RugCheck risk {score}/100 (lower = safer); flags: {risk_names}")
 
+        wallet = token_data.get("smart_money_wallet")
+        if wallet:
+            lines.append(f"Smart-money: tracked wallet {wallet[:6]}… just bought this token")
+
         return "\n".join(lines) if lines else None
 
     def _build_token_metadata(self, token_data: dict) -> TokenMetadata:
