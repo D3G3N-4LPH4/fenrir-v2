@@ -46,6 +46,7 @@ class SmartMoneyTracker:
         self.running = False
         self._seen: dict[str, set[str]] = {}  # wallet -> seen signatures
         self._cooldown: dict[str, datetime] = {}  # mint -> last emitted
+        self._on_sell: Callable[[str, str], Awaitable[None]] | None = None
 
     def _tracked_wallets(self) -> list[str]:
         """All wallets we follow: standard + A-tier priority, de-duped, order-stable."""
@@ -59,15 +60,25 @@ class SmartMoneyTracker:
         """'A' for a priority wallet (higher conviction), else 'B'."""
         return "A" if wallet in set(self.config.smart_money_priority_wallets) else "B"
 
-    async def start_tracking(self, on_candidate: Callable[[dict], Awaitable[None]]) -> None:
-        """Loop: poll tracked wallets on a cadence and emit their new buys."""
+    async def start_tracking(
+        self,
+        on_candidate: Callable[[dict], Awaitable[None]],
+        on_sell: Callable[[str, str], Awaitable[None]] | None = None,
+    ) -> None:
+        """Loop: poll tracked wallets and emit their new buys (candidates) + sells.
+
+        on_candidate(token_data) fires when a tracked wallet BUYS; on_sell(mint,
+        wallet) fires when one SELLS/reduces a position (the bot decides whether we
+        hold it and route it to the AI exit evaluator).
+        """
         self.running = True
+        self._on_sell = on_sell
         wallets = self._tracked_wallets()
         self.logger.info(
             f"Smart-money tracker active ({len(wallets)} wallet(s), "
             f"every {self.config.smart_money_poll_seconds:.0f}s)"
         )
-        # Seed the seen-set with current history so we only fire on buys that
+        # Seed the seen-set with current history so we only fire on buys/sells that
         # happen AFTER startup (not a backlog of old positions).
         await self._seed_seen()
         while self.running:
@@ -93,9 +104,12 @@ class SmartMoneyTracker:
         emitted = 0
         cap = self.config.smart_money_max_candidates_per_cycle
         for wallet in self._tracked_wallets():
-            if emitted >= cap:
-                break
-            for mint, sol_spent in await self._new_buys(wallet):
+            buys, sells = await self._new_buys(wallet)
+            # Sells first: surface exit signals for tokens we may hold (bot decides).
+            if self._on_sell is not None:
+                for mint in sells:
+                    await self._on_sell(mint, wallet)
+            for mint, sol_spent in buys:
                 if emitted >= cap:
                     break
                 candidate = await self._build_candidate(wallet, mint, sol_spent, now)
@@ -109,14 +123,14 @@ class SmartMoneyTracker:
                 await on_candidate(candidate)
                 emitted += 1
 
-    async def _new_buys(self, wallet: str) -> list[tuple[str, float]]:
-        """Return (mint, sol_spent) for tokens the wallet newly BOUGHT since last check."""
+    async def _new_buys(self, wallet: str) -> tuple[list[tuple[str, float]], list[str]]:
+        """Scan a wallet's new txs → (buys[(mint, sol_spent)], sells[mint])."""
         seen = self._seen.setdefault(wallet, set())
         try:
             sigs = await self.client.get_recent_signatures(Pubkey.from_string(wallet), limit=15)
         except Exception as e:  # noqa: BLE001
             self.logger.debug(f"smart-money sigs failed for {wallet[:6]}…: {e}")
-            return []
+            return [], []
 
         # Oldest-first so we emit in buy order; skip already-seen and failed txs.
         fresh = [
@@ -125,6 +139,7 @@ class SmartMoneyTracker:
             if str(s.signature) not in seen and getattr(s, "err", None) is None
         ]
         buys: list[tuple[str, float]] = []
+        sells: list[str] = []
         for s in fresh:
             sig = str(s.signature)
             seen.add(sig)
@@ -135,14 +150,28 @@ class SmartMoneyTracker:
             if tx is None:
                 continue
             buys.extend(self._detect_buys(tx, wallet))
+            sells.extend(self._detect_sells(tx, wallet))
 
         if len(seen) > _SEEN_CAP:  # keep the most recent signatures only
             self._seen[wallet] = set(list(seen)[-_SEEN_CAP:])
-        # De-dup by mint within this cycle, keeping the first (largest SOL wins ties later).
-        out: dict[str, float] = {}
+        # De-dup by mint within this cycle.
+        dedup_buys: dict[str, float] = {}
         for mint, sol in buys:
-            out.setdefault(mint, sol)
-        return list(out.items())
+            dedup_buys.setdefault(mint, sol)
+        return list(dedup_buys.items()), list(dict.fromkeys(sells))
+
+    @staticmethod
+    def _balances(entries: Any) -> dict[tuple[str, str], float]:
+        """{(owner, mint): ui_amount} from a tx's token-balance entries."""
+        out: dict[tuple[str, str], float] = {}
+        for b in entries or []:
+            owner = str(getattr(b, "owner", "") or "")
+            mint = str(getattr(b, "mint", "") or "")
+            if not owner or not mint:
+                continue
+            amt = getattr(getattr(b, "ui_token_amount", None), "ui_amount", None) or 0.0
+            out[(owner, mint)] = float(amt)
+        return out
 
     @staticmethod
     def _detect_buys(tx: Any, wallet: str) -> list[tuple[str, float]]:
@@ -155,20 +184,8 @@ class SmartMoneyTracker:
         meta = getattr(getattr(tx, "transaction", None), "meta", None) or getattr(tx, "meta", None)
         if meta is None:
             return []
-
-        def by_owner_mint(entries: Any) -> dict[tuple[str, str], float]:
-            out: dict[tuple[str, str], float] = {}
-            for b in entries or []:
-                owner = str(getattr(b, "owner", "") or "")
-                mint = str(getattr(b, "mint", "") or "")
-                if not owner or not mint:
-                    continue
-                amt = getattr(getattr(b, "ui_token_amount", None), "ui_amount", None) or 0.0
-                out[(owner, mint)] = float(amt)
-            return out
-
-        pre = by_owner_mint(getattr(meta, "pre_token_balances", None))
-        post = by_owner_mint(getattr(meta, "post_token_balances", None))
+        pre = SmartMoneyTracker._balances(getattr(meta, "pre_token_balances", None))
+        post = SmartMoneyTracker._balances(getattr(meta, "post_token_balances", None))
         bought = [
             mint
             for (owner, mint), amt in post.items()
@@ -178,6 +195,27 @@ class SmartMoneyTracker:
             return []
         sol_spent = SmartMoneyTracker._sol_spent(tx, wallet, meta)
         return [(mint, sol_spent) for mint in bought]
+
+    @staticmethod
+    def _detect_sells(tx: Any, wallet: str) -> list[str]:
+        """Mints the wallet SOLD/reduced in this tx (token balance decreased).
+
+        A tracked wallet trimming or dumping a position is an exit signal for any
+        token we hold. WSOL excluded. Requires a prior balance (pre > 0).
+        """
+        meta = getattr(getattr(tx, "transaction", None), "meta", None) or getattr(tx, "meta", None)
+        if meta is None:
+            return []
+        pre = SmartMoneyTracker._balances(getattr(meta, "pre_token_balances", None))
+        post = SmartMoneyTracker._balances(getattr(meta, "post_token_balances", None))
+        return [
+            mint
+            for (owner, mint), amt in pre.items()
+            if owner == wallet
+            and mint != WSOL_MINT
+            and amt > 1e-9
+            and post.get((owner, mint), 0.0) < amt - 1e-9
+        ]
 
     @staticmethod
     def _sol_spent(tx: Any, wallet: str, meta: Any) -> float:
