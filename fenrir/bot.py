@@ -661,13 +661,22 @@ class FenrirBot:
     def _smart_money_context(self, token_data: dict) -> str:
         """Frame the AI prompt for a token a tracked smart-money wallet just bought."""
         wallet = token_data.get("smart_money_wallet", "?")
+        tier = token_data.get("smart_money_tier", "B")
+        sol = token_data.get("smart_money_sol") or 0.0
         venue = "an AMM (migrated)" if token_data.get("migrated") else "the pump.fun bonding curve"
+        tier_note = (
+            "This is an A-TIER wallet (your highest-conviction list) — weight it very heavily."
+            if tier == "A"
+            else "This is a standard tracked wallet."
+        )
+        size_note = f" and spent ~{sol:.2f} SOL on it" if sol > 0 else ""
         return (
             f"SMART-MONEY SIGNAL — a wallet you track as a proven early buyer "
             f"({wallet[:6]}…{wallet[-4:] if len(wallet) > 10 else ''}) just BOUGHT this token on "
-            f"{venue}. Treat this as a STRONG positive signal (you follow this wallet into early "
-            f"entries), but still assess rug/liquidity risk independently — smart wallets take "
-            f"losers too. Weight the wallet's conviction, not launch-sniping heuristics."
+            f"{venue}{size_note}. {tier_note} Treat this as a STRONG positive signal (you follow "
+            f"this wallet into early entries), but still assess rug/liquidity risk independently — "
+            f"smart wallets take losers too. Weight the wallet's conviction and position size, not "
+            f"launch-sniping heuristics."
         )
 
     async def _on_candidate(self, token_data: dict) -> None:
@@ -728,6 +737,11 @@ class FenrirBot:
         amount = self.config.buy_amount_sol
         if buy_amount_override is not None and self.config.ai_dynamic_position_sizing:
             amount = min(buy_amount_override, self.config.buy_amount_sol * 2)
+        # A-tier smart-money wallets get a size bump (capped at 2× base).
+        if token_data.get("smart_money_tier") == "A":
+            amount = min(
+                amount * self.config.smart_money_a_tier_size_mult, self.config.buy_amount_sol * 2
+            )
 
         auth = self.budget_tracker.authorize_trade(
             strategy_id=strat_id,

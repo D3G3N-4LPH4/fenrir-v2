@@ -536,7 +536,12 @@ class ClaudeBrain:
 
         wallet = token_data.get("smart_money_wallet")
         if wallet:
-            lines.append(f"Smart-money: tracked wallet {wallet[:6]}… just bought this token")
+            tier = token_data.get("smart_money_tier", "B")
+            sol = token_data.get("smart_money_sol") or 0.0
+            spent = f", ~{sol:.2f} SOL" if sol > 0 else ""
+            lines.append(
+                f"Smart-money: {tier}-tier tracked wallet {wallet[:6]}… just bought this{spent}"
+            )
 
         return "\n".join(lines) if lines else None
 

@@ -45,6 +45,8 @@ _SURFACE_ENV = [
     "AI_MODEL_FALLBACKS",
     "SMART_MONEY_ENABLED",
     "SMART_MONEY_WALLETS",
+    "SMART_MONEY_PRIORITY_WALLETS",
+    "SMART_MONEY_A_TIER_SIZE_MULT",
     "SMART_MONEY_POLL_SECONDS",
 ]
 
@@ -164,9 +166,13 @@ class TestEnvParsing:
         monkeypatch.setenv("SMART_MONEY_ENABLED", "true")
         monkeypatch.setenv("SMART_MONEY_WALLETS", "Wallet1, Wallet2 ,Wallet3")
         monkeypatch.setenv("SMART_MONEY_POLL_SECONDS", "10")
+        monkeypatch.setenv("SMART_MONEY_PRIORITY_WALLETS", "AWallet1, AWallet2")
+        monkeypatch.setenv("SMART_MONEY_A_TIER_SIZE_MULT", "2.0")
         cfg = BotConfig()
         assert cfg.smart_money_enabled is True
         assert cfg.smart_money_wallets == ["Wallet1", "Wallet2", "Wallet3"]
+        assert cfg.smart_money_priority_wallets == ["AWallet1", "AWallet2"]
+        assert cfg.smart_money_a_tier_size_mult == 2.0
         assert cfg.smart_money_poll_seconds == 10.0
 
     def test_ai_model_fallbacks_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
