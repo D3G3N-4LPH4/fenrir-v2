@@ -312,9 +312,8 @@ class TestSmartMoneySell:
     @pytest.mark.asyncio
     async def test_held_ai_exit_sells(self, tmp_path: Path) -> None:
         bot = _make_bot(tmp_path)
-        bot.positions.positions = {
-            "MintHeld": SimpleNamespace(token_symbol="X", strategy_id="smart_money")
-        }
+        pos = SimpleNamespace(token_symbol="X", strategy_id="smart_money")
+        bot.positions.positions = {"MintHeld": pos}  # type: ignore[dict-item]
         bot.claude_brain.evaluate_exit = AsyncMock(return_value=("EXIT", "follow out"))  # type: ignore[method-assign]
         bot._execute_exit = AsyncMock()  # type: ignore[method-assign]
         await bot._on_smart_money_sell("MintHeld", "WalletY")
@@ -324,9 +323,8 @@ class TestSmartMoneySell:
     @pytest.mark.asyncio
     async def test_held_override_hold_keeps_position(self, tmp_path: Path) -> None:
         bot = _make_bot(tmp_path)
-        bot.positions.positions = {
-            "MintHeld": SimpleNamespace(token_symbol="X", strategy_id="smart_money")
-        }
+        pos = SimpleNamespace(token_symbol="X", strategy_id="smart_money")
+        bot.positions.positions = {"MintHeld": pos}  # type: ignore[dict-item]
         bot.claude_brain.evaluate_exit = AsyncMock(return_value=("OVERRIDE_HOLD", "momentum"))  # type: ignore[method-assign]
         bot._execute_exit = AsyncMock()  # type: ignore[method-assign]
         await bot._on_smart_money_sell("MintHeld", "WalletY")
