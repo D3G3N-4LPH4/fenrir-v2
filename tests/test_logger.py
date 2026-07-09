@@ -22,15 +22,19 @@ from fenrir.logger import FenrirLogger, _ensure_utf8_stream
 
 @pytest.fixture(autouse=True)
 def _reset_fenrir_logger() -> Iterator[None]:
-    """FenrirLogger shares the module-level 'FENRIR' logger; reset handlers."""
-    lg = logging.getLogger("FENRIR")
-    for h in list(lg.handlers):
-        h.close()
-        lg.removeHandler(h)
+    """FenrirLogger shares the module-level 'FENRIR' + 'fenrir' loggers; reset both."""
+
+    def _clear() -> None:
+        for name in ("FENRIR", "fenrir"):
+            lg = logging.getLogger(name)
+            for h in list(lg.handlers):
+                h.close()
+                lg.removeHandler(h)
+            lg.propagate = True
+
+    _clear()
     yield
-    for h in list(lg.handlers):
-        h.close()
-        lg.removeHandler(h)
+    _clear()
 
 
 class _FakeStream:
@@ -86,3 +90,17 @@ class TestFenrirLoggerUtf8:
             h.close()
         content = (tmp_path / "fenrir.log").read_text(encoding="utf-8")
         assert "🧠 AI Brain: OFFLINE" in content
+
+    def test_package_module_loggers_reach_bot_log(self, tmp_path: Path) -> None:
+        """fenrir.* module loggers (decision_engine, provider_resilience) must
+        route into the bot log so served-model / fallback / AI errors are visible."""
+        self._logger(tmp_path)
+        pkg = logging.getLogger("fenrir")
+        assert any(isinstance(h, logging.FileHandler) for h in pkg.handlers)
+        assert pkg.propagate is False  # no double-emit via root
+
+        logging.getLogger("fenrir.ai.provider_resilience").warning("Model fallback active: X")
+        for h in pkg.handlers:
+            h.flush()
+        content = (tmp_path / "fenrir.log").read_text(encoding="utf-8")
+        assert "Model fallback active: X" in content
