@@ -340,8 +340,22 @@ class TradingEngine:
             #    → 6024 Overflow). Both fail simulation if wrong, never spend SOL.
             fee_recipient = await self._live_fee_recipient()
             extras = await self._resolve_fee_extras(token_mint)
-            buyback_recipient = extras[0] if extras else None
-            fee_pool_recipient = extras[1] if extras else None
+            if extras is None:
+                # No prior on-chain buy to shadow → we can't resolve the token's
+                # per-token buyback fee account (idx16), which is NOT a derivable
+                # PDA (verified on-chain: the sharing-config PDA doesn't match).
+                # Falling back to the module constant is wrong for this token and
+                # the buy would fail simulation with 6024 Overflow. Fail fast with
+                # a clear reason instead — this is expected only for the literal
+                # first buyer of a token; retry once it has ≥1 buy to shadow.
+                self.logger.warning(
+                    f"Skipping curve buy for {str(token_mint)[:8]}...: no prior buy to "
+                    f"shadow the per-token fee accounts (first-buyer). Would fail 6024; "
+                    f"no SOL spent."
+                )
+                return False
+            buyback_recipient = extras[0]
+            fee_pool_recipient = extras[1]
 
             # 6. Idempotently create the buyer's ATA (with the correct token
             #    program), then build the buy — pump.fun requires the ATA to

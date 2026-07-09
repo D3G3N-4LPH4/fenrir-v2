@@ -336,7 +336,12 @@ class TestLiveBuy:
         confirmed_status.confirmation_status = "confirmed"
         mocks["solana_client"].get_signature_statuses.return_value = [confirmed_status]
 
+        # A shadowable prior buy exists → per-token fee accounts resolve.
+        fee_extras = (Pubkey.from_string(FAKE_TOKEN), Pubkey.from_string(FAKE_TOKEN))
         with (
+            patch.object(
+                live_engine, "_resolve_fee_extras", new=AsyncMock(return_value=fee_extras)
+            ),
             patch.object(
                 live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
             ),
@@ -359,6 +364,26 @@ class TestLiveBuy:
         call_kw = mocks["positions"].open_position.call_args.kwargs
         assert call_kw["token_address"] == FAKE_TOKEN
         assert call_kw["amount_sol"] == 0.1
+
+    @pytest.mark.asyncio
+    async def test_first_buyer_no_shadow_fast_fails(self, live_engine, mocks):
+        """No prior buy to shadow (first-buyer) → fail fast, no send, clear warning."""
+        mocks["solana_client"].get_balance.return_value = 10.0
+        mocks["solana_client"].get_account_info.return_value = b"x" * 80
+
+        with (
+            patch.object(live_engine, "_resolve_fee_extras", new=AsyncMock(return_value=None)),
+            patch.object(
+                live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+            ),
+            patch.object(live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE),
+        ):
+            result = await live_engine.execute_buy(_make_token_data())
+
+        assert result is False
+        mocks["positions"].open_position.assert_not_called()
+        mocks["solana_client"].send_transaction.assert_not_called()
+        assert any("first-buyer" in str(c.args[0]) for c in mocks["logger"].warning.call_args_list)
 
 
 # ===================================================================
