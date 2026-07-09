@@ -233,6 +233,10 @@ class BotConfig:
     # (comma-separated) / SMART_MONEY_POLL_SECONDS.
     smart_money_enabled: bool = False
     smart_money_wallets: list[str] = field(default_factory=list)
+    # A-tier ("priority") wallets: higher conviction — surfaced as A-tier to the
+    # AI and sized up by smart_money_a_tier_size_mult. Env: SMART_MONEY_PRIORITY_WALLETS.
+    smart_money_priority_wallets: list[str] = field(default_factory=list)
+    smart_money_a_tier_size_mult: float = 1.5  # A-tier buy-size multiplier (capped at 2× base)
     smart_money_poll_seconds: float = 20.0
     smart_money_cooldown_minutes: float = 60.0
     smart_money_max_candidates_per_cycle: int = 3
@@ -429,6 +433,14 @@ class BotConfig:
         env_wallets = os.getenv("SMART_MONEY_WALLETS", "")
         if env_wallets:
             self.smart_money_wallets = [w.strip() for w in env_wallets.split(",") if w.strip()]
+        env_priority = os.getenv("SMART_MONEY_PRIORITY_WALLETS", "")
+        if env_priority:
+            self.smart_money_priority_wallets = [
+                w.strip() for w in env_priority.split(",") if w.strip()
+            ]
+        self.smart_money_a_tier_size_mult = _env_float(
+            "SMART_MONEY_A_TIER_SIZE_MULT", self.smart_money_a_tier_size_mult
+        )
         self.smart_money_poll_seconds = _env_float(
             "SMART_MONEY_POLL_SECONDS", self.smart_money_poll_seconds
         )

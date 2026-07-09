@@ -47,10 +47,22 @@ class SmartMoneyTracker:
         self._seen: dict[str, set[str]] = {}  # wallet -> seen signatures
         self._cooldown: dict[str, datetime] = {}  # mint -> last emitted
 
+    def _tracked_wallets(self) -> list[str]:
+        """All wallets we follow: standard + A-tier priority, de-duped, order-stable."""
+        return list(
+            dict.fromkeys(
+                self.config.smart_money_wallets + self.config.smart_money_priority_wallets
+            )
+        )
+
+    def _tier(self, wallet: str) -> str:
+        """'A' for a priority wallet (higher conviction), else 'B'."""
+        return "A" if wallet in set(self.config.smart_money_priority_wallets) else "B"
+
     async def start_tracking(self, on_candidate: Callable[[dict], Awaitable[None]]) -> None:
         """Loop: poll tracked wallets on a cadence and emit their new buys."""
         self.running = True
-        wallets = self.config.smart_money_wallets
+        wallets = self._tracked_wallets()
         self.logger.info(
             f"Smart-money tracker active ({len(wallets)} wallet(s), "
             f"every {self.config.smart_money_poll_seconds:.0f}s)"
@@ -69,7 +81,7 @@ class SmartMoneyTracker:
         self.running = False
 
     async def _seed_seen(self) -> None:
-        for w in self.config.smart_money_wallets:
+        for w in self._tracked_wallets():
             try:
                 sigs = await self.client.get_recent_signatures(Pubkey.from_string(w), limit=20)
                 self._seen[w] = {str(s.signature) for s in sigs}
@@ -80,22 +92,25 @@ class SmartMoneyTracker:
         now = datetime.now()
         emitted = 0
         cap = self.config.smart_money_max_candidates_per_cycle
-        for wallet in self.config.smart_money_wallets:
+        for wallet in self._tracked_wallets():
             if emitted >= cap:
                 break
-            for mint in await self._new_buy_mints(wallet):
+            for mint, sol_spent in await self._new_buys(wallet):
                 if emitted >= cap:
                     break
-                candidate = await self._build_candidate(wallet, mint, now)
+                candidate = await self._build_candidate(wallet, mint, sol_spent, now)
                 if candidate is None:
                     continue
                 self._cooldown[mint] = now
-                self.logger.info(f"Smart money {wallet[:6]}… bought {mint[:8]}… → candidate")
+                self.logger.info(
+                    f"Smart money [{self._tier(wallet)}] {wallet[:6]}… bought "
+                    f"{mint[:8]}… (~{sol_spent:.2f} SOL) → candidate"
+                )
                 await on_candidate(candidate)
                 emitted += 1
 
-    async def _new_buy_mints(self, wallet: str) -> list[str]:
-        """Return mints the wallet newly BOUGHT since we last checked."""
+    async def _new_buys(self, wallet: str) -> list[tuple[str, float]]:
+        """Return (mint, sol_spent) for tokens the wallet newly BOUGHT since last check."""
         seen = self._seen.setdefault(wallet, set())
         try:
             sigs = await self.client.get_recent_signatures(Pubkey.from_string(wallet), limit=15)
@@ -109,7 +124,7 @@ class SmartMoneyTracker:
             for s in reversed(sigs)
             if str(s.signature) not in seen and getattr(s, "err", None) is None
         ]
-        mints: list[str] = []
+        buys: list[tuple[str, float]] = []
         for s in fresh:
             sig = str(s.signature)
             seen.add(sig)
@@ -119,19 +134,23 @@ class SmartMoneyTracker:
                 continue
             if tx is None:
                 continue
-            mints.extend(self._detect_buys(tx, wallet))
+            buys.extend(self._detect_buys(tx, wallet))
 
         if len(seen) > _SEEN_CAP:  # keep the most recent signatures only
             self._seen[wallet] = set(list(seen)[-_SEEN_CAP:])
-        # De-dup within this cycle, preserve order.
-        return list(dict.fromkeys(mints))
+        # De-dup by mint within this cycle, keeping the first (largest SOL wins ties later).
+        out: dict[str, float] = {}
+        for mint, sol in buys:
+            out.setdefault(mint, sol)
+        return list(out.items())
 
     @staticmethod
-    def _detect_buys(tx: Any, wallet: str) -> list[str]:
-        """Mints whose balance INCREASED for `wallet` in this tx (a buy/receive).
+    def _detect_buys(tx: Any, wallet: str) -> list[tuple[str, float]]:
+        """(mint, sol_spent) for mints whose balance INCREASED for `wallet` in this tx.
 
         Uses the transaction's pre/post SPL-token balances (venue-agnostic). WSOL
-        is excluded (wrapping SOL nets ~0 and is never the target token).
+        is excluded (wrapping SOL nets ~0 and is never the target token). sol_spent
+        is the wallet's native lamport decrease (best-effort; 0.0 if unresolvable).
         """
         meta = getattr(getattr(tx, "transaction", None), "meta", None) or getattr(tx, "meta", None)
         if meta is None:
@@ -150,15 +169,32 @@ class SmartMoneyTracker:
 
         pre = by_owner_mint(getattr(meta, "pre_token_balances", None))
         post = by_owner_mint(getattr(meta, "post_token_balances", None))
-        bought: list[str] = []
-        for (owner, mint), amt in post.items():
-            if owner != wallet or mint == WSOL_MINT:
-                continue
-            if amt > pre.get((owner, mint), 0.0) + 1e-9:
-                bought.append(mint)
-        return bought
+        bought = [
+            mint
+            for (owner, mint), amt in post.items()
+            if owner == wallet and mint != WSOL_MINT and amt > pre.get((owner, mint), 0.0) + 1e-9
+        ]
+        if not bought:
+            return []
+        sol_spent = SmartMoneyTracker._sol_spent(tx, wallet, meta)
+        return [(mint, sol_spent) for mint in bought]
 
-    async def _build_candidate(self, wallet: str, mint: str, now: datetime) -> dict | None:
+    @staticmethod
+    def _sol_spent(tx: Any, wallet: str, meta: Any) -> float:
+        """Best-effort native SOL the wallet spent in this tx (lamport decrease)."""
+        try:
+            msg = tx.transaction.transaction.message
+            keys = [str(k) for k in msg.account_keys]
+            idx = keys.index(wallet)
+            pre = int(meta.pre_balances[idx])
+            post = int(meta.post_balances[idx])
+            return max(0.0, (pre - post) / 1e9)
+        except Exception:  # noqa: BLE001 - context flavor only; unknown → 0.0
+            return 0.0
+
+    async def _build_candidate(
+        self, wallet: str, mint: str, sol_spent: float, now: datetime
+    ) -> dict | None:
         """Apply cooldown, tag routing via an on-chain curve check, shape token_data."""
         last = self._cooldown.get(mint)
         if last and (now - last).total_seconds() < self.config.smart_money_cooldown_minutes * 60:
@@ -171,6 +207,8 @@ class SmartMoneyTracker:
             "name": "Unknown",
             "source": "smart_money",
             "smart_money_wallet": wallet,
+            "smart_money_tier": self._tier(wallet),
+            "smart_money_sol": round(sol_spent, 4),
             # Routing hint for the engine: migrated/AMM → Jupiter, else pump curve.
             "migrated": migrated,
             "tier": "mid" if migrated else None,
