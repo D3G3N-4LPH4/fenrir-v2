@@ -406,9 +406,12 @@ class FenrirBot:
                 token_data["dex_liquidity_usd"] = market_data.liquidity_usd
 
         # Route through each active strategy
+        active_ids: list[str] = []
+        evaluated_by_any = False
         for strategy in self.strategies:
             if not strategy.state.active or strategy.state.paused:
                 continue
+            active_ids.append(strategy.strategy_id)
 
             try:
                 if strategy.uses_market_data:
@@ -421,11 +424,13 @@ class FenrirBot:
                     await self._evaluate_and_execute(
                         strategy, token_data, signal_context=signal_context
                     )
+                    evaluated_by_any = True
                 else:
                     # Classic path: cheap token_data pre-filter, then AI.
                     if not await strategy.should_evaluate(token_data):
                         continue
                     await self._evaluate_and_execute(strategy, token_data)
+                    evaluated_by_any = True
 
             except Exception as e:
                 await self.event_bus.emit(
@@ -436,6 +441,16 @@ class FenrirBot:
                         strategy_id=strategy.strategy_id,
                     )
                 )
+
+        # Make the silent-drop case visible: a launch cleared the gates but no
+        # active strategy produced an evaluation (e.g. only market-data signal
+        # strategies are active, and a fresh launch has no DexScreener data yet,
+        # so the AI never fires). Surfaces the strategy/flow mismatch.
+        if not evaluated_by_any:
+            self.logger.debug(
+                f"No active strategy evaluated ${symbol} "
+                f"(active: {', '.join(active_ids) or 'none'})"
+            )
 
     async def _evaluate_and_execute(
         self,

@@ -65,6 +65,18 @@ class FenrirLogger:
             )
             self.logger.addHandler(file_handler)
 
+            # Route the `fenrir.*` package module loggers (e.g.
+            # fenrir.ai.decision_engine, fenrir.ai.provider_resilience) through the
+            # same handlers so their warnings/errors — served model, model-fallback
+            # events, LLM API errors — land in the bot log/console instead of
+            # vanishing on the root logger.
+            pkg_logger = logging.getLogger("fenrir")
+            if not any(isinstance(h, RotatingFileHandler) for h in pkg_logger.handlers):
+                pkg_logger.setLevel(getattr(logging, config.log_level))
+                pkg_logger.addHandler(console)
+                pkg_logger.addHandler(file_handler)
+                pkg_logger.propagate = False  # avoid double-emit via the root logger
+
     def launch_detected(self, token_address: str, initial_liq: float):
         """A new hunt begins."""
         self.logger.info(f"NEW LAUNCH DETECTED: {token_address}")
