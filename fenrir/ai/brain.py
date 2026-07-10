@@ -25,6 +25,7 @@ from collections import deque
 from datetime import datetime
 from typing import cast
 
+from fenrir.ai.agent_panel import MultiAgentPanel
 from fenrir.ai.context_builder import apply_exit_plan_to_position, build_batched_exit_context
 from fenrir.ai.decision_engine import (
     AIDecision,
@@ -57,7 +58,10 @@ class ClaudeBrain:
         # rebuilt as a projection of this log on startup (§1 harness kernel).
         self._audit = audit
         self.analyst: AITradingAnalyst | None = None
-        self._ensemble_scorer: EnsembleScorer | None = None
+        # Second-opinion gate: the 2-model EnsembleScorer or the role-specialized
+        # MultiAgentPanel (config.ai_multi_agent_enabled). Both expose the same
+        # score()/should_trade/position_multiplier/conviction surface.
+        self._ensemble_scorer: EnsembleScorer | MultiAgentPanel | None = None
         self.memory = AISessionMemory(max_size=config.ai_memory_size)
         self.enabled = config.ai_analysis_enabled and bool(config.ai_api_key)
 
@@ -160,14 +164,25 @@ class ClaudeBrain:
                 f"min_confidence={self.config.ai_min_confidence_to_buy})"
             )
 
-        # G0DM0D3: ensemble scorer for independent second-opinion on BUY decisions
+        # Second-opinion gate on BUY decisions: role-specialized multi-agent panel
+        # (opt-in) or the 2-model ensemble. Both are drop-in for the gate.
         if self.enabled:
-            sol_threshold = getattr(self.config, "ensemble_sol_threshold", 0.5)
-            self._ensemble_scorer = EnsembleScorer(
-                api_key=self.config.ai_api_key,
-                sol_threshold=sol_threshold,
-            )
-            await self._ensemble_scorer.initialize()
+            if getattr(self.config, "ai_multi_agent_enabled", False):
+                panel = MultiAgentPanel(
+                    api_key=self.config.ai_api_key,
+                    model=self.config.ai_model,
+                )
+                await panel.initialize()
+                self._ensemble_scorer = panel
+                self.logger.info("🔬 Second opinion: multi-agent panel (risk/momentum/narrative)")
+            else:
+                sol_threshold = getattr(self.config, "ensemble_sol_threshold", 0.5)
+                scorer = EnsembleScorer(
+                    api_key=self.config.ai_api_key,
+                    sol_threshold=sol_threshold,
+                )
+                await scorer.initialize()
+                self._ensemble_scorer = scorer
 
     # ──────────────────────────────────────────────────────────────
     #  ENTRY EVALUATION

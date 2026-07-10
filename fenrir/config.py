@@ -295,6 +295,10 @@ class BotConfig:
     # and fresh launches — which have no market data yet — never reach the brain.
     # Env: AI_EVALUATE_ALL_LAUNCHES.
     ai_evaluate_all_launches: bool = False
+    # Second-opinion gate on BUY decisions: a multi-agent panel (role-specialized
+    # risk-veto / momentum / narrative agents) instead of the 2-model ensemble.
+    # Both are drop-in for the gate. Off by default. Env: AI_MULTI_AGENT_ENABLED.
+    ai_multi_agent_enabled: bool = False
 
     # Local Model Backend
     ai_local_model_enabled: bool = False
@@ -340,6 +344,9 @@ class BotConfig:
             self.ai_model_fallbacks = [m.strip() for m in env_ai_fallbacks.split(",") if m.strip()]
         self.ai_evaluate_all_launches = _env_bool(
             "AI_EVALUATE_ALL_LAUNCHES", self.ai_evaluate_all_launches
+        )
+        self.ai_multi_agent_enabled = _env_bool(
+            "AI_MULTI_AGENT_ENABLED", self.ai_multi_agent_enabled
         )
 
         if not self.ai_local_model_url:
