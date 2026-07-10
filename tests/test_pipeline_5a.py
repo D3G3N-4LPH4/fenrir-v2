@@ -32,6 +32,7 @@ from fenrir.strategies import (
     SniperStrategy,
     VolumeAnomalyStrategy,
 )
+from fenrir.strategies.sniper import AIScoutStrategy
 
 TOKEN = "So11111111111111111111111111111111111111112"
 
@@ -329,3 +330,59 @@ class TestSmartMoneySell:
         bot._execute_exit = AsyncMock()  # type: ignore[method-assign]
         await bot._on_smart_money_sell("MintHeld", "WalletY")
         bot._execute_exit.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# AI Scout: always-on multi-lens fallback launch evaluator
+# ---------------------------------------------------------------------------
+
+
+class TestAIScoutStrategy:
+    async def test_evaluates_fresh_launch(self) -> None:
+        scout = AIScoutStrategy(BotConfig())
+        assert scout.strategy_id == "ai_scout"
+        assert scout.uses_market_data is False
+        assert await scout.should_evaluate({"token_address": TOKEN}) is True
+
+    def test_context_is_multi_lens(self) -> None:
+        ctx = AIScoutStrategy(BotConfig()).get_ai_context().lower()
+        assert "multi-lens" in ctx
+        for lens in ("snipe", "momentum", "narrative", "reversal"):
+            assert lens in ctx
+
+
+class TestScoutFallback:
+    @pytest.mark.asyncio
+    async def test_scout_fires_when_enabled_and_no_strategy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bot = _make_bot(tmp_path, ai_evaluate_all_launches=True)
+        eval_mock = _neuter(bot, monkeypatch)
+        bot.strategies = []  # nothing active claims the launch
+        await bot._on_token_launch(dict(_TD))
+        eval_mock.assert_awaited_once()
+        assert eval_mock.await_args is not None
+        assert eval_mock.await_args.args[0] is bot._ai_scout
+
+    @pytest.mark.asyncio
+    async def test_scout_silent_when_disabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bot = _make_bot(tmp_path, ai_evaluate_all_launches=False)
+        eval_mock = _neuter(bot, monkeypatch)
+        bot.strategies = []
+        await bot._on_token_launch(dict(_TD))
+        eval_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_scout_skipped_when_a_strategy_evaluated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bot = _make_bot(tmp_path, ai_evaluate_all_launches=True)
+        eval_mock = _neuter(bot, monkeypatch)
+        strat = _classic("cls", should_eval=True)
+        bot.strategies = [strat]
+        await bot._on_token_launch(dict(_TD))
+        eval_mock.assert_awaited_once()  # only the strategy, not an extra scout eval
+        assert eval_mock.await_args is not None
+        assert eval_mock.await_args.args[0] is strat

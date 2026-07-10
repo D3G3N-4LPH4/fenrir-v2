@@ -58,6 +58,7 @@ from fenrir.logger import FenrirLogger
 from fenrir.protocol.jito import JitoMEVProtection
 from fenrir.strategies import STRATEGY_REGISTRY, SniperStrategy
 from fenrir.strategies.base import TradingStrategy
+from fenrir.strategies.sniper import AIScoutStrategy
 from fenrir.trading.engine import TradingEngine
 from fenrir.trading.monitor import PumpFunMonitor
 from fenrir.trading.scanner import MarketScanner
@@ -138,6 +139,10 @@ class FenrirBot:
             config, self.solana_client, self.trading_engine.pumpfun, self.logger
         )
         self._smart_money_task: asyncio.Task | None = None
+
+        # Always-on multi-lens AI evaluator, used as a fallback for launches that
+        # no active strategy claimed (opt-in via ai_evaluate_all_launches).
+        self._ai_scout = AIScoutStrategy(config)
 
         # ── NEW: Event Bus ──────────────────────────────────────
         self.event_bus = EventBus()
@@ -456,15 +461,20 @@ class FenrirBot:
                     )
                 )
 
-        # Make the silent-drop case visible: a launch cleared the gates but no
-        # active strategy produced an evaluation (e.g. only market-data signal
-        # strategies are active, and a fresh launch has no DexScreener data yet,
-        # so the AI never fires). Surfaces the strategy/flow mismatch.
+        # No active strategy claimed this launch. Optionally fall back to the
+        # always-on multi-lens AI Scout so the brain still evaluates it (fixes the
+        # case where only a market-data strategy is active and fresh launches —
+        # which have no market data yet — would otherwise never reach the AI).
         if not evaluated_by_any:
-            self.logger.debug(
-                f"No active strategy evaluated ${symbol} "
-                f"(active: {', '.join(active_ids) or 'none'})"
-            )
+            if self.config.ai_evaluate_all_launches and await self._ai_scout.should_evaluate(
+                token_data
+            ):
+                await self._evaluate_and_execute(self._ai_scout, token_data)
+            else:
+                self.logger.debug(
+                    f"No active strategy evaluated ${symbol} "
+                    f"(active: {', '.join(active_ids) or 'none'})"
+                )
 
     async def _evaluate_and_execute(
         self,

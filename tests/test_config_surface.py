@@ -48,6 +48,7 @@ _SURFACE_ENV = [
     "SMART_MONEY_PRIORITY_WALLETS",
     "SMART_MONEY_A_TIER_SIZE_MULT",
     "SMART_MONEY_POLL_SECONDS",
+    "AI_EVALUATE_ALL_LAUNCHES",
 ]
 
 
@@ -150,6 +151,11 @@ class TestEnvParsing:
     def test_helius_key_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HELIUS_API_KEY", "hx-test")
         assert BotConfig().helius_api_key == "hx-test"
+
+    def test_ai_evaluate_all_launches_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert BotConfig().ai_evaluate_all_launches is False  # opt-in
+        monkeypatch.setenv("AI_EVALUATE_ALL_LAUNCHES", "true")
+        assert BotConfig().ai_evaluate_all_launches is True
 
     def test_ai_model_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         assert BotConfig().ai_model == "anthropic/claude-haiku-4-5"  # default
