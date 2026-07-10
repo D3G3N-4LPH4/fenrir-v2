@@ -233,13 +233,21 @@ class SmartMoneyTracker:
     async def _build_candidate(
         self, wallet: str, mint: str, sol_spent: float, now: datetime
     ) -> dict | None:
-        """Apply cooldown, tag routing via an on-chain curve check, shape token_data."""
+        """Apply cooldown, then enrich the candidate with real on-chain token data.
+
+        A bare candidate (unknown symbol / zero liquidity) makes the AI reject on
+        artifact red flags, drowning out the smart-money signal. So we read the
+        pump.fun bonding curve and populate the real price / liquidity / market cap
+        (and bonding_curve_state, which the AI metadata builder consumes) — or tag
+        it migrated for the Jupiter route when there's no live curve.
+        """
         last = self._cooldown.get(mint)
         if last and (now - last).total_seconds() < self.config.smart_money_cooldown_minutes * 60:
             return None
 
-        migrated = await self._is_non_curve(mint)
-        return {
+        curve = await self._curve_state(mint)
+        migrated = curve is None
+        candidate: dict = {
             "token_address": mint,
             "symbol": "???",
             "name": "Unknown",
@@ -250,21 +258,29 @@ class SmartMoneyTracker:
             # Routing hint for the engine: migrated/AMM → Jupiter, else pump curve.
             "migrated": migrated,
             "tier": "mid" if migrated else None,
-            "bonding_curve_state": None,
+            "bonding_curve_state": curve,
         }
+        if curve is not None:
+            # Real numbers from the curve so the AI evaluates the actual token
+            # instead of "unknown with zero liquidity".
+            candidate["initial_liquidity_sol"] = round(curve.real_sol_reserves / 1e9, 4)
+            candidate["market_cap_sol"] = round(curve.get_market_cap_sol(), 4)
+        return candidate
 
-    async def _is_non_curve(self, mint: str) -> bool:
-        """True if the token has no live pump.fun bonding curve (migrated / AMM).
+    async def _curve_state(self, mint: str) -> Any:
+        """Return the token's live pump.fun BondingCurveState, or None if migrated.
 
-        Best-effort: on any error we assume a fresh curve (False) so the engine
-        tries the pump path first — a wrong guess just fails routing, never spends.
+        Best-effort: on any error return None → the engine's Jupiter route is tried,
+        which fails safe (never spends on a bad guess).
         """
         try:
             bonding_curve, _ = self.pumpfun.derive_bonding_curve_address(Pubkey.from_string(mint))
             data = await self.client.get_account_info(bonding_curve)
             if not data:
-                return True  # no curve account → migrated / not a pump token
+                return None  # no curve account → migrated / not a pump token
             curve = self.pumpfun.decode_bonding_curve(data)
-            return bool(curve is None or curve.complete)
+            if curve is None or curve.complete:
+                return None  # decode failed or migrated
+            return curve
         except Exception:  # noqa: BLE001
-            return False
+            return None

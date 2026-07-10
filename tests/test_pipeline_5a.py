@@ -37,6 +37,24 @@ from fenrir.strategies.sniper import AIScoutStrategy
 TOKEN = "So11111111111111111111111111111111111111112"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BotConfig re-reads these from the environment in __post_init__, overriding
+    the constructor args _make_bot passes. Clear them so a developer's local .env
+    (e.g. AI_EVALUATE_ALL_LAUNCHES=true) can't leak into these dispatch tests.
+    """
+    for var in (
+        "AI_EVALUATE_ALL_LAUNCHES",
+        "SMART_MONEY_ENABLED",
+        "SMART_MONEY_WALLETS",
+        "SMART_MONEY_PRIORITY_WALLETS",
+        "AI_MODEL",
+        "AI_MODEL_FALLBACKS",
+        "MARKET_SCANNER_ENABLED",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
 def _make_bot(tmp_path: Path, **overrides: Any) -> FenrirBot:
     cfg = BotConfig(
         mode=TradingMode.SIMULATION,
