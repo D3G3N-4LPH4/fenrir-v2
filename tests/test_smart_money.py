@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from fenrir.config import BotConfig
+from fenrir.protocol.pumpfun import BondingCurveState
 from fenrir.trading.smart_money import WSOL_MINT, SmartMoneyTracker
 
 T0 = datetime(2020, 1, 1, 12, 0, 0)
@@ -101,10 +102,21 @@ class TestTiers:
         assert tracker._tracked_wallets() == [WALLET, A_WALLET]
 
 
+def _curve(complete: bool = False, real_sol_lamports: int = 5_000_000_000):
+    return BondingCurveState(
+        virtual_token_reserves=1_073_000_000_000_000,
+        virtual_sol_reserves=30_000_000_000,
+        real_token_reserves=793_100_000_000_000,
+        real_sol_reserves=real_sol_lamports,
+        token_total_supply=1_000_000_000_000_000,
+        complete=complete,
+    )
+
+
 class TestBuildCandidate:
     @pytest.mark.asyncio
-    async def test_candidate_carries_tier_and_sol(self, tracker):
-        tracker._is_non_curve = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    async def test_fresh_candidate_enriched_from_curve(self, tracker):
+        tracker._curve_state = AsyncMock(return_value=_curve())  # type: ignore[method-assign]
         c = await tracker._build_candidate(A_WALLET, MINT, 2.5, T0)
         assert c is not None
         assert c["source"] == "smart_money"
@@ -113,19 +125,25 @@ class TestBuildCandidate:
         assert c["smart_money_sol"] == 2.5
         assert c["migrated"] is False
         assert c["tier"] is None
+        # Enriched with real on-chain numbers (not the bare zero defaults).
+        assert c["bonding_curve_state"] is not None
+        assert c["initial_liquidity_sol"] == 5.0  # 5e9 lamports
+        assert c["market_cap_sol"] > 0
 
     @pytest.mark.asyncio
     async def test_migrated_candidate(self, tracker):
-        tracker._is_non_curve = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        tracker._curve_state = AsyncMock(return_value=None)  # type: ignore[method-assign]
         c = await tracker._build_candidate(WALLET, MINT, 0.0, T0)
         assert c is not None
         assert c["smart_money_tier"] == "B"
         assert c["migrated"] is True
         assert c["tier"] == "mid"
+        assert c["bonding_curve_state"] is None
+        assert "initial_liquidity_sol" not in c  # no curve → no curve-derived numbers
 
     @pytest.mark.asyncio
     async def test_cooldown_blocks_then_allows(self, tracker):
-        tracker._is_non_curve = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        tracker._curve_state = AsyncMock(return_value=_curve())  # type: ignore[method-assign]
         tracker._cooldown[MINT] = T0
         assert await tracker._build_candidate(WALLET, MINT, 0.0, T0 + timedelta(minutes=5)) is None
         assert (
@@ -134,26 +152,27 @@ class TestBuildCandidate:
         )
 
 
-class TestIsNonCurve:
+class TestCurveState:
     @pytest.mark.asyncio
-    async def test_no_account_is_migrated(self, tracker):
+    async def test_no_account_returns_none(self, tracker):
         tracker.pumpfun.derive_bonding_curve_address.return_value = (MagicMock(), 0)
         tracker.client.get_account_info = AsyncMock(return_value=None)
-        assert await tracker._is_non_curve(MINT) is True
+        assert await tracker._curve_state(MINT) is None
 
     @pytest.mark.asyncio
-    async def test_complete_curve_is_migrated(self, tracker):
+    async def test_complete_curve_returns_none(self, tracker):
         tracker.pumpfun.derive_bonding_curve_address.return_value = (MagicMock(), 0)
         tracker.client.get_account_info = AsyncMock(return_value=b"x" * 80)
-        tracker.pumpfun.decode_bonding_curve.return_value = SimpleNamespace(complete=True)
-        assert await tracker._is_non_curve(MINT) is True
+        tracker.pumpfun.decode_bonding_curve.return_value = _curve(complete=True)
+        assert await tracker._curve_state(MINT) is None
 
     @pytest.mark.asyncio
-    async def test_live_curve_is_fresh(self, tracker):
+    async def test_live_curve_returned(self, tracker):
         tracker.pumpfun.derive_bonding_curve_address.return_value = (MagicMock(), 0)
         tracker.client.get_account_info = AsyncMock(return_value=b"x" * 80)
-        tracker.pumpfun.decode_bonding_curve.return_value = SimpleNamespace(complete=False)
-        assert await tracker._is_non_curve(MINT) is False
+        live = _curve(complete=False)
+        tracker.pumpfun.decode_bonding_curve.return_value = live
+        assert await tracker._curve_state(MINT) is live
 
 
 class TestDetectSells:
@@ -218,7 +237,7 @@ class TestPollOnce:
         sig = SimpleNamespace(signature="S1", err=None)
         tracker.client.get_recent_signatures = AsyncMock(return_value=[sig])
         tracker.client.get_transaction = AsyncMock(return_value=_tx([], [_bal(WALLET, MINT, 10.0)]))
-        tracker._is_non_curve = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        tracker._curve_state = AsyncMock(return_value=_curve())  # type: ignore[method-assign]
         got: list = []
 
         async def cb(c):
