@@ -49,6 +49,7 @@ _SURFACE_ENV = [
     "SMART_MONEY_A_TIER_SIZE_MULT",
     "SMART_MONEY_POLL_SECONDS",
     "AI_EVALUATE_ALL_LAUNCHES",
+    "AI_MULTI_AGENT_ENABLED",
 ]
 
 
@@ -156,6 +157,11 @@ class TestEnvParsing:
         assert BotConfig().ai_evaluate_all_launches is False  # opt-in
         monkeypatch.setenv("AI_EVALUATE_ALL_LAUNCHES", "true")
         assert BotConfig().ai_evaluate_all_launches is True
+
+    def test_ai_multi_agent_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert BotConfig().ai_multi_agent_enabled is False  # opt-in
+        monkeypatch.setenv("AI_MULTI_AGENT_ENABLED", "true")
+        assert BotConfig().ai_multi_agent_enabled is True
 
     def test_ai_model_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         assert BotConfig().ai_model == "anthropic/claude-haiku-4-5"  # default
