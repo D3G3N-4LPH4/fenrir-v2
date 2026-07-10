@@ -148,3 +148,46 @@ class DegenSniperStrategy(SniperStrategy):
         if curve_state and curve_state.complete:
             return False
         return True
+
+
+class AIScoutStrategy(SniperStrategy):
+    """
+    Always-on, multi-lens AI launch evaluator.
+
+    Not user-toggled: the bot runs it as a FALLBACK for any fresh launch that no
+    active strategy claimed (e.g. only a market-data strategy like reversal is
+    active, and a fresh launch has no market data yet — so the AI would otherwise
+    never fire). Gated by config.ai_evaluate_all_launches.
+
+    Its AI context is deliberately broad: evaluate the token across ALL of the
+    bot's lenses (snipe / momentum / narrative / reversal), not just sniping — so
+    a weak snipe that's a strong momentum or narrative play still gets bought.
+    """
+
+    strategy_id = "ai_scout"
+    display_name = "AI Scout (all-lens)"
+    description = (
+        "Always-on fallback evaluator: assesses every fresh launch across all "
+        "strategy lenses (snipe / momentum / narrative / reversal), decoupled from "
+        "which strategies are toggled active."
+    )
+
+    # should_evaluate is inherited from SniperStrategy (every non-migrated launch).
+
+    def get_ai_context(self) -> str:
+        return (
+            "# STRATEGY CONTEXT: AI SCOUT — MULTI-LENS EVALUATION\n"
+            "Evaluate this fresh pump.fun launch HOLISTICALLY across ALL of the bot's "
+            "trading lenses, not just launch-sniping. Consider whether it is attractive "
+            "as ANY of:\n"
+            "- LAUNCH SNIPE — fresh-launch quality: name/symbol originality, description "
+            "legitimacy, initial liquidity depth, creator reputation.\n"
+            "- MOMENTUM / VOLUME — early buy pressure and volume acceleration (use the "
+            "DexScreener momentum block if present).\n"
+            "- NARRATIVE — fits an active meta-narrative (AI agents, dog breeds, current "
+            "memes) with room to run.\n"
+            "- REVERSAL / SWING — oversold-bounce potential (only if it has trading history).\n"
+            "BUY if it is a strong opportunity under ANY lens — a weak snipe that is a "
+            "strong momentum or narrative play still qualifies. Assess rug/liquidity risk "
+            "independently. Time horizon: minutes to hours.\n"
+        )

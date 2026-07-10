@@ -288,6 +288,13 @@ class BotConfig:
     ai_temperature: float = 0.3  # LLM temperature (lower = more conservative)
     ai_fallback_to_rules: bool = True  # Auto-buy on AI failure/timeout?
     ai_dynamic_position_sizing: bool = False  # Let AI set buy amount?
+    # When on, every fresh launch that passes the pre-trade gates but is NOT
+    # claimed by any active strategy is still evaluated by the AI, via an
+    # always-on multi-lens "AI Scout" (snipe/momentum/narrative/reversal).
+    # Fixes the case where only a market-data strategy (e.g. reversal) is active
+    # and fresh launches — which have no market data yet — never reach the brain.
+    # Env: AI_EVALUATE_ALL_LAUNCHES.
+    ai_evaluate_all_launches: bool = False
 
     # Local Model Backend
     ai_local_model_enabled: bool = False
@@ -331,6 +338,9 @@ class BotConfig:
         env_ai_fallbacks = os.getenv("AI_MODEL_FALLBACKS", "")
         if env_ai_fallbacks:
             self.ai_model_fallbacks = [m.strip() for m in env_ai_fallbacks.split(",") if m.strip()]
+        self.ai_evaluate_all_launches = _env_bool(
+            "AI_EVALUATE_ALL_LAUNCHES", self.ai_evaluate_all_launches
+        )
 
         if not self.ai_local_model_url:
             self.ai_local_model_url = os.getenv(
