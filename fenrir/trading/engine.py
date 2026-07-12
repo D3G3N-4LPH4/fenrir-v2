@@ -559,12 +559,24 @@ class TradingEngine:
         """
         position = self.positions.positions.get(token_address)
         if not position:
-            self.logger.warning(f"No position found for {token_address}")
-            return False
+            # No tracked in-memory position. In LIVE mode a real on-chain balance
+            # may still exist — e.g. a restart cleared in-memory state, or a manual
+            # recovery sell of an orphaned bag — so adopt it and let the on-chain
+            # balance checks below drive the sell (strategy params default, PnL/
+            # close become no-ops). In SIMULATION there is no real balance to
+            # recover, so keep bailing rather than fabricate one.
+            if self.config.mode == TradingMode.SIMULATION:
+                self.logger.warning(f"No position found for {token_address}")
+                return False
+            self.logger.info(
+                f"No tracked position for {token_address[:8]}... — "
+                "adopting on-chain balance for orphan-recovery sell"
+            )
 
         self.logger.info(f"Executing sell: {token_address[:8]}... | Reason: {reason}")
 
         if self.config.mode == TradingMode.SIMULATION:
+            assert position is not None  # SIM + no position already returned above
             self.logger.info("SIMULATION MODE - No real transaction sent")
             # Calculate simulated exit price from current position data
             pnl_pct = position.get_pnl_percent()
