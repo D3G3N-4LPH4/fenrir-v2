@@ -152,6 +152,36 @@ class TestSellInstruction:
         assert _pk(a[14]) == str(PUMP_BUYBACK_FEE_RECIPIENT) and a[14].is_writable
         assert _pk(a[15]) == str(PUMP_FEE_POOL_RECIPIENT) and a[15].is_writable
 
+    def test_extra_accounts_replace_legacy_tail(self) -> None:
+        # When a shadowed cashback tail is supplied, it replaces the legacy
+        # two-account tail verbatim (base 14 IDL accounts kept unchanged).
+        from solders.instruction import AccountMeta
+
+        uva = PF.derive_user_volume_accumulator(BUYER)
+        bcv2 = Pubkey.find_program_address([b"bonding-curve-v2", bytes(MINT)], PUMP_PROGRAM_ID)[0]
+        fee_rot = Pubkey.from_string("11111111111111111111111111111112")
+        tail = [
+            AccountMeta(pubkey=uva, is_signer=False, is_writable=True),
+            AccountMeta(pubkey=bcv2, is_signer=False, is_writable=False),
+            AccountMeta(pubkey=fee_rot, is_signer=False, is_writable=True),
+        ]
+        ix = PF.build_sell_instruction(
+            seller=BUYER,
+            token_mint=MINT,
+            bonding_curve=BC,
+            creator=CREATOR,
+            token_program=TOKEN_PROGRAM,
+            amount_tokens=5_000,
+            min_sol_output=10,
+            extra_accounts=tail,
+        )
+        a = ix.accounts
+        assert len(a) == 17  # 14 IDL + 3 shadowed cashback tail
+        assert _pk(a[13]) == str(PUMP_FEE_PROGRAM)  # base unchanged
+        assert _pk(a[14]) == str(uva) and a[14].is_writable
+        assert _pk(a[15]) == str(bcv2) and not a[15].is_writable
+        assert _pk(a[16]) == str(fee_rot) and a[16].is_writable
+
 
 class TestCreateAta:
     def test_idempotent_create_ata(self) -> None:
