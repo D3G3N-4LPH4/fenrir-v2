@@ -366,12 +366,58 @@ class TestLiveBuy:
         assert call_kw["amount_sol"] == 0.1
 
     @pytest.mark.asyncio
-    async def test_first_buyer_no_shadow_fast_fails(self, live_engine, mocks):
-        """No prior buy to shadow (first-buyer) → fail fast, no send, clear warning."""
+    async def test_first_buyer_derives_cashback_tail_and_buys(self, live_engine, mocks):
+        """First buyer (no shadowable prior buy) still buys: the cashback tail
+        (bonding_curve_v2 + rotating fee) is derivable, so the buy executes."""
+        mocks["solana_client"].get_balance.return_value = 10.0
+        mocks["solana_client"].get_account_info.return_value = b"x" * 80
+        mocks["solana_client"].get_latest_blockhash.return_value = MagicMock()
+        mocks["solana_client"].simulate_transaction.return_value = True
+        mocks["solana_client"].send_transaction.return_value = "first_buyer_sig"
+        confirmed_status = MagicMock()
+        confirmed_status.err = None
+        confirmed_status.confirmation_status = "confirmed"
+        mocks["solana_client"].get_signature_statuses.return_value = [confirmed_status]
+
+        derived_tail = [MagicMock(), MagicMock()]  # bonding_curve_v2 + rotating fee
+        with (
+            # No legacy shadow available, but the cashback tail resolves (derived).
+            patch.object(live_engine, "_resolve_fee_extras", new=AsyncMock(return_value=None)),
+            patch.object(
+                live_engine, "_resolve_buy_tail", new=AsyncMock(return_value=derived_tail)
+            ),
+            patch.object(
+                live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+            ),
+            patch.object(live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE),
+            patch.object(
+                live_engine.pumpfun, "build_create_ata_instruction", return_value=MagicMock()
+            ),
+            patch.object(
+                live_engine.pumpfun, "build_buy_instruction", return_value=MagicMock()
+            ) as mock_buy_ix,
+            patch("fenrir.trading.engine.Message") as MockMsg,
+            patch("fenrir.trading.engine.Transaction") as MockTx,
+            patch("fenrir.trading.engine.set_compute_unit_price", return_value=MagicMock()),
+            patch("fenrir.trading.engine.set_compute_unit_limit", return_value=MagicMock()),
+        ):
+            MockTx.new_unsigned.return_value = MagicMock()
+            MockMsg.new_with_blockhash.return_value = MagicMock()
+            result = await live_engine.execute_buy(_make_token_data())
+
+        assert result is True
+        mocks["positions"].open_position.assert_called_once()
+        # The derived cashback tail was passed through to the instruction builder.
+        assert mock_buy_ix.call_args.kwargs["extra_accounts"] is derived_tail
+
+    @pytest.mark.asyncio
+    async def test_buy_fast_fails_when_no_tail_resolvable(self, live_engine, mocks):
+        """Neither a cashback tail nor a legacy shadow resolves → fail fast, no send."""
         mocks["solana_client"].get_balance.return_value = 10.0
         mocks["solana_client"].get_account_info.return_value = b"x" * 80
 
         with (
+            patch.object(live_engine, "_resolve_buy_tail", new=AsyncMock(return_value=None)),
             patch.object(live_engine, "_resolve_fee_extras", new=AsyncMock(return_value=None)),
             patch.object(
                 live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
@@ -383,7 +429,9 @@ class TestLiveBuy:
         assert result is False
         mocks["positions"].open_position.assert_not_called()
         mocks["solana_client"].send_transaction.assert_not_called()
-        assert any("first-buyer" in str(c.args[0]) for c in mocks["logger"].warning.call_args_list)
+        assert any(
+            "could not resolve" in str(c.args[0]) for c in mocks["logger"].warning.call_args_list
+        )
 
 
 # ===================================================================

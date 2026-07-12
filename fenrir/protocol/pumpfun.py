@@ -263,6 +263,14 @@ class PumpFunProgram:
             [b"user_volume_accumulator", bytes(user)], self.program_id
         )[0]
 
+    def derive_bonding_curve_v2(self, token_mint: Pubkey) -> Pubkey:
+        """Per-token cashback account (Feb-2026 upgrade), appended to buy/sell.
+        Seeds: ["bonding-curve-v2", mint]. Derivable, so even a first buyer can
+        build the required remaining-accounts tail."""
+        return Pubkey.find_program_address(
+            [b"bonding-curve-v2", bytes(token_mint)], self.program_id
+        )[0]
+
     def parse_global_fee_recipient(self, global_data: bytes) -> Pubkey | None:
         """Read the live primary fee_recipient from the pump global account.
 
@@ -301,18 +309,23 @@ class PumpFunProgram:
         fee_recipient: Pubkey | None = None,
         buyback_fee_recipient: Pubkey | None = None,
         fee_pool_recipient: Pubkey | None = None,
+        extra_accounts: list[AccountMeta] | None = None,
     ) -> Instruction:
         """
-        Build a pump.fun `buy` instruction (live 18-account layout).
+        Build a pump.fun `buy` instruction.
 
         pump.fun's `buy` takes the EXACT token amount to receive plus a SOL cap —
         NOT a SOL amount. Data: discriminator(8) + amount(u64, token base units) +
         max_sol_cost(u64, lamports) + track_volume(1 byte, 0x00 = don't track).
 
-        The published IDL lists 16 accounts; the deployed program needs two extra
-        *writable* v2 buyback fee accounts appended (see PUMP_BUYBACK_FEE_RECIPIENT).
-        fee_recipient defaults to the module constant but the engine passes the
-        live value read from the global account (it rotates).
+        The published IDL lists 16 accounts; the Feb-2026 cashback upgrade makes the
+        deployed program read extra Anchor *remaining accounts* appended after them —
+        `bonding_curve_v2` (a derivable PDA) then a rotating fee account. The caller
+        passes the exact tail as `extra_accounts` (derived for the mint + shadowed
+        for the rotating account, so even a first buyer can build it). When absent we
+        fall back to the legacy two-account (buyback + fee-pool) tail — correct only
+        for older non-cashback tokens. fee_recipient defaults to the module constant
+        but the engine passes the live rotating value read from the global account.
         """
         data = (
             BUY_DISCRIMINATOR + struct.pack("<Q", amount_tokens) + struct.pack("<Q", max_sol_cost)
@@ -352,18 +365,29 @@ class PumpFunProgram:
             ),
             AccountMeta(pubkey=PUMP_FEE_CONFIG, is_signer=False, is_writable=False),
             AccountMeta(pubkey=PUMP_FEE_PROGRAM, is_signer=False, is_writable=False),
-            # v2 buyback fee accounts (writable) — appended remaining-accounts.
-            AccountMeta(
-                pubkey=buyback_fee_recipient or PUMP_BUYBACK_FEE_RECIPIENT,
-                is_signer=False,
-                is_writable=True,
-            ),
-            AccountMeta(
-                pubkey=fee_pool_recipient or PUMP_FEE_POOL_RECIPIENT,
-                is_signer=False,
-                is_writable=True,
-            ),
         ]
+
+        if extra_accounts is not None:
+            # Exact remaining-accounts tail (bonding_curve_v2 + rotating fee),
+            # derived for this mint + shadowed for the rotating account.
+            accounts.extend(extra_accounts)
+        else:
+            # Legacy fallback: two v2 buyback fee accounts. Correct only for older
+            # non-cashback tokens; cashback tokens fail 6024 without the tail above.
+            accounts.append(
+                AccountMeta(
+                    pubkey=buyback_fee_recipient or PUMP_BUYBACK_FEE_RECIPIENT,
+                    is_signer=False,
+                    is_writable=True,
+                )
+            )
+            accounts.append(
+                AccountMeta(
+                    pubkey=fee_pool_recipient or PUMP_FEE_POOL_RECIPIENT,
+                    is_signer=False,
+                    is_writable=True,
+                )
+            )
         return Instruction(program_id=self.program_id, accounts=accounts, data=data)
 
     def build_sell_instruction(

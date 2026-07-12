@@ -114,6 +114,39 @@ class TestBuyInstruction:
         assert _pk(t22[5]) != _pk(classic[5])  # associated_user differs
         assert _pk(t22[4]) == str(PF.derive_ata(BC, MINT, TOKEN_2022_PROGRAM))
 
+    def test_extra_accounts_replace_legacy_tail(self) -> None:
+        # A supplied cashback tail (bonding_curve_v2 + rotating fee) replaces the
+        # legacy buyback/fee-pool tail; the 16 base IDL accounts stay unchanged.
+        from solders.instruction import AccountMeta
+
+        bcv2 = PF.derive_bonding_curve_v2(MINT)
+        fee_rot = Pubkey.from_string("11111111111111111111111111111112")
+        tail = [
+            AccountMeta(pubkey=bcv2, is_signer=False, is_writable=False),
+            AccountMeta(pubkey=fee_rot, is_signer=False, is_writable=True),
+        ]
+        ix = PF.build_buy_instruction(
+            buyer=BUYER,
+            token_mint=MINT,
+            bonding_curve=BC,
+            creator=CREATOR,
+            token_program=TOKEN_PROGRAM,
+            amount_tokens=1_000_000,
+            max_sol_cost=1_050_000,
+            extra_accounts=tail,
+        )
+        a = ix.accounts
+        assert len(a) == 18  # 16 IDL + 2 cashback tail
+        assert _pk(a[15]) == str(PUMP_FEE_PROGRAM)  # base unchanged
+        assert _pk(a[16]) == str(bcv2) and not a[16].is_writable
+        assert _pk(a[17]) == str(fee_rot) and a[17].is_writable
+
+    def test_bonding_curve_v2_pda(self) -> None:
+        expected = Pubkey.find_program_address([b"bonding-curve-v2", bytes(MINT)], PUMP_PROGRAM_ID)[
+            0
+        ]
+        assert PF.derive_bonding_curve_v2(MINT) == expected
+
 
 class TestSellInstruction:
     def _ix(self, token_program: Pubkey = TOKEN_PROGRAM):
