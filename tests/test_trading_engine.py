@@ -528,6 +528,45 @@ class TestLiveSell:
         assert sell_call.kwargs["amount_tokens"] == on_chain_balance
 
     @pytest.mark.asyncio
+    async def test_live_sell_adopts_onchain_balance_without_position(self, live_engine, mocks):
+        """Live sell with NO tracked position adopts the on-chain balance — orphan
+        recovery after a restart clears in-memory state (SIM still bails)."""
+        mocks["positions"].positions = {}  # nothing tracked
+
+        on_chain_balance = 152_451_106_296
+        mocks["solana_client"].get_account_info.return_value = b"x" * 80
+        mocks["solana_client"].get_token_accounts_by_owner.return_value = {
+            "address": MagicMock(),
+            "amount": on_chain_balance,
+        }
+        mocks["solana_client"].get_latest_blockhash.return_value = MagicMock()
+        mocks["solana_client"].simulate_transaction.return_value = True
+        mocks["solana_client"].send_transaction.return_value = "orphan_sig"
+        confirmed_status = MagicMock()
+        confirmed_status.err = None
+        confirmed_status.confirmation_status = "confirmed"
+        mocks["solana_client"].get_signature_statuses.return_value = [confirmed_status]
+
+        with (
+            patch.object(
+                live_engine.pumpfun, "derive_bonding_curve_address", return_value=(MagicMock(), 0)
+            ),
+            patch.object(live_engine.pumpfun, "decode_bonding_curve", return_value=FRESH_CURVE),
+            patch.object(live_engine.pumpfun, "build_sell_instruction") as mock_sell_ix,
+            patch("fenrir.trading.engine.Message") as MockMsg,
+            patch("fenrir.trading.engine.Transaction") as MockTx,
+            patch("fenrir.trading.engine.set_compute_unit_price", return_value=MagicMock()),
+            patch("fenrir.trading.engine.set_compute_unit_limit", return_value=MagicMock()),
+        ):
+            mock_sell_ix.return_value = MagicMock()
+            MockTx.new_unsigned.return_value = MagicMock()
+            MockMsg.new_with_blockhash.return_value = MagicMock()
+            result = await live_engine.execute_sell(FAKE_TOKEN, "orphan recovery")
+
+        assert result is True  # sold despite no tracked position
+        assert mock_sell_ix.call_args.kwargs["amount_tokens"] == on_chain_balance
+
+    @pytest.mark.asyncio
     async def test_sell_migrated_token_falls_back_to_jupiter(self, live_engine, mocks):
         """When curve is complete, sell delegates to Jupiter DEX fallback."""
         position = _make_position()
