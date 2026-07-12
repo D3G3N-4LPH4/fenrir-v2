@@ -11,6 +11,7 @@ import base64
 
 import base58
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
+from solders.instruction import AccountMeta
 from solders.message import Message
 from solders.pubkey import Pubkey
 from solders.transaction import Transaction, VersionedTransaction
@@ -25,6 +26,7 @@ from fenrir.protocol.pumpfun import (
     BUY_DISCRIMINATOR,
     PUMP_GLOBAL,
     PUMP_PROGRAM_ID,
+    SELL_DISCRIMINATOR,
     TOKEN_PROGRAM,
     BondingCurveState,
     PumpFunProgram,
@@ -76,6 +78,15 @@ class TradingEngine:
         # config is stable per token. Wrong accounts fail simulation (6024), so a
         # miss is safe, never a silent bad send.
         self._fee_extras_cache: dict[str, tuple[Pubkey, Pubkey]] = {}
+
+        # Per-token sell "remaining accounts" tail. The Feb-2026 cashback upgrade
+        # made the sell take extra appended accounts (user_volume_accumulator,
+        # bonding_curve_v2, rotating fee accounts) whose shape/values depend on the
+        # token and aren't all derivable. We resolve the exact tail by shadowing
+        # the token's own most recent successful sell — substituting our wallet's
+        # user_volume_accumulator — and cache per mint. A miss falls back to the
+        # legacy tail (fails 6024 on cashback tokens, never a bad send).
+        self._sell_tail_cache: dict[str, list[AccountMeta]] = {}
 
     # ── Execution-parameter resolution ─────────────────────────────────
     # When tx profiles are enabled, resolve slippage / priority-fee / jito
@@ -187,6 +198,86 @@ class TradingEngine:
                         return extras
         except Exception as e:
             self.logger.debug(f"fee-extras resolve failed for {key[:8]}...: {e}")
+        return None
+
+    async def _resolve_sell_tail(self, token_mint: Pubkey) -> list[AccountMeta] | None:
+        """Resolve the sell's appended remaining-accounts tail (indices 14+).
+
+        The Feb-2026 cashback upgrade made the deployed sell take extra Anchor
+        remaining accounts the IDL doesn't declare. We shadow the token's own most
+        recent successful sell and copy its tail verbatim, re-deriving only the
+        per-seller `user_volume_accumulator` for our wallet. This auto-adapts to
+        the token's cashback vs non-cashback shape and mirrors an accepted tx, so
+        it's correct by construction. Returns None when no sell can be shadowed
+        (the builder then uses the legacy two-account tail).
+        """
+        key = str(token_mint)
+        cached = self._sell_tail_cache.get(key)
+        if cached is not None:
+            return cached
+        our = str(self.wallet.pubkey)
+        our_uva = self.pumpfun.derive_user_volume_accumulator(self.wallet.pubkey)
+        try:
+            sigs = await self.client.get_recent_signatures(token_mint, limit=40)
+            for s in sigs:
+                if getattr(s, "err", None) is not None:
+                    continue
+                tx = await self.client.get_transaction(str(s.signature))
+                if not tx:
+                    continue
+                msg = tx.transaction.transaction.message
+                keys = [str(k) for k in msg.account_keys]
+                writable_map = {
+                    str(k): bool(getattr(k, "writable", False)) for k in msg.account_keys
+                }
+                # A modern pump sell is often a CPI (inner) instruction — scan both.
+                all_ix = list(msg.instructions)
+                meta = getattr(tx.transaction, "meta", None)
+                for inner in getattr(meta, "inner_instructions", None) or []:
+                    all_ix.extend(inner.instructions)
+                for ix in all_ix:
+                    pid = (
+                        str(ix.program_id)
+                        if hasattr(ix, "program_id")
+                        else keys[ix.program_id_index]
+                    )
+                    if pid != str(PUMP_PROGRAM_ID):
+                        continue
+                    data = getattr(ix, "data", None)
+                    raw = base58.b58decode(data) if isinstance(data, str) else bytes(data or b"")
+                    if raw[:8] != SELL_DISCRIMINATOR:
+                        continue
+                    accs = getattr(ix, "accounts", [])
+                    resolved = (
+                        [keys[i] for i in accs]
+                        if (accs and isinstance(accs[0], int))
+                        else [str(a) for a in accs]
+                    )
+                    if len(resolved) <= 14:
+                        continue  # no appended tail to shadow (legacy-shaped sell)
+                    seller = resolved[6]
+                    if seller == our:
+                        continue  # don't shadow our own sells (guard; they'd have failed)
+                    shadow_uva = str(
+                        self.pumpfun.derive_user_volume_accumulator(Pubkey.from_string(seller))
+                    )
+                    tail: list[AccountMeta] = []
+                    for a in resolved[14:]:
+                        pk = our_uva if a == shadow_uva else Pubkey.from_string(a)
+                        tail.append(
+                            AccountMeta(
+                                pubkey=pk,
+                                is_signer=False,
+                                is_writable=writable_map.get(a, False),
+                            )
+                        )
+                    self._sell_tail_cache[key] = tail
+                    self.logger.debug(
+                        f"sell-tail resolved for {key[:8]}...: {len(tail)} extra acct(s)"
+                    )
+                    return tail
+        except Exception as e:
+            self.logger.debug(f"sell-tail resolve failed for {key[:8]}...: {e}")
         return None
 
     async def close(self) -> None:
@@ -555,7 +646,11 @@ class TradingEngine:
                 return False
             creator = Pubkey.from_string(curve_state.creator)
             fee_recipient = await self._live_fee_recipient()
-            extras = await self._resolve_fee_extras(token_mint)
+            # Prefer the exact cashback-aware tail shadowed from the token's own
+            # recent sell; fall back to the legacy two-account tail only when none
+            # can be shadowed (older non-cashback tokens).
+            sell_tail = await self._resolve_sell_tail(token_mint)
+            extras = None if sell_tail else await self._resolve_fee_extras(token_mint)
             sell_ix = self.pumpfun.build_sell_instruction(
                 seller=self.wallet.pubkey,
                 token_mint=token_mint,
@@ -567,6 +662,7 @@ class TradingEngine:
                 fee_recipient=fee_recipient,
                 buyback_fee_recipient=extras[0] if extras else None,
                 fee_pool_recipient=extras[1] if extras else None,
+                extra_accounts=sell_tail,
             )
 
             # 7. Build compute budget instructions

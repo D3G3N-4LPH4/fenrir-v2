@@ -378,14 +378,28 @@ class PumpFunProgram:
         fee_recipient: Pubkey | None = None,
         buyback_fee_recipient: Pubkey | None = None,
         fee_pool_recipient: Pubkey | None = None,
+        extra_accounts: list[AccountMeta] | None = None,
     ) -> Instruction:
         """
-        Build a pump.fun `sell` instruction (live 16-account layout).
+        Build a pump.fun `sell` instruction.
+
+        The IDL declares only 14 accounts (…`fee_config`, `fee_program`), but the
+        Feb-2026 "cashback upgrade" made the deployed program read extra Anchor
+        *remaining accounts* appended after those 14. Their shape depends on the
+        token: a cashback token needs `user_volume_accumulator`, `bonding_curve_v2`
+        and a rotating fee account; a non-cashback token needs two rotating fee
+        accounts. Missing/wrong tail accounts make the program read shifted indices
+        → u64 math on garbage → the misleadingly-named 6024 "Overflow".
+
+        Because those accounts rotate / aren't all derivable, the caller resolves
+        the exact tail by shadowing the token's own recent successful sell and
+        passes it as `extra_accounts`. When `extra_accounts` is None we fall back
+        to the legacy two-account (buyback + fee-pool) tail — correct only for
+        older non-cashback tokens.
 
         Note vs buy: creator_vault comes BEFORE token_program, and there are no
-        volume accumulators / track_volume arg. Data: disc(8) + amount(u64) +
-        min_sol_output(u64). Like buy, the deployed program needs two extra
-        *writable* v2 buyback fee accounts appended (IDL lists only 14).
+        volume accumulators / track_volume arg in the *declared* accounts. Data:
+        disc(8) + amount(u64) + min_sol_output(u64).
         """
         data = (
             SELL_DISCRIMINATOR
@@ -420,18 +434,30 @@ class PumpFunProgram:
             AccountMeta(pubkey=PUMP_PROGRAM_ID, is_signer=False, is_writable=False),
             AccountMeta(pubkey=PUMP_FEE_CONFIG, is_signer=False, is_writable=False),
             AccountMeta(pubkey=PUMP_FEE_PROGRAM, is_signer=False, is_writable=False),
-            # v2 buyback fee accounts (writable) — appended remaining-accounts.
-            AccountMeta(
-                pubkey=buyback_fee_recipient or PUMP_BUYBACK_FEE_RECIPIENT,
-                is_signer=False,
-                is_writable=True,
-            ),
-            AccountMeta(
-                pubkey=fee_pool_recipient or PUMP_FEE_POOL_RECIPIENT,
-                is_signer=False,
-                is_writable=True,
-            ),
         ]
+
+        if extra_accounts is not None:
+            # Exact remaining-accounts tail shadowed from the token's own recent
+            # successful sell (per-token cashback vs non-cashback shape, with our
+            # wallet's user_volume_accumulator substituted in).
+            accounts.extend(extra_accounts)
+        else:
+            # Legacy fallback: two v2 buyback fee accounts. Correct only for older
+            # non-cashback tokens; cashback tokens fail 6024 without the tail above.
+            accounts.append(
+                AccountMeta(
+                    pubkey=buyback_fee_recipient or PUMP_BUYBACK_FEE_RECIPIENT,
+                    is_signer=False,
+                    is_writable=True,
+                )
+            )
+            accounts.append(
+                AccountMeta(
+                    pubkey=fee_pool_recipient or PUMP_FEE_POOL_RECIPIENT,
+                    is_signer=False,
+                    is_writable=True,
+                )
+            )
         return Instruction(program_id=self.program_id, accounts=accounts, data=data)
 
     def derive_bonding_curve_address(self, token_mint: Pubkey) -> tuple[Pubkey, int]:
