@@ -158,7 +158,9 @@ class EnsembleScorer:
     OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions"
 
     # Primary: fast + cheap; Secondary: independent architecture
-    PRIMARY_MODEL = "anthropic/claude-3-5-haiku"
+    # NOTE: anthropic/claude-3-5-haiku is retired on OpenRouter (404 "No endpoints
+    # found") — use the current-generation Haiku id, which matches the brain default.
+    PRIMARY_MODEL = "anthropic/claude-haiku-4-5"
     SECONDARY_MODEL = "openai/gpt-4o-mini"
 
     def __init__(
