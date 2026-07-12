@@ -88,6 +88,12 @@ class TradingEngine:
         # legacy tail (fails 6024 on cashback tokens, never a bad send).
         self._sell_tail_cache: dict[str, list[AccountMeta]] = {}
 
+        # Per-token buy "remaining accounts" tail (bonding_curve_v2 + rotating fee).
+        # bonding_curve_v2 is a derivable PDA and the rotating fee account is global,
+        # so — unlike the old shadow-a-prior-buy approach — even the literal first
+        # buyer of a token can build a correct cashback tail. Cache per mint.
+        self._buy_tail_cache: dict[str, list[AccountMeta]] = {}
+
     # ── Execution-parameter resolution ─────────────────────────────────
     # When tx profiles are enabled, resolve slippage / priority-fee / jito
     # per strategy; otherwise fall back to the flat BotConfig values so
@@ -280,6 +286,94 @@ class TradingEngine:
             self.logger.debug(f"sell-tail resolve failed for {key[:8]}...: {e}")
         return None
 
+    async def _resolve_buy_tail(self, token_mint: Pubkey) -> list[AccountMeta] | None:
+        """Resolve the buy's appended cashback tail (indices 16+): bonding_curve_v2
+        then a rotating fee account.
+
+        Prefers shadowing this token's own recent successful buy (exact tail). For
+        the literal first buyer with no such buy, shadows ANY recent cashback buy as
+        a template and substitutes this mint's DERIVED bonding_curve_v2 (the rotating
+        fee account is global, so the template's is valid) — so fresh-launch snipes
+        execute instead of fast-failing 6024. Returns None when no cashback template
+        is found (non-cashback token → caller uses the legacy shadow/tail).
+        """
+        key = str(token_mint)
+        cached = self._buy_tail_cache.get(key)
+        if cached is not None:
+            return cached
+        our_bcv2 = str(self.pumpfun.derive_bonding_curve_v2(token_mint))
+        try:
+            # pass 1: this token's own buys (verbatim tail);
+            # pass 2: any recent pump buy as a cashback template (substitute bcv2).
+            for scope in (token_mint, PUMP_PROGRAM_ID):
+                sigs = await self.client.get_recent_signatures(scope, limit=40)
+                for s in sigs:
+                    if getattr(s, "err", None) is not None:
+                        continue
+                    tx = await self.client.get_transaction(str(s.signature))
+                    if not tx:
+                        continue
+                    msg = tx.transaction.transaction.message
+                    keys = [str(k) for k in msg.account_keys]
+                    writable_map = {
+                        str(k): bool(getattr(k, "writable", False)) for k in msg.account_keys
+                    }
+                    all_ix = list(msg.instructions)
+                    meta = getattr(tx.transaction, "meta", None)
+                    for inner in getattr(meta, "inner_instructions", None) or []:
+                        all_ix.extend(inner.instructions)
+                    for ix in all_ix:
+                        pid = (
+                            str(ix.program_id)
+                            if hasattr(ix, "program_id")
+                            else keys[ix.program_id_index]
+                        )
+                        if pid != str(PUMP_PROGRAM_ID):
+                            continue
+                        data = getattr(ix, "data", None)
+                        raw = (
+                            base58.b58decode(data) if isinstance(data, str) else bytes(data or b"")
+                        )
+                        if raw[:8] != BUY_DISCRIMINATOR:
+                            continue
+                        accs = getattr(ix, "accounts", [])
+                        resolved = (
+                            [keys[i] for i in accs]
+                            if (accs and isinstance(accs[0], int))
+                            else [str(a) for a in accs]
+                        )
+                        if len(resolved) <= 16:
+                            continue  # no appended tail (non-cashback-shaped buy)
+                        tmpl_bcv2 = str(
+                            self.pumpfun.derive_bonding_curve_v2(Pubkey.from_string(resolved[2]))
+                        )
+                        tail_src = resolved[16:]
+                        if tmpl_bcv2 not in tail_src:
+                            continue  # not a cashback template — skip
+                        tail: list[AccountMeta] = []
+                        for a in tail_src:
+                            pk = (
+                                Pubkey.from_string(our_bcv2)
+                                if a == tmpl_bcv2
+                                else Pubkey.from_string(a)
+                            )
+                            tail.append(
+                                AccountMeta(
+                                    pubkey=pk,
+                                    is_signer=False,
+                                    is_writable=writable_map.get(a, False),
+                                )
+                            )
+                        self._buy_tail_cache[key] = tail
+                        self.logger.debug(
+                            f"buy-tail resolved for {key[:8]}...: {len(tail)} extra acct(s) "
+                            f"({'own' if scope == token_mint else 'template'})"
+                        )
+                        return tail
+        except Exception as e:
+            self.logger.debug(f"buy-tail resolve failed for {key[:8]}...: {e}")
+        return None
+
     async def close(self) -> None:
         """Release resources held by the engine (tx-profile RPC session)."""
         if self.tx_config is not None:
@@ -430,23 +524,24 @@ class TradingEngine:
             #    the token's per-token v2 buyback fee accounts (a stale/wrong one
             #    → 6024 Overflow). Both fail simulation if wrong, never spend SOL.
             fee_recipient = await self._live_fee_recipient()
-            extras = await self._resolve_fee_extras(token_mint)
-            if extras is None:
-                # No prior on-chain buy to shadow → we can't resolve the token's
-                # per-token buyback fee account (idx16), which is NOT a derivable
-                # PDA (verified on-chain: the sharing-config PDA doesn't match).
-                # Falling back to the module constant is wrong for this token and
-                # the buy would fail simulation with 6024 Overflow. Fail fast with
-                # a clear reason instead — this is expected only for the literal
-                # first buyer of a token; retry once it has ≥1 buy to shadow.
+            # Cashback tokens (all fresh launches now) need bonding_curve_v2 +
+            # a rotating fee account appended. bonding_curve_v2 is a derivable PDA
+            # and the rotating account is global, so this resolves even for the
+            # literal first buyer — unblocking fresh-launch snipes. Non-cashback
+            # tokens fall back to shadowing the legacy buyback/fee-pool pair.
+            buy_tail = await self._resolve_buy_tail(token_mint)
+            extras = None if buy_tail else await self._resolve_fee_extras(token_mint)
+            if buy_tail is None and extras is None:
+                # Neither a cashback tail nor a legacy shadow could be resolved —
+                # a wrong tail would fail simulation with 6024 Overflow. Fail fast
+                # with no SOL spent (rare: a non-cashback token with no prior buy).
                 self.logger.warning(
-                    f"Skipping curve buy for {str(token_mint)[:8]}...: no prior buy to "
-                    f"shadow the per-token fee accounts (first-buyer). Would fail 6024; "
-                    f"no SOL spent."
+                    f"Skipping curve buy for {str(token_mint)[:8]}...: could not resolve "
+                    f"the per-token fee accounts. Would fail 6024; no SOL spent."
                 )
                 return False
-            buyback_recipient = extras[0]
-            fee_pool_recipient = extras[1]
+            buyback_recipient = extras[0] if extras else None
+            fee_pool_recipient = extras[1] if extras else None
 
             # 6. Idempotently create the buyer's ATA (with the correct token
             #    program), then build the buy — pump.fun requires the ATA to
@@ -471,6 +566,7 @@ class TradingEngine:
                 fee_recipient=fee_recipient,
                 buyback_fee_recipient=buyback_recipient,
                 fee_pool_recipient=fee_pool_recipient,
+                extra_accounts=buy_tail,
             )
 
             # 7. Build compute budget instructions for priority
