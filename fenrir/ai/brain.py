@@ -25,7 +25,7 @@ from collections import deque
 from datetime import datetime
 from typing import cast
 
-from fenrir.ai.agent_panel import MultiAgentPanel
+from fenrir.ai.agent_panel import MultiAgentPanel, PanelResult
 from fenrir.ai.context_builder import apply_exit_plan_to_position, build_batched_exit_context
 from fenrir.ai.decision_engine import (
     AIDecision,
@@ -33,9 +33,26 @@ from fenrir.ai.decision_engine import (
     TokenAnalysis,
     TokenMetadata,
 )
-from fenrir.ai.ensemble_scorer import EnsembleScorer
+from fenrir.ai.ensemble_scorer import EnsembleResult, EnsembleScorer
 from fenrir.ai.local_backend import LocalAITradingAnalyst
 from fenrir.ai.memory import AISessionMemory, DecisionRecord
+
+
+def _is_data_poor_launch(token_data: dict) -> bool:
+    """True for a bare fresh pump.fun launch (no momentum/social data yet).
+
+    Enriched candidates carry a scanner ``tier``, a ``smart_money_tier``, an
+    explicit ``source``, or market/holder data; fresh launches carry none. The
+    panel's momentum/narrative lenses can only score the enriched kind, so the
+    caller gates launches on the risk/safety lens alone.
+    """
+    return not (
+        token_data.get("tier")
+        or token_data.get("smart_money_tier")
+        or token_data.get("source") in ("scanner", "smart_money")
+        or token_data.get("holder_count")
+        or token_data.get("market_cap_usd")
+    )
 
 
 class ClaudeBrain:
@@ -287,10 +304,23 @@ class ClaudeBrain:
             if should_buy and self._ensemble_scorer:
                 try:
                     ensemble_ctx = self._build_ensemble_context(token_data, analysis)
-                    ensemble = await self._ensemble_scorer.score(
-                        context=ensemble_ctx,
-                        sol_amount=self.config.buy_amount_sol,
-                    )
+                    ensemble: EnsembleResult | PanelResult
+                    # Fresh launches have no momentum/social data for the panel's
+                    # momentum/narrative lenses — running them would reject every
+                    # snipe. Gate launches on the risk/safety lens only (veto).
+                    if isinstance(self._ensemble_scorer, MultiAgentPanel) and _is_data_poor_launch(
+                        token_data
+                    ):
+                        ensemble = await self._ensemble_scorer.score(
+                            context=ensemble_ctx,
+                            sol_amount=self.config.buy_amount_sol,
+                            veto_only=True,
+                        )
+                    else:
+                        ensemble = await self._ensemble_scorer.score(
+                            context=ensemble_ctx,
+                            sol_amount=self.config.buy_amount_sol,
+                        )
                     # Per-lens breakdown (panel: risk/momentum/narrative; ensemble:
                     # per-model) so rejections/sizing are explainable in the logs.
                     detail = (

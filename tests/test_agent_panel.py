@@ -156,3 +156,37 @@ class TestScoreIntegration:
         result = await panel.score("ctx", sol_amount=0.5)
         s = result.summary()
         assert "risk=" in s and "momentum=" in s and "narrative=" in s
+
+
+class TestVetoOnly:
+    """Risk-only (fresh-launch) path: run only the veto lens, aggregate as a veto."""
+
+    def test_aggregate_veto_passes_when_safe(self):
+        r = _panel()._aggregate_veto([_ar("risk", 55, veto=True)])
+        assert r.conviction is ConvictionLevel.HIGH_CONVICTION
+        assert r.position_multiplier == 1.0
+        assert r.should_trade is True
+
+    def test_aggregate_veto_rejects_below_floor(self):
+        r = _panel()._aggregate_veto([_ar("risk", 18, veto=True)])
+        assert r.conviction is ConvictionLevel.REJECT
+        assert r.should_trade is False
+        assert "risk" in (r.veto_reason or "")
+
+    def test_aggregate_veto_failopen_when_risk_unavailable(self):
+        r = _panel()._aggregate_veto([_ar("risk", 0, veto=True, failed=True)])
+        # Flaky risk call must not block trading — degrade to a pass (brain-only).
+        assert r.should_trade is True
+        assert r.conviction is ConvictionLevel.DEGRADED
+
+    @pytest.mark.asyncio
+    async def test_score_veto_only_runs_only_risk_agent(self):
+        panel = _panel()
+        panel._session = cast(
+            aiohttp.ClientSession, _Session('{"score": 72, "decision": "BUY", "reasoning": "ok"}')
+        )
+        result = await panel.score("ctx", sol_amount=0.01, veto_only=True)
+        assert len(result.agents) == 1  # only the risk (veto) lens
+        assert result.agents[0].name == "risk"
+        assert cast(_Session, panel._session).calls == 1
+        assert result.should_trade is True

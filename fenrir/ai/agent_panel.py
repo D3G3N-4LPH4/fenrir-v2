@@ -163,26 +163,58 @@ class MultiAgentPanel:
             await self._session.close()
             self._session = None
 
-    async def score(self, context: str, sol_amount: float = 0.0) -> PanelResult:
-        """Evaluate `context` with the whole panel in parallel and aggregate.
+    async def score(
+        self, context: str, sol_amount: float = 0.0, veto_only: bool = False
+    ) -> PanelResult:
+        """Evaluate `context` with the panel in parallel and aggregate.
 
-        `sol_amount` is accepted for interface parity with EnsembleScorer (the
-        panel always runs the full set of agents).
+        `sol_amount` is accepted for interface parity with EnsembleScorer.
+
+        `veto_only` runs ONLY the veto (risk/safety) agents and aggregates them as
+        a pure safety veto — for data-poor fresh launches, where the momentum and
+        narrative lenses have no volume/social data to score and would otherwise
+        reject every snipe. The risk lens still evaluates mint/LP/holder/creator
+        signals, so unsafe tokens are still vetoed; safe-enough ones pass.
         """
         await self.initialize()
+        agents = [a for a in self.agents if a.veto] if veto_only else self.agents
         raw = await asyncio.gather(
-            *(self._ask(agent, context) for agent in self.agents),
+            *(self._ask(agent, context) for agent in agents),
             return_exceptions=True,
         )
         results: list[AgentResult] = []
-        for agent, r in zip(self.agents, raw, strict=True):
+        for agent, r in zip(agents, raw, strict=True):
             if isinstance(r, AgentResult):
                 results.append(r)
             else:
                 results.append(
                     AgentResult(agent.name, 0.0, "SKIP", "call raised", agent.veto, True, str(r))
                 )
-        return self._aggregate(results)
+        return self._aggregate_veto(results) if veto_only else self._aggregate(results)
+
+    def _aggregate_veto(self, results: list[AgentResult]) -> PanelResult:
+        """Pure safety-veto aggregation for the risk-only (fresh-launch) path.
+
+        Reject only if a veto agent scores below the safety floor; otherwise pass
+        at full size. If the risk lens is unavailable (all calls failed), degrade
+        to a pass (brain-only) rather than block trading on a flaky call.
+        """
+        ok = [r for r in results if not r.failed]
+        if not ok:
+            return PanelResult(
+                ConvictionLevel.DEGRADED, 1.0, 0.0, results, "risk lens unavailable — brain-only"
+            )
+        for r in ok:
+            if r.veto and r.score < self.veto_floor:
+                return PanelResult(
+                    ConvictionLevel.REJECT,
+                    0.0,
+                    r.score,
+                    results,
+                    f"{r.name} safety {r.score:.0f} < floor {self.veto_floor:.0f}",
+                )
+        avg = sum(r.score for r in ok) / len(ok)
+        return PanelResult(ConvictionLevel.HIGH_CONVICTION, 1.0, avg, results)
 
     async def _ask(self, agent: Agent, context: str) -> AgentResult:
         assert self._session is not None

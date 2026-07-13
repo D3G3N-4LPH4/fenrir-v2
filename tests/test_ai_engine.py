@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from fenrir.ai.brain import ClaudeBrain
+from fenrir.ai.brain import ClaudeBrain, _is_data_poor_launch
 from fenrir.ai.decision_engine import (
     AIDecision,
     AITradingAnalyst,
@@ -873,3 +873,21 @@ class TestClaudeBrainHardFloor:
         assert action == "EXIT"
         assert reason is not None
         assert "hard floor" in reason.lower()
+
+
+class TestIsDataPoorLaunch:
+    """Fresh launches (risk-only panel) vs enriched candidates (full panel)."""
+
+    def test_bare_launch_is_data_poor(self):
+        assert _is_data_poor_launch({"token_address": "x", "initial_liquidity_sol": 6.0}) is True
+
+    def test_scanner_tier_is_data_rich(self):
+        assert _is_data_poor_launch({"token_address": "x", "tier": "mid"}) is False
+
+    def test_smart_money_is_data_rich(self):
+        assert _is_data_poor_launch({"token_address": "x", "smart_money_tier": "A"}) is False
+        assert _is_data_poor_launch({"token_address": "x", "source": "smart_money"}) is False
+
+    def test_market_data_present_is_data_rich(self):
+        assert _is_data_poor_launch({"token_address": "x", "holder_count": 120}) is False
+        assert _is_data_poor_launch({"token_address": "x", "market_cap_usd": 50000}) is False
