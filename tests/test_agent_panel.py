@@ -65,6 +65,16 @@ class TestAggregate:
         assert r.conviction is ConvictionLevel.REJECT
         assert r.veto_reason == "all agents failed"
 
+    def test_relaxed_buy_threshold_passes_moderate_scores(self):
+        # Established swing scores (risk 72 / momentum 50 / narrative 40): the
+        # default 60 bar rejects (only risk qualifies), but a relaxed 48 bar lets
+        # risk+momentum count → majority → trade.
+        agents = [_ar("risk", 72, veto=True), _ar("momentum", 50), _ar("narrative", 40)]
+        assert _panel()._aggregate(agents).should_trade is False  # default 60
+        relaxed = _panel()._aggregate(agents, buy_threshold=48)
+        assert relaxed.should_trade is True
+        assert relaxed.conviction is ConvictionLevel.LOW_CONVICTION
+
     def test_partial_failure_is_degraded(self):
         r = _panel()._aggregate(
             [_ar("risk", 80, veto=True), _ar("momentum", 70), _ar("narrative", 0, failed=True)]
