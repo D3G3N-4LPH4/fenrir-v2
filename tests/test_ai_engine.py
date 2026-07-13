@@ -345,6 +345,24 @@ class TestAITradingAnalystBuildPrompt:
         assert "confidence" in prompt
         assert "risk_score" in prompt
 
+    def test_launch_prompt_uses_fomo_framing(self, analyst, sample_token_metadata):
+        """A fresh launch (tier None) keeps pump.fun launch-sniper framing."""
+        prompt = analyst._build_analysis_prompt(sample_token_metadata, None)
+        assert "pump.fun token launches" in prompt
+        assert "FOMO trap" in prompt
+
+    def test_established_prompt_uses_swing_framing(self, analyst, sample_token_metadata):
+        """A scanner mid/large-cap swaps to swing framing and drops the FOMO rule."""
+        from dataclasses import replace
+
+        prompt = analyst._build_analysis_prompt(replace(sample_token_metadata, tier="mid"), None)
+        assert "SWING/MOMENTUM" in prompt
+        assert "NOT a fresh pump.fun launch" in prompt
+        # The launch-only FOMO-trap heuristic line must be gone (the intro's
+        # "NOT a 'FOMO trap'" reframing is fine and expected).
+        assert "Too high too fast = FOMO trap" not in prompt
+        assert "swing entry vs. exhaustion" in prompt
+
 
 class TestAITradingAnalystTrackPrediction:
     """Tests for AITradingAnalyst.track_prediction_outcome."""
@@ -873,6 +891,38 @@ class TestClaudeBrainHardFloor:
         assert action == "EXIT"
         assert reason is not None
         assert "hard floor" in reason.lower()
+
+
+class TestEnsembleContextTier:
+    """The panel/ensemble context flags established tokens so the risk lens
+    doesn't score them as likely memecoin rugs."""
+
+    def test_established_context_has_tier_framing(self, ai_enabled_config, mock_logger):
+        import types
+
+        brain = ClaudeBrain(ai_enabled_config, mock_logger)
+        analysis = types.SimpleNamespace(reasoning="", red_flags=[], green_flags=[])
+        ctx = brain._build_ensemble_context(
+            {
+                "name": "Doge",
+                "symbol": "DOGE",
+                "tier": "mid",
+                "market_cap_usd": 500_000,
+                "liquidity_usd": 120_000,
+                "holder_count": 3000,
+            },
+            analysis,  # type: ignore[arg-type]
+        )
+        assert "ESTABLISHED MID-CAP" in ctx
+        assert "NOT a fresh launch" in ctx
+
+    def test_launch_context_has_no_tier_framing(self, ai_enabled_config, mock_logger):
+        import types
+
+        brain = ClaudeBrain(ai_enabled_config, mock_logger)
+        analysis = types.SimpleNamespace(reasoning="", red_flags=[], green_flags=[])
+        ctx = brain._build_ensemble_context({"name": "x", "symbol": "X"}, analysis)  # type: ignore[arg-type]
+        assert "ESTABLISHED" not in ctx
 
 
 class TestIsDataPoorLaunch:
