@@ -292,3 +292,27 @@ class TestEnsembleResult:
                 final_score=80.0,
             )
             assert r.should_trade == expected
+
+    def test_summary_dual_model(self):
+        r = EnsembleResult(
+            conviction=ConvictionLevel.REJECT,
+            primary=_ok_score("anthropic/claude-haiku-4-5", 55.0, "SKIP"),
+            secondary=_ok_score("openai/gpt-4o-mini", 48.0, "SKIP"),
+            position_multiplier=0.0,
+            final_score=51.5,
+        )
+        s = r.summary()
+        assert "reject" in s
+        assert "claude-haiku-4-5=55" in s and "gpt-4o-mini=48" in s
+
+    def test_summary_solo_and_failed(self):
+        r = EnsembleResult(
+            conviction=ConvictionLevel.REJECT,
+            primary=_failed_score("anthropic/claude-haiku-4-5"),
+            secondary=None,  # sub-threshold primary-only path
+            position_multiplier=0.0,
+            final_score=0.0,
+        )
+        s = r.summary()
+        assert "claude-haiku-4-5=0✗" in s  # failed marker, no secondary listed
+        assert "gpt-4o-mini" not in s

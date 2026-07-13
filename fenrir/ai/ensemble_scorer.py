@@ -118,6 +118,18 @@ class EnsembleResult:
             and self.position_multiplier > 0.0
         )
 
+    def summary(self) -> str:
+        """One-line per-model breakdown for logs (duck-compatible with PanelResult)."""
+        parts = [
+            f"{m.model.split('/')[-1]}={m.score:.0f}{'✗' if m.failed else ''}"
+            for m in (self.primary, self.secondary)
+            if m is not None
+        ]
+        s = f"{self.conviction.value} [{', '.join(parts)}]"
+        if self.disagreement_reason:
+            s += f" ({self.disagreement_reason})"
+        return s
+
 
 # ─────────────────────────────────────────────────────────────
 #  Prompt template
