@@ -257,6 +257,10 @@ class MarketScanner:
     @staticmethod
     def _build_candidate(tok: dict[str, Any], tier: str) -> dict:
         """Shape a Jupiter token entry into the token_data dict the AI/engine use."""
+        s1 = tok.get("stats1h") or {}
+        s24 = tok.get("stats24h") or {}
+        audit = tok.get("audit") or {}
+        vol_24h = (s24.get("buyVolume") or 0) + (s24.get("sellVolume") or 0)
         return {
             "token_address": tok.get("id"),
             "symbol": tok.get("symbol", "???"),
@@ -267,11 +271,19 @@ class MarketScanner:
             "usd_price": tok.get("usdPrice"),
             "holder_count": tok.get("holderCount"),
             "organic_score": tok.get("organicScore"),
+            "organic_score_label": tok.get("organicScoreLabel"),
             "decimals": tok.get("decimals", 6),
             "twitter": tok.get("twitter"),
             "telegram": tok.get("telegram"),
             "website": tok.get("website"),
             "migrated": bool(tok.get("graduatedAt")),
+            # Momentum signals for the AI/panel momentum lens (Jupiter stats).
+            "price_change_1h": s1.get("priceChange"),
+            "price_change_24h": s24.get("priceChange"),
+            "volume_24h_usd": vol_24h,
+            "num_buys_24h": s24.get("numBuys"),
+            "num_sells_24h": s24.get("numSells"),
+            "top_holders_pct": audit.get("topHoldersPercentage"),
             # No pump bonding curve for these — priced via Jupiter/DexScreener.
             "bonding_curve_state": None,
         }

@@ -308,16 +308,26 @@ class ClaudeBrain:
                     # Fresh launches have no momentum/social data for the panel's
                     # momentum/narrative lenses — running them would reject every
                     # snipe. Gate launches on the risk/safety lens only (veto).
-                    if isinstance(self._ensemble_scorer, MultiAgentPanel) and _is_data_poor_launch(
-                        token_data
-                    ):
-                        ensemble = await self._ensemble_scorer.score(
+                    scorer = self._ensemble_scorer
+                    if isinstance(scorer, MultiAgentPanel) and _is_data_poor_launch(token_data):
+                        ensemble = await scorer.score(
                             context=ensemble_ctx,
                             sol_amount=self.config.buy_amount_sol,
                             veto_only=True,
                         )
+                    elif isinstance(scorer, MultiAgentPanel) and token_data.get("tier") in (
+                        "mid",
+                        "large",
+                    ):
+                        # Established swing candidates score more moderately than
+                        # launch snipes — relax the per-lens BUY bar for them.
+                        ensemble = await scorer.score(
+                            context=ensemble_ctx,
+                            sol_amount=self.config.buy_amount_sol,
+                            buy_threshold=self.config.ai_established_buy_threshold,
+                        )
                     else:
-                        ensemble = await self._ensemble_scorer.score(
+                        ensemble = await scorer.score(
                             context=ensemble_ctx,
                             sol_amount=self.config.buy_amount_sol,
                         )
@@ -649,6 +659,28 @@ class ClaudeBrain:
                 "Assess safety by liquidity depth, holder base and track record — a high mcap "
                 "is normal here and is NOT itself a rug signal."
             )
+            # Momentum/flow signals (Jupiter stats) so the momentum lens scores real
+            # data instead of defaulting low on a data-poor context.
+            mom = []
+            pc1, pc24 = token_data.get("price_change_1h"), token_data.get("price_change_24h")
+            if pc1 is not None:
+                mom.append(f"1h price {pc1:+.1f}%")
+            if pc24 is not None:
+                mom.append(f"24h price {pc24:+.1f}%")
+            vol = token_data.get("volume_24h_usd")
+            if vol:
+                mom.append(f"24h volume ~${vol:,.0f}")
+            nb, ns = token_data.get("num_buys_24h"), token_data.get("num_sells_24h")
+            if nb is not None and ns is not None:
+                mom.append(f"24h buys/sells {nb:,}/{ns:,}")
+            osl = token_data.get("organic_score_label")
+            if osl:
+                mom.append(f"organic score: {osl}")
+            thp = token_data.get("top_holders_pct")
+            if thp is not None:
+                mom.append(f"top holders {thp:.0f}%")
+            if mom:
+                lines.append("Momentum/flow: " + ", ".join(mom))
         lines += [
             f"Liquidity: {token_data.get('initial_liquidity_sol', 0):.2f} SOL",
             f"Market cap: {token_data.get('market_cap_sol', 0):.2f} SOL",

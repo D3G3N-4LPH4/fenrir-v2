@@ -910,11 +910,21 @@ class TestEnsembleContextTier:
                 "market_cap_usd": 500_000,
                 "liquidity_usd": 120_000,
                 "holder_count": 3000,
+                "price_change_24h": 12.5,
+                "volume_24h_usd": 250_000,
+                "num_buys_24h": 800,
+                "num_sells_24h": 400,
+                "organic_score_label": "high",
+                "top_holders_pct": 22.0,
             },
             analysis,  # type: ignore[arg-type]
         )
         assert "ESTABLISHED MID-CAP" in ctx
         assert "NOT a fresh launch" in ctx
+        # Momentum/flow signals reach the momentum lens.
+        assert "Momentum/flow:" in ctx
+        assert "24h price +12.5%" in ctx
+        assert "organic score: high" in ctx
 
     def test_launch_context_has_no_tier_framing(self, ai_enabled_config, mock_logger):
         import types

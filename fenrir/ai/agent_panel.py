@@ -164,7 +164,11 @@ class MultiAgentPanel:
             self._session = None
 
     async def score(
-        self, context: str, sol_amount: float = 0.0, veto_only: bool = False
+        self,
+        context: str,
+        sol_amount: float = 0.0,
+        veto_only: bool = False,
+        buy_threshold: float | None = None,
     ) -> PanelResult:
         """Evaluate `context` with the panel in parallel and aggregate.
 
@@ -175,6 +179,10 @@ class MultiAgentPanel:
         narrative lenses have no volume/social data to score and would otherwise
         reject every snipe. The risk lens still evaluates mint/LP/holder/creator
         signals, so unsafe tokens are still vetoed; safe-enough ones pass.
+
+        `buy_threshold` overrides the per-lens BUY cutoff for this call — used to
+        relax the bar for established (swing-trade) candidates, which score more
+        moderately than high-conviction launch snipes.
         """
         await self.initialize()
         agents = [a for a in self.agents if a.veto] if veto_only else self.agents
@@ -190,7 +198,9 @@ class MultiAgentPanel:
                 results.append(
                     AgentResult(agent.name, 0.0, "SKIP", "call raised", agent.veto, True, str(r))
                 )
-        return self._aggregate_veto(results) if veto_only else self._aggregate(results)
+        if veto_only:
+            return self._aggregate_veto(results)
+        return self._aggregate(results, buy_threshold=buy_threshold)
 
     def _aggregate_veto(self, results: list[AgentResult]) -> PanelResult:
         """Pure safety-veto aggregation for the risk-only (fresh-launch) path.
@@ -259,7 +269,10 @@ class MultiAgentPanel:
             logger.debug("Agent %s parse error: %s | raw=%r", agent.name, exc, response[:120])
             return AgentResult(agent.name, 0.0, "SKIP", f"parse error: {exc}", agent.veto, True)
 
-    def _aggregate(self, results: list[AgentResult]) -> PanelResult:
+    def _aggregate(
+        self, results: list[AgentResult], buy_threshold: float | None = None
+    ) -> PanelResult:
+        threshold = buy_threshold if buy_threshold is not None else self.buy_threshold
         ok = [r for r in results if not r.failed]
         if not ok:
             return PanelResult(ConvictionLevel.REJECT, 0.0, 0.0, results, "all agents failed")
@@ -276,7 +289,7 @@ class MultiAgentPanel:
                 )
 
         avg = sum(r.score for r in ok) / len(ok)
-        buys = sum(1 for r in ok if r.score >= self.buy_threshold)
+        buys = sum(1 for r in ok if r.score >= threshold)
         ratio = buys / len(ok)
         degraded = len(ok) < len(results)  # some agent failed but we still decided
 

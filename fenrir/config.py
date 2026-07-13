@@ -300,6 +300,11 @@ class BotConfig:
     # Both are drop-in for the gate. Off by default. Env: AI_MULTI_AGENT_ENABLED.
     ai_multi_agent_enabled: bool = False
 
+    # Panel BUY cutoff for ESTABLISHED (scanner mid/large-cap) candidates. They
+    # swing-trade and score more moderately than launch snipes, so the per-lens
+    # bar is relaxed below the default 60. Env: AI_ESTABLISHED_BUY_THRESHOLD.
+    ai_established_buy_threshold: float = 48.0
+
     # Local Model Backend
     ai_local_model_enabled: bool = False
     ai_local_model_url: str = "http://localhost:8000/v1/chat/completions"
@@ -347,6 +352,9 @@ class BotConfig:
         )
         self.ai_multi_agent_enabled = _env_bool(
             "AI_MULTI_AGENT_ENABLED", self.ai_multi_agent_enabled
+        )
+        self.ai_established_buy_threshold = _env_float(
+            "AI_ESTABLISHED_BUY_THRESHOLD", self.ai_established_buy_threshold
         )
 
         if not self.ai_local_model_url:

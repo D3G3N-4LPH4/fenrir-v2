@@ -50,6 +50,7 @@ _SURFACE_ENV = [
     "SMART_MONEY_POLL_SECONDS",
     "AI_EVALUATE_ALL_LAUNCHES",
     "AI_MULTI_AGENT_ENABLED",
+    "AI_ESTABLISHED_BUY_THRESHOLD",
 ]
 
 
@@ -119,6 +120,13 @@ class TestDefaults:
         cfg = BotConfig.from_mode(TradingMode.DEGEN)
         assert cfg.enabled_strategies == ["sniper"]
         assert cfg.security_filter_enabled is False
+
+    def test_established_buy_threshold_default_and_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert BotConfig().ai_established_buy_threshold == 48.0
+        monkeypatch.setenv("AI_ESTABLISHED_BUY_THRESHOLD", "42")
+        assert BotConfig().ai_established_buy_threshold == 42.0
 
 
 # ---------------------------------------------------------------------------
