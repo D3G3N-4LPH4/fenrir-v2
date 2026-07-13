@@ -621,6 +621,7 @@ class ClaudeBrain:
             website=self._sanitize_metadata_field(token_data.get("website"), max_length=200),
             twitter=self._sanitize_metadata_field(token_data.get("twitter"), max_length=200),
             telegram=self._sanitize_metadata_field(token_data.get("telegram"), max_length=200),
+            tier=token_data.get("tier"),
         )
 
     def _record_response_time(self, ms: float) -> None:
@@ -633,6 +634,22 @@ class ClaudeBrain:
         """Build a compact context string for EnsembleScorer's independent scoring."""
         lines = [
             f"Token: {token_data.get('name', 'Unknown')} ({token_data.get('symbol', '???')})",
+        ]
+        tier = token_data.get("tier")
+        if tier in ("mid", "large"):
+            # Tell the panel's risk lens this is an ESTABLISHED AMM token, not a
+            # fresh pump.fun launch — otherwise it scores it as a likely memecoin
+            # rug (safety ~15) and vetoes every scanner candidate.
+            mcap_usd = token_data.get("market_cap_usd") or 0
+            liq_usd = token_data.get("liquidity_usd") or 0
+            holders = token_data.get("holder_count") or 0
+            lines.append(
+                f"Type: ESTABLISHED {tier.upper()}-CAP trading on an AMM (NOT a fresh launch). "
+                f"~${mcap_usd:,.0f} mcap, ~${liq_usd:,.0f} liquidity, {holders:,} holders. "
+                "Assess safety by liquidity depth, holder base and track record — a high mcap "
+                "is normal here and is NOT itself a rug signal."
+            )
+        lines += [
             f"Liquidity: {token_data.get('initial_liquidity_sol', 0):.2f} SOL",
             f"Market cap: {token_data.get('market_cap_sol', 0):.2f} SOL",
         ]

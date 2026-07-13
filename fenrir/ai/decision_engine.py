@@ -123,6 +123,10 @@ class TokenMetadata:
     telegram_members: int = 0
     launch_announcement_engagement: float = 0.0
 
+    # Market tier — None/"" for a fresh pump.fun launch; "mid"/"large" for a
+    # scanner-surfaced established token (drives swing- vs launch-framed prompt).
+    tier: str | None = None
+
 
 class AITradingAnalyst:
     """
@@ -233,7 +237,24 @@ class AITradingAnalyst:
             else 0
         )
 
-        prompt = f"""You are an expert memecoin trading analyst specializing in pump.fun token launches on Solana. Analyze the following token and provide a trading decision.
+        # Established (scanner mid/large-cap) tokens trade on an AMM and must NOT be
+        # judged by launch-sniping heuristics (which treat high mcap as a FOMO trap).
+        is_established = token.tier in ("mid", "large")
+        if is_established:
+            intro = (
+                f"You are an expert crypto SWING/MOMENTUM trader evaluating an ESTABLISHED "
+                f"{token.tier}-cap token that trades on an AMM — this is NOT a fresh pump.fun "
+                "launch. Judge it as a momentum/swing trade on trend strength, liquidity depth "
+                "and downside risk. A high market cap is EXPECTED and normal for this tier; it is "
+                "NOT a 'FOMO trap' or a red flag. Do NOT apply launch-sniping heuristics."
+            )
+        else:
+            intro = (
+                "You are an expert memecoin trading analyst specializing in pump.fun token "
+                "launches on Solana. Analyze the following token and provide a trading decision."
+            )
+
+        prompt = f"""{intro}
 
 # TOKEN INFORMATION
 Name: {token.name}
@@ -282,10 +303,10 @@ Recent Launch Success Rate: {market_conditions.get('recent_success_rate', 0):.1%
         else:
             prompt += "\nNot provided"
 
-        prompt += """
+        prompt += f"""
 
 # YOUR TASK
-Analyze this token launch and provide:
+Analyze this {"token as a swing/momentum trade" if is_established else "token launch"} and provide:
 
 1. **DECISION**: One of: STRONG_BUY, BUY, SKIP, or AVOID
 2. **CONFIDENCE**: 0.0 to 1.0 (how confident are you?)
@@ -300,10 +321,13 @@ Analyze this token launch and provide:
 - **Holder Distribution**: Too concentrated = rug risk. Aim for <30% in top 10.
 - **Social Presence**: Real community or botted? Quality > quantity.
 - **Creator History**: Serial ruggers = AVOID. Proven track = GREEN FLAG.
-- **Market Cap**: Too high too fast = FOMO trap. Early entry better.
+- {"**Market Cap / Trend**: High mcap is normal for an established token — judge relative strength and whether volume/momentum supports a swing entry vs. exhaustion." if is_established else "**Market Cap**: Too high too fast = FOMO trap. Early entry better."}
 - **Timing**: Is this a good entry point or already pumped?
 - **Name/Symbol**: Derivative/copycat names often underperform.
+"""
 
+        # Plain (non-f) string: contains literal JSON braces.
+        prompt += """
 # RESPONSE FORMAT
 Respond ONLY with valid JSON in this exact format:
 ```json
