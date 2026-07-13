@@ -27,6 +27,7 @@ from solders.pubkey import Pubkey
 
 from fenrir.config import BotConfig
 from fenrir.logger import FenrirLogger
+from fenrir.trading.token_filters import is_tradeable_mint
 
 __all__ = ["SmartMoneyTracker"]
 
@@ -177,9 +178,11 @@ class SmartMoneyTracker:
     def _detect_buys(tx: Any, wallet: str) -> list[tuple[str, float]]:
         """(mint, sol_spent) for mints whose balance INCREASED for `wallet` in this tx.
 
-        Uses the transaction's pre/post SPL-token balances (venue-agnostic). WSOL
-        is excluded (wrapping SOL nets ~0 and is never the target token). sol_spent
-        is the wallet's native lamport decrease (best-effort; 0.0 if unresolvable).
+        Uses the transaction's pre/post SPL-token balances (venue-agnostic). WSOL,
+        stablecoins and LSTs are excluded (a wallet "receiving" USDC is a swap leg
+        or receipt, not a conviction buy — this fired a phantom USDC trade live).
+        sol_spent is the wallet's native lamport decrease (best-effort; 0.0 if
+        unresolvable).
         """
         meta = getattr(getattr(tx, "transaction", None), "meta", None) or getattr(tx, "meta", None)
         if meta is None:
@@ -189,7 +192,9 @@ class SmartMoneyTracker:
         bought = [
             mint
             for (owner, mint), amt in post.items()
-            if owner == wallet and mint != WSOL_MINT and amt > pre.get((owner, mint), 0.0) + 1e-9
+            if owner == wallet
+            and is_tradeable_mint(mint)
+            and amt > pre.get((owner, mint), 0.0) + 1e-9
         ]
         if not bought:
             return []

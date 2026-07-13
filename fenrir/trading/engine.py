@@ -54,6 +54,7 @@ class TradingEngine:
         positions: PositionManager,
         logger: FenrirLogger,
         jito=None,
+        price_feed=None,
     ):
         self.config = config
         self.wallet = wallet
@@ -62,6 +63,11 @@ class TradingEngine:
         self.positions = positions
         self.logger = logger
         self.jito = jito
+        # External SOL-per-token price feed (DexScreener priceNative). Non-curve
+        # (Jupiter) buys price their entry from THIS same source the management
+        # loop marks against, so PnL is scale-consistent (the quote-derived entry
+        # mis-scaled once and showed a phantom -88% on a stablecoin).
+        self.price_feed = price_feed
 
         # Per-strategy execution profiles (slippage/priority-fee/jito). Built
         # only when opted in; otherwise the flat BotConfig settings are used.
@@ -892,6 +898,20 @@ class TradingEngine:
         )
         return True
 
+    async def _feed_entry_price(self, token_address: str) -> float | None:
+        """SOL-per-token price from the external feed (same source the management
+        loop marks against), or None if unavailable — so a Jupiter-buy entry and
+        its later marks share one scale and PnL is meaningful."""
+        if self.price_feed is None:
+            return None
+        try:
+            quote = await self.price_feed.get_price(token_address)
+        except Exception as e:  # noqa: BLE001 - a feed hiccup must not block the buy
+            self.logger.debug(f"feed entry price failed for {token_address[:8]}...: {e}")
+            return None
+        price = getattr(quote, "price", None)
+        return float(price) if isinstance(price, int | float) and price > 0 else None
+
     async def execute_buy_via_jupiter(
         self, token_data: dict, amount_sol: float, strategy_id: str = "default"
     ) -> bool:
@@ -941,7 +961,13 @@ class TradingEngine:
             if ui_amount <= 0:
                 self.logger.warning("Jupiter buy: quote had no output amount")
                 return False
-            entry_price = amount_sol / ui_amount
+            # Price the entry from the SAME feed the management loop marks against
+            # (DexScreener priceNative, SOL/token) so PnL tracks a consistent scale.
+            # Fall back to the quote-implied price only if the feed is unavailable.
+            feed_price = await self._feed_entry_price(token_address)
+            entry_price: float = (
+                feed_price if feed_price is not None else (amount_sol / ui_amount)
+            )
             self.logger.buy_executed(token_address, amount_sol, entry_price)
             self.positions.open_position(
                 token_address=token_address,

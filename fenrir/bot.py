@@ -123,6 +123,7 @@ class FenrirBot:
             self.positions,
             self.logger,
             jito=self.jito,
+            price_feed=self.price_feed,
         )
 
         # Monitor

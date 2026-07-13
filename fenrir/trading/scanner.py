@@ -21,6 +21,7 @@ from typing import Any
 from fenrir.config import BotConfig
 from fenrir.core.jupiter import JupiterSwapEngine
 from fenrir.logger import FenrirLogger
+from fenrir.trading.token_filters import is_tradeable_mint
 
 __all__ = ["MarketScanner"]
 
@@ -172,6 +173,8 @@ class MarketScanner:
         mint = boost.get("tokenAddress")
         if not mint:
             return None
+        if not is_tradeable_mint(mint):
+            return None  # stablecoin / WSOL / LST — not a swing target
         last = self._cooldown.get(mint)
         if last and (now - last).total_seconds() < self.config.scanner_cooldown_minutes * 60:
             return None
@@ -235,6 +238,8 @@ class MarketScanner:
         mint = tok.get("id")
         if not mint:
             return None
+        if not is_tradeable_mint(mint):
+            return None  # stablecoin / WSOL / LST — not a swing target
         last = self._cooldown.get(mint)
         if last and (now - last).total_seconds() < self.config.scanner_cooldown_minutes * 60:
             return None
