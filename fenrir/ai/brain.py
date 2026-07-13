@@ -282,6 +282,7 @@ class ClaudeBrain:
             )
 
             # G0DM0D3: ensemble gate — independent second opinion
+            symbol = token_data.get("symbol", "???")
             buy_amount = None
             if should_buy and self._ensemble_scorer:
                 try:
@@ -290,18 +291,24 @@ class ClaudeBrain:
                         context=ensemble_ctx,
                         sol_amount=self.config.buy_amount_sol,
                     )
+                    # Per-lens breakdown (panel: risk/momentum/narrative; ensemble:
+                    # per-model) so rejections/sizing are explainable in the logs.
+                    detail = (
+                        ensemble.summary()
+                        if hasattr(ensemble, "summary")
+                        else ensemble.conviction.value
+                    )
                     if not ensemble.should_trade:
                         should_buy = False
-                        self.logger.info(
-                            f"🔬 Ensemble REJECTED ${token_data.get('symbol', '???')}: "
-                            f"{ensemble.conviction.value}"
-                        )
+                        self.logger.info(f"🔬 2nd opinion REJECTED ${symbol}: {detail}")
                     elif ensemble.position_multiplier < 1.0:
                         buy_amount = self.config.buy_amount_sol * ensemble.position_multiplier
                         self.logger.info(
-                            f"🔬 Ensemble LOW_CONVICTION: scaling to "
-                            f"{ensemble.position_multiplier:.0%}"
+                            f"🔬 2nd opinion PARTIAL ${symbol} "
+                            f"→ {ensemble.position_multiplier:.0%}: {detail}"
                         )
+                    else:
+                        self.logger.info(f"🔬 2nd opinion PASSED ${symbol}: {detail}")
                 except Exception as ens_err:
                     self.logger.warning(f"🔬 Ensemble scorer error: {ens_err} — skipping gate")
 
@@ -309,7 +316,6 @@ class ClaudeBrain:
             self.memory.record_decision(record)
 
             # Log
-            symbol = token_data.get("symbol", "???")
             self.logger.info(
                 f"🧠 AI BRAIN: {analysis.decision.value.upper()} ${symbol} "
                 f"(conf={analysis.confidence:.0%}, risk={analysis.risk_score:.1f}/10, "
