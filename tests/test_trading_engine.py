@@ -934,6 +934,28 @@ class TestNonCurveBuy:
         assert kwargs["entry_price"] == pytest.approx(0.01 / 2.0)
 
     @pytest.mark.asyncio
+    async def test_jupiter_buy_prices_entry_from_feed(self, live_engine, mocks):
+        """Entry price comes from the price feed (marks' scale), not the quote,
+        when the feed is available — the fix for the phantom-PnL scale mismatch."""
+        mocks["solana_client"].get_balance.return_value = 10.0
+        mocks["jupiter"].get_quote.return_value = {"outAmount": "2000000"}  # 2.0 @6dp
+        mocks["jupiter"].get_swap_transaction.return_value = "b64tx"
+        feed_quote = MagicMock()
+        feed_quote.price = 0.0042  # SOL/token from the feed, differs from 0.01/2.0
+        live_engine.price_feed = MagicMock()
+        live_engine.price_feed.get_price = AsyncMock(return_value=feed_quote)
+        td = {"token_address": FAKE_TOKEN, "tier": "large", "symbol": "BIG", "decimals": 6}
+        with (
+            patch.object(live_engine, "_sign_send_jupiter_swap", new=AsyncMock(return_value="sig")),
+            patch.object(live_engine, "_confirm_transaction", new=AsyncMock(return_value=True)),
+        ):
+            result = await live_engine.execute_buy_via_jupiter(td, 0.01, "default")
+        assert result is True
+        kwargs = mocks["positions"].open_position.call_args.kwargs
+        assert kwargs["entry_price"] == pytest.approx(0.0042)  # feed, not quote-derived
+        assert kwargs["amount_tokens"] == pytest.approx(2.0)  # size still from the quote
+
+    @pytest.mark.asyncio
     async def test_resolve_decimals_prefers_onchain(self, live_engine, mocks):
         mocks["solana_client"].get_token_decimals.return_value = 9
         got = await live_engine._resolve_decimals({"token_address": FAKE_TOKEN, "decimals": 6})
