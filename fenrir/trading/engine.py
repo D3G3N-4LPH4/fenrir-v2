@@ -965,9 +965,7 @@ class TradingEngine:
             # (DexScreener priceNative, SOL/token) so PnL tracks a consistent scale.
             # Fall back to the quote-implied price only if the feed is unavailable.
             feed_price = await self._feed_entry_price(token_address)
-            entry_price: float = (
-                feed_price if feed_price is not None else (amount_sol / ui_amount)
-            )
+            entry_price: float = feed_price if feed_price is not None else (amount_sol / ui_amount)
             self.logger.buy_executed(token_address, amount_sol, entry_price)
             self.positions.open_position(
                 token_address=token_address,
