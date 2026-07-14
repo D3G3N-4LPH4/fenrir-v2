@@ -101,3 +101,39 @@ export interface AvailableStrategy {
   active: boolean
   paused: boolean
 }
+
+export interface DiscoveryScores {
+  overall: number
+  momentum: number
+  safety: number
+  liquidity: number
+  holder: number
+  community: number
+  risk: number
+}
+
+export interface DiscoveryItem {
+  chain: string
+  token_address: string
+  symbol: string
+  name: string
+  market_cap_usd: number
+  liquidity_usd: number
+  volume_24h_usd: number
+  holder_count: number | null
+  age_minutes: number
+  dex_id: string | null
+  matched_filters: string[]
+  scores: DiscoveryScores
+  socials: { twitter: string | null; telegram: string | null; website: string | null }
+  detected_at: string
+}
+
+export interface DiscoveryConfigSurface {
+  enabled: boolean
+  running?: boolean
+  chains: string[]
+  filters: string[]
+  interval_seconds: number
+  min_alert_score: number
+}

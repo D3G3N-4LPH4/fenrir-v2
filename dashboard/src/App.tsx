@@ -15,6 +15,7 @@ import EventFeed from './components/EventFeed'
 import BrainStats from './components/BrainStats'
 import SettingsPanel from './components/SettingsPanel'
 import StrategiesPanel from './components/StrategiesPanel'
+import DiscoveryPanel from './components/DiscoveryPanel'
 import './App.css'
 
 const API = '/api'
@@ -32,7 +33,7 @@ function App() {
   const [brainStats, setBrainStats] = useState<Record<string, unknown> | null>(null)
   const [config, setConfig] = useState<BotConfigSurface | null>(null)
   const [availableStrategies, setAvailableStrategies] = useState<AvailableStrategy[]>([])
-  const [centerTab, setCenterTab] = useState<'positions' | 'strategies'>('positions')
+  const [centerTab, setCenterTab] = useState<'positions' | 'strategies' | 'discovery'>('positions')
   const [wsConnected, setWsConnected] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
@@ -252,16 +253,24 @@ function App() {
             >
               Strategies
             </button>
+            <button
+              className={centerTab === 'discovery' ? 'center-tab active' : 'center-tab'}
+              onClick={() => setCenterTab('discovery')}
+            >
+              Discovery
+            </button>
           </div>
-          {centerTab === 'positions' ? (
+          {centerTab === 'positions' && (
             <PositionsTable positions={positions} isRunning={isRunning} />
-          ) : (
+          )}
+          {centerTab === 'strategies' && (
             <StrategiesPanel
               strategies={availableStrategies}
               isRunning={isRunning}
               onToggle={toggleStrategy}
             />
           )}
+          {centerTab === 'discovery' && <DiscoveryPanel apiBase={API} apiKey={API_KEY} />}
         </div>
 
         <div className="right-col">
