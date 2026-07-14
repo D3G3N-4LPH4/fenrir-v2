@@ -184,22 +184,33 @@ class DiscoveryScanner:
             )
 
 
+EVM_CHAINS = frozenset({Chain.ETHEREUM, Chain.BNB, Chain.BASE})
+
+
 def build_adapters(
     config: DiscoveryConfig,
     dexscreener: Any,
     jupiter: Any = None,
 ) -> dict[Chain, ChainAdapter]:
-    """Construct the available chain adapters for the enabled chains.
+    """Construct chain adapters for the enabled chains.
 
-    Solana is implemented now; EVM chains (Ethereum/BNB/Base) are added in later
-    PRs and are simply skipped (logged) until their adapters land.
+    Solana uses Jupiter + RugCheck; the EVM chains (Ethereum/BNB/Base) share one
+    ``EvmAdapter`` + a single GoPlus provider. All read market data from the shared
+    DexScreener provider.
     """
+    from fenrir.discovery.chains.evm import EvmAdapter
     from fenrir.discovery.chains.solana import SolanaAdapter
+    from fenrir.discovery.providers.goplus import GoPlusProvider
 
     adapters: dict[Chain, ChainAdapter] = {}
+    goplus: GoPlusProvider | None = None
     for chain in config.chains:
         if chain is Chain.SOLANA:
             adapters[chain] = SolanaAdapter(dexscreener, jupiter=jupiter)
+        elif chain in EVM_CHAINS:
+            if goplus is None:
+                goplus = GoPlusProvider()
+            adapters[chain] = EvmAdapter(chain, dexscreener, goplus)
         else:
-            logger.info("Discovery: %s adapter not yet implemented — skipping", chain.value)
+            logger.info("Discovery: %s adapter not available — skipping", chain.value)
     return adapters

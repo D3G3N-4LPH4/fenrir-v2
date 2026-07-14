@@ -139,6 +139,7 @@ class FenrirBot:
         # config.discovery_enabled, since it needs the shared providers).
         self.discovery_scanner: Any = None
         self._discovery_task: asyncio.Task | None = None
+        self._discovery_dex: Any = None  # shared DexScreener provider (closed on stop)
 
         # Smart-money / whale wallet tracker (follow curated wallets; opt-in).
         self.smart_money = SmartMoneyTracker(
@@ -377,7 +378,8 @@ class FenrirBot:
             from fenrir.discovery.scanner import DiscoveryScanner, build_adapters
 
             disc_cfg = self.config.build_discovery_config()
-            adapters = build_adapters(disc_cfg, DexScreenerProvider(), jupiter=self.jupiter)
+            self._discovery_dex = DexScreenerProvider()
+            adapters = build_adapters(disc_cfg, self._discovery_dex, jupiter=self.jupiter)
             self.discovery_scanner = DiscoveryScanner(disc_cfg, adapters, event_bus=self.event_bus)
             self._discovery_task = asyncio.create_task(self.discovery_scanner.start_scanning())
             tasks.append(self._discovery_task)
@@ -1037,6 +1039,9 @@ class FenrirBot:
         if self._discovery_task is not None:
             self._discovery_task.cancel()
             self._discovery_task = None
+        if self._discovery_dex is not None:
+            await self._discovery_dex.close()
+            self._discovery_dex = None
         await self.trading_engine.close()
         await self.claude_brain.close()
         await self.solana_client.close()

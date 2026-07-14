@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from fenrir.discovery.chains.base import ChainAdapter
+from fenrir.discovery.chains.evm import EvmAdapter
 from fenrir.discovery.chains.solana import SolanaAdapter
 
-__all__ = ["ChainAdapter", "SolanaAdapter"]
+__all__ = ["ChainAdapter", "EvmAdapter", "SolanaAdapter"]
