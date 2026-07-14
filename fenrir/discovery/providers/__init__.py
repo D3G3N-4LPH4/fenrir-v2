@@ -4,5 +4,6 @@
 from __future__ import annotations
 
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider
+from fenrir.discovery.providers.goplus import GoPlusProvider
 
-__all__ = ["DexScreenerProvider"]
+__all__ = ["DexScreenerProvider", "GoPlusProvider"]

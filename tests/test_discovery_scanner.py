@@ -144,9 +144,13 @@ class TestDiscoveryScanner:
 
 
 class TestBuildAdapters:
-    def test_solana_built_evm_skipped(self) -> None:
-        cfg = DiscoveryConfig(chains=[Chain.SOLANA, Chain.ETHEREUM, Chain.BNB])
+    def test_all_chains_built(self) -> None:
+        cfg = DiscoveryConfig(chains=[Chain.SOLANA, Chain.ETHEREUM, Chain.BNB, Chain.BASE])
         adapters = build_adapters(cfg, dexscreener=object(), jupiter=object())
-        assert Chain.SOLANA in adapters
-        assert Chain.ETHEREUM not in adapters  # not implemented yet
-        assert Chain.BNB not in adapters
+        assert set(adapters) == {Chain.SOLANA, Chain.ETHEREUM, Chain.BNB, Chain.BASE}
+        # EVM adapters share one GoPlus provider instance.
+        goplus_ids = {
+            id(adapters[c].goplus)  # type: ignore[attr-defined]
+            for c in (Chain.ETHEREUM, Chain.BNB, Chain.BASE)
+        }
+        assert len(goplus_ids) == 1

@@ -89,6 +89,36 @@ class DexScreenerProvider:
             return None
         return self.parse_pair(token_address, snap_chain, best)
 
+    async def fetch_boosted_addresses(self, chain: Chain) -> list[str]:
+        """Return boosted (actively-promoted) token addresses on ``chain``.
+
+        DexScreener's token-boosts feed is cross-chain and keyless — the pragmatic
+        multi-chain discovery source for EVM (there is no free per-chain trending
+        endpoint). Each entry carries ``chainId`` + ``tokenAddress``.
+        """
+        try:
+            session = await self._get_session()
+            async with session.get(DEXSCREENER_BOOSTS, timeout=self.timeout) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json()
+        except Exception as e:  # noqa: BLE001 - fail-open
+            logger.warning("DexScreener boosts fetch failed: %s", e)
+            return []
+        items = data if isinstance(data, list) else data.get("tokens", [])
+        seen: set[str] = set()
+        out: list[str] = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            if Chain.from_dexscreener(it.get("chainId")) is not chain:
+                continue
+            addr = it.get("tokenAddress")
+            if addr and addr not in seen:
+                seen.add(addr)
+                out.append(addr)
+        return out
+
     async def _fetch_pairs(self, token_address: str) -> list[dict[str, Any]]:
         try:
             session = await self._get_session()
