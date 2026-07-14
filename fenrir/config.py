@@ -371,9 +371,7 @@ class BotConfig:
         )
         # When False, an AI timeout/failure SKIPs instead of a rule-based auto-buy —
         # so a slow AI call can't buy a token the AI/panel never actually approved.
-        self.ai_fallback_to_rules = _env_bool(
-            "AI_FALLBACK_TO_RULES", self.ai_fallback_to_rules
-        )
+        self.ai_fallback_to_rules = _env_bool("AI_FALLBACK_TO_RULES", self.ai_fallback_to_rules)
         self.ai_entry_timeout_seconds = _env_float(
             "AI_ENTRY_TIMEOUT_SECONDS", self.ai_entry_timeout_seconds
         )
