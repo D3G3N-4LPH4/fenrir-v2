@@ -16,7 +16,7 @@ from logging.handlers import RotatingFileHandler
 from typing import TYPE_CHECKING, Any, TypedDict
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -620,6 +620,67 @@ async def get_positions():
     except Exception as e:
         logger.error(f"Error getting positions: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting positions: {str(e)}") from e
+
+
+@app.get("/discover")
+async def get_discoveries(
+    chain: str | None = None,
+    filter_name: str | None = Query(default=None, alias="filter"),
+    min_score: float = 0.0,
+    limit: int = 100,
+):
+    """Ranked multi-chain discovery results (discovery-only; not traded).
+
+    Query params: ``chain`` (solana|ethereum|bnb|base), ``filter`` (filter name),
+    ``min_score`` (0–100), ``limit``. Empty when discovery is disabled/not running.
+    """
+    scanner = getattr(bot_instance, "discovery_scanner", None) if bot_instance else None
+    if scanner is None:
+        return {"results": [], "count": 0, "enabled": False}
+
+    from fenrir.discovery.models import Chain
+
+    ch: Chain | None = None
+    if chain:
+        try:
+            ch = Chain(chain.strip().lower())
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"unknown chain '{chain}'") from e
+
+    results = scanner.get_results(
+        chain=ch, filter_name=filter_name, min_score=min_score, limit=limit
+    )
+    return {"results": [r.to_dict() for r in results], "count": len(results), "enabled": True}
+
+
+@app.get("/discover/filters")
+async def get_discovery_filters():
+    """The 3 filter definitions (thresholds) — the discovery filter menu."""
+    from dataclasses import asdict
+
+    from fenrir.discovery.filters import DEFAULT_THRESHOLDS
+
+    return {name.value: asdict(thr) for name, thr in DEFAULT_THRESHOLDS.items()}
+
+
+@app.get("/discover/config")
+async def get_discovery_config():
+    """Current discovery config surface (chains/filters/weights/thresholds)."""
+    from dataclasses import asdict
+
+    if bot_instance is None:
+        return {"enabled": False}
+    scanner = getattr(bot_instance, "discovery_scanner", None)
+    cfg = scanner.config if scanner is not None else bot_instance.config.build_discovery_config()
+    return {
+        "enabled": cfg.enabled,
+        "running": scanner is not None,
+        "chains": [c.value for c in cfg.chains],
+        "filters": [f.value for f in cfg.filters],
+        "interval_seconds": cfg.interval_seconds,
+        "min_alert_score": cfg.min_alert_score,
+        "weights": asdict(cfg.weights),
+    }
 
 
 @app.post("/bot/trade")

@@ -24,6 +24,11 @@ from fenrir.discovery.models import (
     TokenSnapshot,
 )
 
+# NOTE: the scanner/chains stack (DiscoveryScanner, build_adapters) is intentionally
+# NOT re-exported here — importing a discovery submodule (e.g. the DexScreener
+# provider, used by fenrir.filters.market) should stay lightweight. Import the
+# service directly: ``from fenrir.discovery.scanner import DiscoveryScanner``.
+
 __all__ = [
     "Chain",
     "FilterResult",
