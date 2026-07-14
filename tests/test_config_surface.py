@@ -51,6 +51,11 @@ _SURFACE_ENV = [
     "AI_EVALUATE_ALL_LAUNCHES",
     "AI_MULTI_AGENT_ENABLED",
     "AI_ESTABLISHED_BUY_THRESHOLD",
+    "DISCOVERY_ENABLED",
+    "DISCOVERY_CHAINS",
+    "DISCOVERY_FILTERS",
+    "DISCOVERY_INTERVAL_SECONDS",
+    "DISCOVERY_MIN_ALERT_SCORE",
 ]
 
 
@@ -127,6 +132,29 @@ class TestDefaults:
         assert BotConfig().ai_established_buy_threshold == 48.0
         monkeypatch.setenv("AI_ESTABLISHED_BUY_THRESHOLD", "42")
         assert BotConfig().ai_established_buy_threshold == 42.0
+
+    def test_discovery_defaults_off_and_build(self) -> None:
+        cfg = BotConfig()
+        assert cfg.discovery_enabled is False
+        disc = cfg.build_discovery_config()
+        assert disc.enabled is False
+        assert [c.value for c in disc.chains] == ["solana"]
+        assert {f.value for f in disc.filters} == {
+            "low_cap_alpha",
+            "mid_cap_momentum",
+            "high_cap",
+        }
+
+    def test_discovery_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DISCOVERY_ENABLED", "true")
+        monkeypatch.setenv("DISCOVERY_CHAINS", "solana,ethereum,bnb")
+        monkeypatch.setenv("DISCOVERY_FILTERS", "high_cap")
+        monkeypatch.setenv("DISCOVERY_MIN_ALERT_SCORE", "80")
+        disc = BotConfig().build_discovery_config()
+        assert disc.enabled is True
+        assert [c.value for c in disc.chains] == ["solana", "ethereum", "bnb"]
+        assert [f.value for f in disc.filters] == ["high_cap"]
+        assert disc.min_alert_score == 80.0
 
 
 # ---------------------------------------------------------------------------

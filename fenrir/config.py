@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from dotenv import load_dotenv
 
 if TYPE_CHECKING:
+    from fenrir.discovery.config import DiscoveryConfig
     from fenrir.filters import MarketFilterConfig, SecurityFilterConfig
     from fenrir.trading.tx_config import TxConfigManager
 
@@ -264,6 +265,18 @@ class BotConfig:
     market_filter_enabled: bool = False
     market_fail_open_on_fetch_error: bool = True
 
+    # Multi-chain discovery scanner (Solana/ETH/BNB/Base). Discovery-only —
+    # surfaces + scores + alerts across chains; execution stays Solana-only. All
+    # opt-in and off by default. Env: DISCOVERY_ENABLED / DISCOVERY_CHAINS /
+    # DISCOVERY_FILTERS / DISCOVERY_INTERVAL_SECONDS / DISCOVERY_MIN_ALERT_SCORE.
+    discovery_enabled: bool = False
+    discovery_chains: list[str] = field(default_factory=lambda: ["solana"])
+    discovery_filters: list[str] = field(
+        default_factory=lambda: ["low_cap_alpha", "mid_cap_momentum", "high_cap"]
+    )
+    discovery_interval_seconds: float = 120.0
+    discovery_min_alert_score: float = 70.0
+
     # Experimental: on-chain pump.fun→Raydium migration feed (WebSocket only).
     # Off by default; the migration parser is not verified offline. Feeds the
     # migration_snipe strategy when enabled.
@@ -414,6 +427,21 @@ class BotConfig:
             "MIGRATION_FEED_ENABLED", self.migration_feed_enabled
         )
 
+        # ── Multi-chain discovery (opt-in) ─────────────────────────────
+        self.discovery_enabled = _env_bool("DISCOVERY_ENABLED", self.discovery_enabled)
+        env_chains = os.getenv("DISCOVERY_CHAINS", "")
+        if env_chains:
+            self.discovery_chains = [c.strip() for c in env_chains.split(",") if c.strip()]
+        env_disc_filters = os.getenv("DISCOVERY_FILTERS", "")
+        if env_disc_filters:
+            self.discovery_filters = [f.strip() for f in env_disc_filters.split(",") if f.strip()]
+        self.discovery_interval_seconds = _env_float(
+            "DISCOVERY_INTERVAL_SECONDS", self.discovery_interval_seconds
+        )
+        self.discovery_min_alert_score = _env_float(
+            "DISCOVERY_MIN_ALERT_SCORE", self.discovery_min_alert_score
+        )
+
         # ── Execution ──────────────────────────────────────────────────
         self.tx_profiles_enabled = _env_bool("TX_PROFILES_ENABLED", self.tx_profiles_enabled)
 
@@ -505,6 +533,32 @@ class BotConfig:
         return MarketFilterConfig(
             enabled=self.market_filter_enabled,
             fail_open_on_fetch_error=self.market_fail_open_on_fetch_error,
+        )
+
+    def build_discovery_config(self) -> DiscoveryConfig:
+        """Build a DiscoveryConfig from the discovery_* fields (spec defaults kept)."""
+        from fenrir.discovery.config import DiscoveryConfig
+        from fenrir.discovery.filters import FilterName
+        from fenrir.discovery.models import Chain
+
+        chains: list[Chain] = []
+        for c in self.discovery_chains:
+            try:
+                chains.append(Chain(c.strip().lower()))
+            except ValueError:
+                continue
+        filters: list[FilterName] = []
+        for f in self.discovery_filters:
+            try:
+                filters.append(FilterName(f.strip().lower()))
+            except ValueError:
+                continue
+        return DiscoveryConfig(
+            enabled=self.discovery_enabled,
+            chains=chains or [Chain.SOLANA],
+            filters=filters or list(FilterName),
+            interval_seconds=self.discovery_interval_seconds,
+            min_alert_score=self.discovery_min_alert_score,
         )
 
     def build_tx_config_manager(self) -> TxConfigManager:
