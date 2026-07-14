@@ -110,8 +110,13 @@ HIGH_CAP = FilterThresholds(
     min_liquidity_usd=250_000.0,
     min_volume_24h_usd=1_000_000.0,
     min_holder_count=3_000,
-    require_verified=True,
-    require_lp_locked=True,
+    # Soft-safety flags are intentionally OFF for established large-caps: RugCheck
+    # reports low/zero lpLockedPct for migrated Raydium tokens (LP burned into the
+    # pool, not held in a locker) and Jupiter's verified list is curated/narrow, so
+    # requiring them here vetoes legitimate blue-chips (BONK/JUP-class). Universal
+    # safety (mint/freeze/honeypot/blacklist) still gates real risk.
+    require_verified=False,
+    require_lp_locked=False,
 )
 
 DEFAULT_THRESHOLDS: dict[FilterName, FilterThresholds] = {
