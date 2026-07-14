@@ -131,7 +131,9 @@ class JupiterSwapEngine:
     ) -> list[dict]:
         """Fetch a Jupiter trending/top token list (keyless Tokens-v2).
 
-        category: toporganicscore | toptraded | toptrending; interval: 5m|1h|6h|24h.
+        category: toporganicscore | toptraded | toptrending | recent; interval:
+        5m|1h|6h|24h. ``recent`` is a newly-created-pairs feed and takes no
+        interval (``/tokens/v2/recent``); the others are interval-scoped.
         Each token carries mcap, liquidity, usdPrice, holderCount, isVerified,
         organicScore, socials, decimals, graduatedAt. Returns [] on any failure.
         """
@@ -139,7 +141,11 @@ class JupiterSwapEngine:
             await self.initialize()
         assert self.session is not None
         try:
-            url = f"{self.TOKENS_API}/{category}/{interval}"
+            url = (
+                f"{self.TOKENS_API}/{category}"
+                if category == "recent"
+                else f"{self.TOKENS_API}/{category}/{interval}"
+            )
             async with self.session.get(url) as response:
                 if response.status != 200:
                     self.logger.warning(

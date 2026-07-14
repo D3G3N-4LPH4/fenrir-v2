@@ -56,6 +56,7 @@ _SURFACE_ENV = [
     "DISCOVERY_FILTERS",
     "DISCOVERY_INTERVAL_SECONDS",
     "DISCOVERY_MIN_ALERT_SCORE",
+    "DISCOVERY_SOLANA_CATEGORIES",
     "AI_FALLBACK_TO_RULES",
     "AI_ENTRY_TIMEOUT_SECONDS",
 ]
@@ -146,6 +147,8 @@ class TestDefaults:
             "mid_cap_momentum",
             "high_cap",
         }
+        # Fresh-pairs feed ("recent") is on by default so Low/Mid Cap see launches.
+        assert "recent" in disc.solana_categories
 
     def test_ai_fallback_and_timeout_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         assert BotConfig().ai_fallback_to_rules is True  # default: auto-buy on timeout
@@ -165,6 +168,11 @@ class TestDefaults:
         assert [c.value for c in disc.chains] == ["solana", "ethereum", "bnb"]
         assert [f.value for f in disc.filters] == ["high_cap"]
         assert disc.min_alert_score == 80.0
+
+    def test_discovery_solana_categories_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DISCOVERY_SOLANA_CATEGORIES", "recent, toptrending")
+        disc = BotConfig().build_discovery_config()
+        assert disc.solana_categories == ["recent", "toptrending"]
 
 
 # ---------------------------------------------------------------------------

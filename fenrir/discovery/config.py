@@ -31,6 +31,12 @@ class DiscoveryConfig:
 
     enabled: bool = False
     chains: list[Chain] = field(default_factory=lambda: [Chain.SOLANA])
+    # Jupiter feeds the Solana adapter discovers from (deduped). ``recent`` is the
+    # newly-created-pairs feed that gives Low/Mid Cap filters genuinely fresh
+    # launches; ``toptrending``/``toporganicscore`` cover established momentum.
+    solana_categories: list[str] = field(
+        default_factory=lambda: ["toptrending", "toporganicscore", "recent"]
+    )
     filters: list[FilterName] = field(
         default_factory=lambda: [
             FilterName.LOW_CAP_ALPHA,

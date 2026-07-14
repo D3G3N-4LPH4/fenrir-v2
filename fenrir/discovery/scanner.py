@@ -206,7 +206,9 @@ def build_adapters(
     goplus: GoPlusProvider | None = None
     for chain in config.chains:
         if chain is Chain.SOLANA:
-            adapters[chain] = SolanaAdapter(dexscreener, jupiter=jupiter)
+            adapters[chain] = SolanaAdapter(
+                dexscreener, jupiter=jupiter, categories=config.solana_categories
+            )
         elif chain in EVM_CHAINS:
             if goplus is None:
                 goplus = GoPlusProvider()
