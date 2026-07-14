@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
-logger = logging.getLogger("FENRIR.MarketFilter")
+from fenrir.discovery.models import Chain
+from fenrir.discovery.providers.dexscreener import DexScreenerProvider
 
-DEXSCREENER_API = "https://api.dexscreener.com/latest/dex/tokens"
+logger = logging.getLogger("FENRIR.MarketFilter")
 
 
 @dataclass
@@ -161,18 +162,12 @@ class MarketFilter:
 
     def __init__(self, config: MarketFilterConfig) -> None:
         self.config = config
-        self._session: Any = None
-
-    async def _get_session(self) -> Any:
-        if self._session is None or self._session.closed:
-            import aiohttp
-
-            self._session = aiohttp.ClientSession(headers={"User-Agent": "FENRIR/2.0 trading-bot"})
-        return self._session
+        # Shared DexScreener fetch/parse — single source of truth for market data
+        # (the discovery layer and this trade-gate filter read the same snapshot).
+        self._provider = DexScreenerProvider(timeout_seconds=config.fetch_timeout_seconds)
 
     async def close(self) -> None:
-        if self._session and not self._session.closed:
-            await self._session.close()
+        await self._provider.close()
 
     # ── Public entry point ────────────────────────────────────────────
 
@@ -284,84 +279,48 @@ class MarketFilter:
 
     async def _fetch_market_data(self, token_address: str) -> MarketData | None:
         """
-        Fetch token market data from DexScreener public API.
-        Returns the best/most liquid pair found for the token.
+        Fetch token market data via the shared DexScreener provider and map it onto
+        the legacy ``MarketData`` view used by the trade-gate filters. Returns the
+        best/most-liquid pair found for the token, or None on failure.
         """
-        try:
-            session = await self._get_session()
-            url = f"{DEXSCREENER_API}/{token_address}"
-
-            async with session.get(url, timeout=self.config.fetch_timeout_seconds) as resp:
-                if resp.status != 200:
-                    logger.warning(f"DexScreener returned {resp.status} for {token_address[:8]}...")
-                    return None
-                data = await resp.json()
-
-            pairs: list[dict[str, Any]] = data.get("pairs") or []
-            if not pairs:
-                logger.debug(f"No pairs found on DexScreener for {token_address[:8]}...")
-                return None
-
-            # Pick the pair with the highest liquidity (most reliable data)
-            best_pair = max(
-                pairs,
-                key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0),
-            )
-
-            return self._parse_pair(token_address, best_pair)
-
-        except TimeoutError:
-            logger.warning(f"DexScreener timeout for {token_address[:8]}...")
-            return None
-        except Exception as e:
-            logger.warning(f"DexScreener fetch error for {token_address[:8]}...: {e}")
-            return None
+        snap = await self._provider.fetch_snapshot(token_address)
+        return self._snapshot_to_market_data(token_address, snap) if snap else None
 
     def _parse_pair(self, token_address: str, pair: dict[str, Any]) -> MarketData:
-        """Parse a DexScreener pair response into a MarketData object."""
-        now = datetime.now(UTC)
+        """Parse a DexScreener pair into ``MarketData`` (delegates to the provider).
 
-        # Parse creation time and calculate age
-        created_at_ms: int | None = pair.get("pairCreatedAt")
-        pair_created_at: datetime | None = None
-        age_minutes: float = 0.0
+        Kept for backward compatibility; the trade gate is Solana, so the pair is
+        parsed under ``Chain.SOLANA`` (the chain only tags the snapshot, not the
+        chain-agnostic ``MarketData`` fields).
+        """
+        snap = self._provider.parse_pair(token_address, Chain.SOLANA, pair)
+        return self._snapshot_to_market_data(token_address, snap)
 
-        if created_at_ms:
-            pair_created_at = datetime.fromtimestamp(created_at_ms / 1000, tz=UTC)
-            age_minutes = (now - pair_created_at).total_seconds() / 60.0
-
-        # Volume
-        volume = pair.get("volume", {}) or {}
-        # Transactions
-        txns = pair.get("txns", {}) or {}
-        txns_5m = txns.get("m5", {}) or {}
-        txns_1h = txns.get("h1", {}) or {}
-        # Price changes
-        price_change = pair.get("priceChange", {}) or {}
-        # Liquidity
-        liquidity = pair.get("liquidity", {}) or {}
-
+    @staticmethod
+    def _snapshot_to_market_data(token_address: str, snap: Any) -> MarketData:
+        """Adapt a :class:`~fenrir.discovery.models.TokenSnapshot` to ``MarketData``."""
+        price_change = (snap.raw.get("priceChange") or {}) if isinstance(snap.raw, dict) else {}
         return MarketData(
             token_address=token_address,
-            pair_address=pair.get("pairAddress"),
-            dex_id=pair.get("dexId"),
-            price_usd=float(pair.get("priceUsd") or 0),
-            liquidity_usd=float(liquidity.get("usd") or 0),
-            market_cap_usd=float(pair.get("marketCap") or 0),
-            fdv_usd=float(pair.get("fdv") or 0),
-            volume_5m_usd=float(volume.get("m5") or 0),
-            volume_1h_usd=float(volume.get("h1") or 0),
-            volume_6h_usd=float(volume.get("h6") or 0),
-            volume_24h_usd=float(volume.get("h24") or 0),
-            txns_5m_buys=int(txns_5m.get("buys") or 0),
-            txns_5m_sells=int(txns_5m.get("sells") or 0),
-            txns_1h_buys=int(txns_1h.get("buys") or 0),
-            txns_1h_sells=int(txns_1h.get("sells") or 0),
-            price_change_5m_pct=float(price_change.get("m5") or 0),
-            price_change_1h_pct=float(price_change.get("h1") or 0),
+            pair_address=snap.pair_address,
+            dex_id=snap.dex_id,
+            price_usd=snap.price_usd,
+            liquidity_usd=snap.liquidity_usd,
+            market_cap_usd=snap.market_cap_usd,
+            fdv_usd=snap.fdv_usd,
+            volume_5m_usd=snap.volume_5m_usd,
+            volume_1h_usd=snap.volume_1h_usd,
+            volume_6h_usd=snap.volume_6h_usd,
+            volume_24h_usd=snap.volume_24h_usd,
+            txns_5m_buys=snap.txns_5m_buys,
+            txns_5m_sells=snap.txns_5m_sells,
+            txns_1h_buys=snap.txns_1h_buys,
+            txns_1h_sells=snap.txns_1h_sells,
+            price_change_5m_pct=snap.price_change_5m_pct,
+            price_change_1h_pct=snap.price_change_1h_pct,
             price_change_6h_pct=float(price_change.get("h6") or 0),
-            price_change_24h_pct=float(price_change.get("h24") or 0),
-            pair_created_at=pair_created_at,
-            age_minutes=age_minutes,
-            raw=pair,
+            price_change_24h_pct=snap.price_change_24h_pct,
+            pair_created_at=snap.created_at,
+            age_minutes=snap.age_minutes,
+            raw=snap.raw,
         )
