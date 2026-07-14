@@ -154,3 +154,8 @@ class TestBuildAdapters:
             for c in (Chain.ETHEREUM, Chain.BNB, Chain.BASE)
         }
         assert len(goplus_ids) == 1
+
+    def test_solana_adapter_receives_categories(self) -> None:
+        cfg = DiscoveryConfig(chains=[Chain.SOLANA], solana_categories=["recent", "toptrending"])
+        adapters = build_adapters(cfg, dexscreener=object(), jupiter=object())
+        assert adapters[Chain.SOLANA].categories == ["recent", "toptrending"]  # type: ignore[attr-defined]

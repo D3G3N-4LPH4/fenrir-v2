@@ -276,6 +276,11 @@ class BotConfig:
     )
     discovery_interval_seconds: float = 120.0
     discovery_min_alert_score: float = 70.0
+    # Jupiter feeds the Solana discovery adapter pulls from (deduped). Includes the
+    # newly-created-pairs feed ("recent") so Low/Mid Cap filters see fresh launches.
+    discovery_solana_categories: list[str] = field(
+        default_factory=lambda: ["toptrending", "toporganicscore", "recent"]
+    )
 
     # Experimental: on-chain pump.fun→Raydium migration feed (WebSocket only).
     # Off by default; the migration parser is not verified offline. Feeds the
@@ -447,6 +452,11 @@ class BotConfig:
         self.discovery_min_alert_score = _env_float(
             "DISCOVERY_MIN_ALERT_SCORE", self.discovery_min_alert_score
         )
+        env_disc_cats = os.getenv("DISCOVERY_SOLANA_CATEGORIES", "")
+        if env_disc_cats:
+            self.discovery_solana_categories = [
+                s.strip() for s in env_disc_cats.split(",") if s.strip()
+            ]
 
         # ── Execution ──────────────────────────────────────────────────
         self.tx_profiles_enabled = _env_bool("TX_PROFILES_ENABLED", self.tx_profiles_enabled)
@@ -565,6 +575,7 @@ class BotConfig:
             filters=filters or list(FilterName),
             interval_seconds=self.discovery_interval_seconds,
             min_alert_score=self.discovery_min_alert_score,
+            solana_categories=self.discovery_solana_categories,
         )
 
     def build_tx_config_manager(self) -> TxConfigManager:
