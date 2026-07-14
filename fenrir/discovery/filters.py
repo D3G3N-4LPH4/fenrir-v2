@@ -134,7 +134,10 @@ class UniversalSafety:
     require_not_honeypot: bool = True
     require_mint_disabled: bool = True
     require_freeze_disabled: bool = True
-    require_lp_locked: bool = True
+    # LP-lock is NOT universal: pre-migration launches hold liquidity in the
+    # bonding curve (no lockable LP), so Low Cap Alpha must not be gated on it.
+    # Mid/High Cap enforce LP-lock per-filter (require_lp_locked=True) instead.
+    require_lp_locked: bool = False
     require_no_blacklist: bool = True
     max_transfer_tax_pct: float = 10.0
     # When True, a missing (None) safety signal FAILS instead of warning.

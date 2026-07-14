@@ -135,6 +135,11 @@ class FenrirBot:
         # from apply_config_update() without restarting the bot.
         self._scanner_task: asyncio.Task | None = None
 
+        # Multi-chain discovery scanner (discovery-only; built in start() when
+        # config.discovery_enabled, since it needs the shared providers).
+        self.discovery_scanner: Any = None
+        self._discovery_task: asyncio.Task | None = None
+
         # Smart-money / whale wallet tracker (follow curated wallets; opt-in).
         self.smart_money = SmartMoneyTracker(
             config, self.solana_client, self.trading_engine.pumpfun, self.logger
@@ -365,6 +370,17 @@ class FenrirBot:
                 self.smart_money.start_tracking(self._on_candidate, self._on_smart_money_sell)
             )
             tasks.append(self._smart_money_task)
+
+        # Multi-chain discovery scanner — opt-in, discovery-only (no execution).
+        if self.config.discovery_enabled:
+            from fenrir.discovery.providers.dexscreener import DexScreenerProvider
+            from fenrir.discovery.scanner import DiscoveryScanner, build_adapters
+
+            disc_cfg = self.config.build_discovery_config()
+            adapters = build_adapters(disc_cfg, DexScreenerProvider(), jupiter=self.jupiter)
+            self.discovery_scanner = DiscoveryScanner(disc_cfg, adapters, event_bus=self.event_bus)
+            self._discovery_task = asyncio.create_task(self.discovery_scanner.start_scanning())
+            tasks.append(self._discovery_task)
 
         await asyncio.gather(*tasks)
 
@@ -1016,6 +1032,11 @@ class FenrirBot:
         if self._smart_money_task is not None:
             self._smart_money_task.cancel()
             self._smart_money_task = None
+        if self.discovery_scanner is not None:
+            await self.discovery_scanner.stop()
+        if self._discovery_task is not None:
+            self._discovery_task.cancel()
+            self._discovery_task = None
         await self.trading_engine.close()
         await self.claude_brain.close()
         await self.solana_client.close()

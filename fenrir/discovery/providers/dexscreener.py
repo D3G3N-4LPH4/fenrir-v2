@@ -126,8 +126,10 @@ class DexScreenerProvider:
         price_change = pair.get("priceChange") or {}
         liquidity = pair.get("liquidity") or {}
         info = pair.get("info") or {}
-        socials = {s.get("type"): s.get("url") for s in (info.get("socials") or [])}
-        websites = info.get("websites") or []
+        socials = {
+            s.get("type"): s.get("url") for s in (info.get("socials") or []) if isinstance(s, dict)
+        }
+        websites = [w for w in (info.get("websites") or []) if isinstance(w, dict)]
 
         return TokenSnapshot(
             chain=chain,

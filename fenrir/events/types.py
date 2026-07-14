@@ -104,6 +104,31 @@ def token_detected_event(
     )
 
 
+def discovery_event(
+    token_address: str,
+    symbol: str,
+    chain: str,
+    filter_name: str,
+    overall_score: float,
+    scores: dict,
+) -> TradeEvent:
+    """A high-scoring multi-chain discovery hit (surfaced/alerted, not traded)."""
+    return TradeEvent(
+        event_type="DISCOVERY",
+        category=EventCategory.DETECTION,
+        severity=EventSeverity.INFO,
+        token_address=token_address,
+        token_symbol=symbol,
+        data={
+            "chain": chain,
+            "filter": filter_name,
+            "overall_score": round(overall_score, 1),
+            "scores": scores,
+        },
+        message=(f"Discovery [{chain}] ${symbol} — {filter_name} " f"(score {overall_score:.0f})"),
+    )
+
+
 def ai_decision_event(
     token_address: str,
     symbol: str,

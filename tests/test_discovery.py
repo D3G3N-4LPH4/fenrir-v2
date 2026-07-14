@@ -185,6 +185,19 @@ class TestFilters:
         hp.safety.honeypot = True
         assert not self.engine.evaluate(hp, FilterName.LOW_CAP_ALPHA).passed
 
+    def test_low_cap_passes_pre_migration_without_lp_lock(self) -> None:
+        # Pre-migration launches hold liquidity in the bonding curve — no lockable
+        # LP. Universal safety must NOT gate Low Cap Alpha on LP lock.
+        snap = _low_cap_pass()
+        snap.safety.lp_locked_or_burned = None  # unknown (pre-migration)
+        assert self.engine.evaluate(snap, FilterName.LOW_CAP_ALPHA).passed
+        snap.safety.lp_locked_or_burned = False  # explicitly no LP lock yet
+        assert self.engine.evaluate(snap, FilterName.LOW_CAP_ALPHA).passed
+        # Mid Cap still requires LP lock (per-filter).
+        mid = _mid_cap_pass()
+        mid.safety.lp_locked_or_burned = False
+        assert not self.engine.evaluate(mid, FilterName.MID_CAP_MOMENTUM).passed
+
     def test_universal_safety_can_be_disabled(self) -> None:
         engine = FilterEngine(universal=UniversalSafety(enabled=False))
         snap = _low_cap_pass()
