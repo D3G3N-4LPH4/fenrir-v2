@@ -56,6 +56,8 @@ _SURFACE_ENV = [
     "DISCOVERY_FILTERS",
     "DISCOVERY_INTERVAL_SECONDS",
     "DISCOVERY_MIN_ALERT_SCORE",
+    "AI_FALLBACK_TO_RULES",
+    "AI_ENTRY_TIMEOUT_SECONDS",
 ]
 
 
@@ -144,6 +146,14 @@ class TestDefaults:
             "mid_cap_momentum",
             "high_cap",
         }
+
+    def test_ai_fallback_and_timeout_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert BotConfig().ai_fallback_to_rules is True  # default: auto-buy on timeout
+        monkeypatch.setenv("AI_FALLBACK_TO_RULES", "false")
+        monkeypatch.setenv("AI_ENTRY_TIMEOUT_SECONDS", "20")
+        cfg = BotConfig()
+        assert cfg.ai_fallback_to_rules is False
+        assert cfg.ai_entry_timeout_seconds == 20.0
 
     def test_discovery_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DISCOVERY_ENABLED", "true")
