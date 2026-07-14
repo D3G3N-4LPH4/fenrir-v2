@@ -168,6 +168,21 @@ class TestFilters:
         small.market_cap_usd = 900_000
         assert not self.engine.evaluate(small, FilterName.HIGH_CAP).passed
 
+    def test_high_cap_soft_safety_flags_not_gated(self) -> None:
+        # Established large-caps must NOT be vetoed for a missing verified flag or
+        # unreported LP lock (RugCheck under-reports lpLockedPct for migrated Raydium
+        # tokens; Jupiter's verified list is narrow). Universal safety still applies.
+        snap = _high_cap_pass()
+        snap.safety.contract_verified = False
+        snap.safety.lp_locked_or_burned = False
+        assert self.engine.evaluate(snap, FilterName.HIGH_CAP).passed
+        snap.safety.contract_verified = None
+        snap.safety.lp_locked_or_burned = None
+        assert self.engine.evaluate(snap, FilterName.HIGH_CAP).passed
+        # ...but honeypot (universal) still hard-fails.
+        snap.safety.honeypot = True
+        assert not self.engine.evaluate(snap, FilterName.HIGH_CAP).passed
+
     def test_missing_optional_field_warns_not_fails(self) -> None:
         # Unknown holder count / bond → warning, not a hard fail (fail-open).
         snap = _low_cap_pass()
