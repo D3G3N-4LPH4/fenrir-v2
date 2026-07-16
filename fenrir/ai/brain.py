@@ -632,9 +632,12 @@ class ClaudeBrain:
             # scanner candidate, which it read as "dead token, no exit path".
             liquidity_usd=token_data.get("liquidity_usd") or 0.0,
             market_cap_usd=token_data.get("market_cap_usd") or 0.0,
-            top_10_holder_pct=token_data.get("top_holders_pct") or 0.0,
-            creator_previous_launches=token_data.get("dev_mints") or 0,
-            holder_count=token_data.get("holder_count", 0) or 0,
+            # These stay None when absent so the prompt says "Unknown" — coercing to
+            # 0 made the model cite unmeasured fields as red flags.
+            top_10_holder_pct=token_data.get("top_holders_pct"),
+            creator_previous_launches=token_data.get("dev_mints"),
+            holder_count=token_data.get("holder_count"),
+            age_minutes=token_data.get("age_minutes"),
             website=self._sanitize_metadata_field(token_data.get("website"), max_length=200),
             twitter=self._sanitize_metadata_field(token_data.get("twitter"), max_length=200),
             telegram=self._sanitize_metadata_field(token_data.get("telegram"), max_length=200),
