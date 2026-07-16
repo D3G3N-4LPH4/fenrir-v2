@@ -380,6 +380,11 @@ class BotConfig:
         self.ai_entry_timeout_seconds = _env_float(
             "AI_ENTRY_TIMEOUT_SECONDS", self.ai_entry_timeout_seconds
         )
+        # Hard size pin: when set, BUY_AMOUNT_SOL wins over mode presets AND over the
+        # /bot/start request body (whose buy_amount_sol defaults to 0.1). Without this
+        # an operator's .env pin was silently ignored and a start that omitted the size
+        # traded the 0.1 default. Runtime changes via POST /bot/config still apply.
+        self.buy_amount_sol = _env_float("BUY_AMOUNT_SOL", self.buy_amount_sol)
 
         if not self.ai_local_model_url:
             self.ai_local_model_url = os.getenv(

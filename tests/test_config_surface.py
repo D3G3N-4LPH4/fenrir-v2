@@ -59,6 +59,7 @@ _SURFACE_ENV = [
     "DISCOVERY_SOLANA_CATEGORIES",
     "AI_FALLBACK_TO_RULES",
     "AI_ENTRY_TIMEOUT_SECONDS",
+    "BUY_AMOUNT_SOL",
 ]
 
 
@@ -149,6 +150,23 @@ class TestDefaults:
         }
         # Fresh-pairs feed ("recent") is on by default so Low/Mid Cap see launches.
         assert "recent" in disc.solana_categories
+
+    def test_buy_amount_sol_from_env_pins_size(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert BotConfig().buy_amount_sol == 0.1  # dataclass default when unset
+        monkeypatch.setenv("BUY_AMOUNT_SOL", "0.01")
+        assert BotConfig().buy_amount_sol == 0.01
+        # The pin must beat an explicit constructor value: /bot/start passes
+        # buy_amount_sol=0.1 by default, which previously overrode the operator's .env.
+        assert BotConfig(buy_amount_sol=0.1).buy_amount_sol == 0.01
+        # ...and beat a mode preset (degen presets 0.5 SOL).
+        assert BotConfig.from_mode(TradingMode.DEGEN).buy_amount_sol == 0.01
+
+    def test_buy_amount_sol_unset_keeps_explicit_and_preset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("BUY_AMOUNT_SOL", raising=False)
+        assert BotConfig(buy_amount_sol=0.02).buy_amount_sol == 0.02
+        assert BotConfig.from_mode(TradingMode.DEGEN).buy_amount_sol == 0.5
 
     def test_ai_fallback_and_timeout_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         assert BotConfig().ai_fallback_to_rules is True  # default: auto-buy on timeout
