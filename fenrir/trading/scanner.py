@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fenrir.config import BotConfig
@@ -24,6 +24,20 @@ from fenrir.logger import FenrirLogger
 from fenrir.trading.token_filters import is_tradeable_mint
 
 __all__ = ["MarketScanner"]
+
+
+def _age_minutes(created_at: str | None) -> float | None:
+    """Minutes since an ISO-8601 timestamp; None when unknown (never a fake 0)."""
+    if not created_at:
+        return None
+    try:
+        created = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - created).total_seconds() / 60.0)
+
 
 # DexScreener boosts = tokens actively paying for visibility (a meme marketing
 # signal). The list is chain-agnostic; we keep Solana and enrich each via the
@@ -293,6 +307,11 @@ class MarketScanner:
             # of mints is a token factory — a real risk signal the AI should weigh.
             "dev_mints": audit.get("devMints"),
             "dev_migrations": audit.get("devMigrations"),
+            # Real age, so the AI doesn't guess at timing (it called a 15-day-old
+            # token "a fresh launch" when it had no age field at all).
+            "age_minutes": _age_minutes(
+                tok.get("createdAt") or (tok.get("firstPool") or {}).get("createdAt")
+            ),
             # No pump bonding curve for these — priced via Jupiter/DexScreener.
             "bonding_curve_state": None,
         }

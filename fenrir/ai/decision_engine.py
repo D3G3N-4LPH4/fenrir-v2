@@ -28,9 +28,11 @@ import asyncio
 import json
 import logging
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
 import aiohttp
 
@@ -91,6 +93,24 @@ class TokenAnalysis:
             self.analyzed_at = datetime.now()
 
 
+def _fmt_unknown(value: Any, fmt: Callable[[Any], str], unknown: str = "Unknown") -> str:
+    """Render an optional metric, distinguishing "not measured" from a real zero.
+
+    Rendering an unmapped field as 0 invites the model to treat absent data as a
+    damning measurement ("0.0% success rate", "zero Twitter followers"), which it
+    then cites as a red flag. None must read as Unknown.
+    """
+    return unknown if value is None else fmt(value)
+
+
+def _fmt_age(minutes: float) -> str:
+    if minutes < 60:
+        return f"{minutes:.0f} minutes"
+    if minutes < 1440:
+        return f"{minutes / 60:.1f} hours"
+    return f"{minutes / 1440:.1f} days"
+
+
 @dataclass
 class TokenMetadata:
     """Token launch metadata for AI analysis."""
@@ -117,18 +137,26 @@ class TokenMetadata:
     current_market_cap_sol: float = 0.0
     liquidity_usd: float = 0.0
     market_cap_usd: float = 0.0
-    holder_count: int = 0
-    top_10_holder_pct: float = 0.0
+    # None means UNKNOWN and renders as "Unknown"; 0 means a measured zero. These
+    # defaulted to 0, so unmapped fields were rendered as fact and the model turned
+    # them into red flags — reporting "0.0% success rate" and "zero Twitter
+    # followers" for tokens whose success rate we never measure and which do have a
+    # Twitter link. Absent data must never read as a damning measurement.
+    holder_count: int | None = None
+    top_10_holder_pct: float | None = None
+    # Minutes since the token/pool was created. Without it the model invented timing
+    # ("appears to be a fresh launch" about a 15-day-old token).
+    age_minutes: float | None = None
 
     # Creator info
     creator_address: str | None = None
-    creator_previous_launches: int = 0
-    creator_success_rate: float = 0.0
+    creator_previous_launches: int | None = None
+    creator_success_rate: float | None = None
 
     # Social signals
-    twitter_followers: int = 0
-    telegram_members: int = 0
-    launch_announcement_engagement: float = 0.0
+    twitter_followers: int | None = None
+    telegram_members: int | None = None
+    launch_announcement_engagement: float | None = None
 
     # Market tier — None/"" for a fresh pump.fun launch; "mid"/"large" for a
     # scanner-surfaced established token (drives swing- vs launch-framed prompt).
@@ -282,12 +310,15 @@ Name: {token.name}
 Symbol: {token.symbol}
 Mint Address: {token.token_mint}
 Description: {token.description or "Not provided"}
+Age: {_fmt_unknown(token.age_minutes, lambda v: _fmt_age(v))}
 
 # ON-CHAIN METRICS
+NOTE: fields marked "Unknown" are NOT measured for this token — treat them as
+absent data, not as a value of zero, and do not cite them as red flags.
 {metrics_block}
 Liquidity Ratio: {liquidity_ratio:.2%}
-Holder Count: {token.holder_count}
-Top 10 Holders Control: {token.top_10_holder_pct:.1f}%
+Holder Count: {_fmt_unknown(token.holder_count, lambda v: f"{v:,}")}
+Top 10 Holders Control: {_fmt_unknown(token.top_10_holder_pct, lambda v: f"{v:.1f}%")}
 
 # BONDING CURVE STATUS"""
 
@@ -302,15 +333,15 @@ Completed: {"Yes" if bc.complete else "No"}
         prompt += f"""
 # CREATOR INFORMATION
 Address: {token.creator_address or "Unknown"}
-Previous Launches: {token.creator_previous_launches}
-Success Rate: {token.creator_success_rate:.1%}
+Previous Launches: {_fmt_unknown(token.creator_previous_launches, lambda v: f"{v:,}")}
+Success Rate: {_fmt_unknown(token.creator_success_rate, lambda v: f"{v:.1%}")}
 
 # SOCIAL SIGNALS
 Twitter: {token.twitter or "Not found"}
-Twitter Followers: {token.twitter_followers}
+Twitter Followers: {_fmt_unknown(token.twitter_followers, lambda v: f"{v:,}")}
 Telegram: {token.telegram or "Not found"}
-Telegram Members: {token.telegram_members}
-Launch Engagement: {token.launch_announcement_engagement:.1f}/10
+Telegram Members: {_fmt_unknown(token.telegram_members, lambda v: f"{v:,}")}
+Launch Engagement: {_fmt_unknown(token.launch_announcement_engagement, lambda v: f"{v:.1f}/10")}
 
 # MARKET CONDITIONS"""
 

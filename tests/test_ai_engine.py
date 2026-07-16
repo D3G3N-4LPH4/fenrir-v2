@@ -10,7 +10,7 @@ Run with: pytest tests/test_ai_engine.py -v
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -341,8 +341,72 @@ class TestAITradingAnalystBuildPrompt:
         assert "$854,904" in prompt
         assert "0.00 SOL" not in prompt  # the bug's signature
         assert "14.22%" in prompt  # liquidity ratio from USD pair
-        assert "2366" in prompt
+        assert "2,366" in prompt
         assert "19.5%" in prompt
+
+    def test_unmeasured_fields_render_as_unknown_not_zero(self, analyst):
+        """Absent data must read as Unknown, never as a damning measurement.
+
+        Regression: these defaulted to 0 and the prompt printed "Success Rate: 0.0%"
+        / "Twitter Followers: 0" for fields we never map. The model dutifully cited
+        them as red flags — "0.0% success rate across 2,543 launches", "zero Twitter
+        followers" — on a token that has a Twitter link and whose success rate is
+        simply unknown.
+        """
+        token = TokenMetadata(
+            token_mint="MintX",
+            name="Partial",
+            symbol="PART",
+            tier="mid",
+            liquidity_usd=50_000.0,
+            market_cap_usd=500_000.0,
+            twitter="https://x.com/real_account",
+            creator_previous_launches=2543,  # measured
+        )
+        prompt = analyst._build_analysis_prompt(token, None)
+
+        assert "Success Rate: Unknown" in prompt
+        assert "Twitter Followers: Unknown" in prompt
+        assert "Telegram Members: Unknown" in prompt
+        assert "Launch Engagement: Unknown" in prompt
+        assert "Holder Count: Unknown" in prompt
+        assert "Top 10 Holders Control: Unknown" in prompt
+        # A measured value still renders as the value.
+        assert "Previous Launches: 2,543" in prompt
+        # And the model is told what Unknown means.
+        assert "not as a value of zero" in prompt
+
+    def test_measured_zero_is_not_unknown(self, analyst):
+        """A real zero must still render as 0 — Unknown is only for absent data."""
+        token = TokenMetadata(
+            token_mint="MintX",
+            name="Zero",
+            symbol="ZER",
+            holder_count=0,
+            twitter_followers=0,
+            creator_previous_launches=0,
+        )
+        prompt = analyst._build_analysis_prompt(token, None)
+
+        assert "Holder Count: 0" in prompt
+        assert "Twitter Followers: 0" in prompt
+        assert "Previous Launches: 0" in prompt
+        assert "Holder Count: Unknown" not in prompt
+
+    def test_prompt_renders_real_age(self, analyst):
+        """Age is now supplied, so the model can't invent timing."""
+        fresh = TokenMetadata(token_mint="M", name="A", symbol="A", age_minutes=12.0)
+        assert "Age: 12 minutes" in analyst._build_analysis_prompt(fresh, None)
+
+        hours = TokenMetadata(token_mint="M", name="A", symbol="A", age_minutes=300.0)
+        assert "Age: 5.0 hours" in analyst._build_analysis_prompt(hours, None)
+
+        # The 15-day-old token the model called "a fresh launch".
+        old = TokenMetadata(token_mint="M", name="A", symbol="A", age_minutes=15 * 1440.0)
+        assert "Age: 15.0 days" in analyst._build_analysis_prompt(old, None)
+
+        unknown = TokenMetadata(token_mint="M", name="A", symbol="A")
+        assert "Age: Unknown" in analyst._build_analysis_prompt(unknown, None)
 
     def test_prompt_includes_market_conditions_when_provided(self, analyst, sample_token_metadata):
         """Market conditions dict should appear in the prompt."""
@@ -500,6 +564,9 @@ class TestScannerCandidateReachesAIWithRealNumbers:
             "usdPrice": 0.0008549,
             "holderCount": 2366,
             "graduatedAt": "2026-07-14T05:11:34Z",
+            "createdAt": (datetime.now(UTC) - timedelta(days=15))
+            .isoformat()
+            .replace("+00:00", "Z"),
             "twitter": "https://x.com/example",
             "audit": {
                 "mintAuthorityDisabled": True,
@@ -533,6 +600,19 @@ class TestScannerCandidateReachesAIWithRealNumbers:
         assert meta.top_10_holder_pct == pytest.approx(19.4649, abs=1e-3)
         assert meta.creator_previous_launches == 2543
         assert meta.tier == "mid"
+        # Real age flows through, so the model can't guess at timing.
+        assert meta.age_minutes == pytest.approx(15 * 1440, rel=0.01)
+
+    def test_launch_shaped_data_leaves_unmeasured_fields_unknown(
+        self, ai_enabled_config, mock_logger
+    ):
+        """A bare launch has no holders/top-10/creator history — those stay None."""
+        launch = {"token_address": "Mint1", "symbol": "FRESH", "initial_liquidity_sol": 8.0}
+        meta = ClaudeBrain(ai_enabled_config, mock_logger)._build_token_metadata(launch)
+        assert meta.holder_count is None
+        assert meta.top_10_holder_pct is None
+        assert meta.creator_previous_launches is None
+        assert meta.age_minutes is None
 
     def test_ensemble_context_shows_usd_not_zero_sol(self, ai_enabled_config, mock_logger):
         from fenrir.trading.scanner import MarketScanner
