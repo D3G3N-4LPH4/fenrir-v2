@@ -57,6 +57,18 @@ async def _clean_state():
     server_module.rate_limiter.reset()
 
 
+@pytest.fixture(autouse=True)
+def _valid_config_env(monkeypatch):
+    """Dummy (non-secret) keys so a real BotConfig passes validate() for every mode.
+
+    tests/conftest.py clears all config env for determinism; BotConfig.validate then
+    requires an AI key (ai_analysis_enabled defaults True) and, for any non-simulation
+    mode, a wallet key. These let the start tests exercise the real config path.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+    monkeypatch.setenv("WALLET_PRIVATE_KEY", "test-wallet-key-not-a-real-key")
+
+
 @pytest_asyncio.fixture
 async def client_no_auth():
     """AsyncClient with dev mode ON and no API key -- unauthenticated."""
@@ -397,17 +409,10 @@ class TestStartBot:
     @pytest.mark.asyncio
     async def test_start_bot_success(self, client_no_auth: AsyncClient):
         """Starting the bot with valid config should succeed."""
-        mock_config = MagicMock()
-        mock_config.validate.return_value = []
-
         mock_bot = MagicMock()
         mock_bot.start = AsyncMock()
 
-        with (
-            patch("api.server.BotConfig", return_value=mock_config),
-            patch("api.server.TradingMode"),
-            patch("api.server.FenrirBot", return_value=mock_bot),
-        ):
+        with patch("api.server.FenrirBot", return_value=mock_bot):
             resp = await client_no_auth.post(
                 "/bot/start",
                 json={
@@ -424,6 +429,64 @@ class TestStartBot:
         assert server_module.bot_state["start_time"] is not None
 
     @pytest.mark.asyncio
+    async def test_start_applies_mode_preset_when_unspecified(self, client_no_auth: AsyncClient):
+        """A mode must trade its own preset, not StartBotRequest's old hardcoded defaults."""
+        mock_bot = MagicMock()
+        mock_bot.start = AsyncMock()
+
+        with patch("api.server.FenrirBot", return_value=mock_bot):
+            resp = await client_no_auth.post("/bot/start", json={"mode": "conservative"})
+
+        assert resp.status_code == 200
+        cfg = resp.json()["config"]
+        # CONSERVATIVE preset — previously these came back as 0.1 / 25.0 / 100.0.
+        assert cfg["mode"] == "conservative"
+        assert cfg["buy_amount_sol"] == 0.05
+        assert cfg["stop_loss_pct"] == 15.0
+        assert cfg["take_profit_pct"] == 75.0
+        assert cfg["max_slippage_bps"] == 300  # never settable via the request at all
+        assert cfg["ai_min_confidence_to_buy"] == 0.75
+
+    @pytest.mark.asyncio
+    async def test_start_explicit_value_overrides_preset(self, client_no_auth: AsyncClient):
+        """An explicitly sent field still wins over the mode preset."""
+        mock_bot = MagicMock()
+        mock_bot.start = AsyncMock()
+
+        with patch("api.server.FenrirBot", return_value=mock_bot):
+            resp = await client_no_auth.post(
+                "/bot/start", json={"mode": "conservative", "stop_loss_pct": 5.0}
+            )
+
+        assert resp.status_code == 200
+        cfg = resp.json()["config"]
+        assert cfg["stop_loss_pct"] == 5.0  # explicit override
+        assert cfg["take_profit_pct"] == 75.0  # untouched preset
+
+    @pytest.mark.asyncio
+    async def test_start_response_reports_resolved_config_without_rpc_url(
+        self, client_no_auth: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Report what's actually running — and never leak the RPC URL (embeds API keys)."""
+        monkeypatch.setenv("BUY_AMOUNT_SOL", "0.01")  # operator pin
+        monkeypatch.setenv("SOLANA_RPC_URL", "https://rpc.example.com/?api-key=SECRET")
+        mock_bot = MagicMock()
+        mock_bot.start = AsyncMock()
+
+        with patch("api.server.FenrirBot", return_value=mock_bot):
+            resp = await client_no_auth.post(
+                "/bot/start", json={"mode": "simulation", "buy_amount_sol": 0.2}
+            )
+
+        assert resp.status_code == 200
+        cfg = resp.json()["config"]
+        # The env pin wins over the request, and the response says so rather than
+        # echoing the request's 0.2 back at the operator.
+        assert cfg["buy_amount_sol"] == 0.01
+        assert "rpc_url" not in cfg
+        assert "SECRET" not in resp.text
+
+    @pytest.mark.asyncio
     async def test_start_bot_already_running(self, client_no_auth: AsyncClient):
         """Starting the bot when already running should return 400."""
         server_module.bot_state["status"] = "running"
@@ -438,10 +501,7 @@ class TestStartBot:
         mock_config = MagicMock()
         mock_config.validate.return_value = ["Stop loss must be < 100%"]
 
-        with (
-            patch("api.server.BotConfig", return_value=mock_config),
-            patch("api.server.TradingMode"),
-        ):
+        with patch("api.server.BotConfig.from_mode", return_value=mock_config):
             resp = await client_no_auth.post("/bot/start", json={"mode": "simulation"})
 
         assert resp.status_code == 400
@@ -451,10 +511,7 @@ class TestStartBot:
     @pytest.mark.asyncio
     async def test_start_bot_exception_sets_error_state(self, client_no_auth: AsyncClient):
         """An unexpected exception during start should set error state and return 500."""
-        with (
-            patch("api.server.BotConfig", side_effect=RuntimeError("RPC down")),
-            patch("api.server.TradingMode"),
-        ):
+        with patch("api.server.BotConfig.from_mode", side_effect=RuntimeError("RPC down")):
             resp = await client_no_auth.post("/bot/start", json={"mode": "simulation"})
 
         assert resp.status_code == 500
@@ -495,17 +552,10 @@ class TestStartBot:
     @pytest.mark.asyncio
     async def test_start_bot_with_custom_rpc_url(self, client_no_auth: AsyncClient):
         """A custom RPC URL should be forwarded to the config."""
-        mock_config = MagicMock()
-        mock_config.validate.return_value = []
-
         mock_bot = MagicMock()
         mock_bot.start = AsyncMock()
 
-        with (
-            patch("api.server.BotConfig", return_value=mock_config),
-            patch("api.server.TradingMode"),
-            patch("api.server.FenrirBot", return_value=mock_bot),
-        ):
+        with patch("api.server.FenrirBot", return_value=mock_bot) as mock_fenrir:
             resp = await client_no_auth.post(
                 "/bot/start",
                 json={
@@ -515,8 +565,12 @@ class TestStartBot:
             )
 
         assert resp.status_code == 200
-        # The config object should have had rpc_url set
-        mock_config.rpc_url = "https://custom-rpc.example.com"
+        assert server_module.bot_instance is mock_bot
+        # Assert the URL actually reached the config the bot was built with. (The
+        # previous line here was `mock_config.rpc_url = ...` — an assignment, not an
+        # assertion, so this never verified anything.)
+        config_arg = mock_fenrir.call_args[0][0]
+        assert config_arg.rpc_url == "https://custom-rpc.example.com"
 
 
 # ---------------------------------------------------------------------------
@@ -907,17 +961,10 @@ class TestConcurrency:
     @pytest.mark.asyncio
     async def test_concurrent_start_requests(self, client_no_auth: AsyncClient):
         """Only one of two concurrent start requests should succeed; the other gets 400."""
-        mock_config = MagicMock()
-        mock_config.validate.return_value = []
-
         mock_bot = MagicMock()
         mock_bot.start = AsyncMock()
 
-        with (
-            patch("api.server.BotConfig", return_value=mock_config),
-            patch("api.server.TradingMode"),
-            patch("api.server.FenrirBot", return_value=mock_bot),
-        ):
+        with patch("api.server.FenrirBot", return_value=mock_bot):
             results = await asyncio.gather(
                 client_no_auth.post("/bot/start", json={"mode": "simulation"}),
                 client_no_auth.post("/bot/start", json={"mode": "simulation"}),
@@ -962,21 +1009,17 @@ class TestPydanticModels:
 
     @pytest.mark.asyncio
     async def test_start_bot_default_values(self, client_no_auth: AsyncClient):
-        """Defaults should pass Pydantic validation and appear in response config."""
-        mock_config = MagicMock()
-        mock_config.validate.return_value = []
+        """An empty body should start in simulation mode on that mode's preset."""
         mock_bot = MagicMock()
         mock_bot.start = AsyncMock()
 
-        with (
-            patch("api.server.BotConfig", return_value=mock_config),
-            patch("api.server.TradingMode"),
-            patch("api.server.FenrirBot", return_value=mock_bot),
-        ):
+        with patch("api.server.FenrirBot", return_value=mock_bot):
             resp = await client_no_auth.post("/bot/start", json={})
 
         assert resp.status_code == 200
         config = resp.json()["config"]
+        # These are the SIMULATION preset values (which the old hardcoded request
+        # defaults happened to mirror) — now sourced from TRADING_PRESETS.
         assert config["mode"] == "simulation"
         assert config["buy_amount_sol"] == 0.1
         assert config["stop_loss_pct"] == 25.0
@@ -996,20 +1039,15 @@ class TestPydanticModels:
     @pytest.mark.asyncio
     async def test_start_bot_all_modes_accepted(self, client_no_auth: AsyncClient):
         """All four trading modes should be accepted by the enum."""
-        mock_config = MagicMock()
-        mock_config.validate.return_value = []
         mock_bot = MagicMock()
         mock_bot.start = AsyncMock()
 
         for mode in ["simulation", "conservative", "aggressive", "degen"]:
             _reset_bot_state()
-            with (
-                patch("api.server.BotConfig", return_value=mock_config),
-                patch("api.server.TradingMode"),
-                patch("api.server.FenrirBot", return_value=mock_bot),
-            ):
+            with patch("api.server.FenrirBot", return_value=mock_bot):
                 resp = await client_no_auth.post("/bot/start", json={"mode": mode})
             assert resp.status_code == 200, f"Mode {mode} was rejected"
+            assert resp.json()["config"]["mode"] == mode
 
 
 # ---------------------------------------------------------------------------

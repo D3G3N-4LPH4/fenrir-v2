@@ -336,19 +336,36 @@ class TradingModeEnum(str, Enum):
 class StartBotRequest(BaseModel):
     """Request to start the trading bot.
 
+    Every trading field defaults to ``None`` meaning "use the mode's preset"
+    (``TRADING_PRESETS``). Previously these carried hardcoded defaults that were
+    always passed to ``BotConfig``, so the preset never applied and every mode
+    traded identically — "degen" ran with 0.1 SOL / 25% stop instead of its own
+    0.5 SOL / 50% stop. Send a value only to override that mode's preset.
+
     NOTE: Private keys must NEVER be sent via API. They are loaded
     exclusively from the WALLET_PRIVATE_KEY environment variable.
     """
 
     mode: TradingModeEnum = Field(default=TradingModeEnum.SIMULATION)
-    buy_amount_sol: float = Field(default=0.1, gt=0, description="SOL per trade")
-    stop_loss_pct: float = Field(default=25.0, gt=0, lt=100, description="Stop loss %")
-    take_profit_pct: float = Field(default=100.0, gt=0, description="Take profit %")
-    trailing_stop_pct: float = Field(default=15.0, gt=0, description="Trailing stop %")
-    max_position_age_minutes: int = Field(default=60, gt=0, description="Max hold time")
-    min_initial_liquidity_sol: float = Field(default=5.0, gt=0, description="Min liquidity")
-    max_initial_market_cap_sol: float = Field(default=100.0, gt=0, description="Max market cap")
+    buy_amount_sol: float | None = Field(default=None, gt=0, description="SOL per trade")
+    stop_loss_pct: float | None = Field(default=None, gt=0, lt=100, description="Stop loss %")
+    take_profit_pct: float | None = Field(default=None, gt=0, description="Take profit %")
+    trailing_stop_pct: float | None = Field(default=None, gt=0, description="Trailing stop %")
+    max_position_age_minutes: int | None = Field(default=None, gt=0, description="Max hold time")
+    min_initial_liquidity_sol: float | None = Field(default=None, gt=0, description="Min liquidity")
+    max_initial_market_cap_sol: float | None = Field(
+        default=None, gt=0, description="Max market cap"
+    )
     rpc_url: str | None = Field(default=None, description="Custom RPC URL")
+
+    def preset_overrides(self) -> dict[str, Any]:
+        """Only the trading fields the caller explicitly set (None = use preset)."""
+        return {
+            name: value
+            for name, value in self.model_dump(
+                exclude={"mode", "rpc_url"}, exclude_none=True
+            ).items()
+        }
 
 
 class UpdateConfigRequest(BaseModel):
@@ -384,6 +401,33 @@ _CONFIG_SURFACE_FIELDS = (
 def _config_surface(cfg) -> dict[str, Any]:
     """Extract the dashboard-tunable subset from a live BotConfig."""
     return {name: getattr(cfg, name) for name in _CONFIG_SURFACE_FIELDS}
+
+
+# Effective trading params reported after a start. Deliberately excludes rpc_url —
+# SOLANA_RPC_URL commonly embeds a provider API key and must not leave the process.
+_RESOLVED_START_FIELDS = (
+    "buy_amount_sol",
+    "stop_loss_pct",
+    "take_profit_pct",
+    "trailing_stop_pct",
+    "max_position_age_minutes",
+    "min_initial_liquidity_sol",
+    "max_initial_market_cap_sol",
+    "max_slippage_bps",
+    "priority_fee_lamports",
+    "ai_min_confidence_to_buy",
+)
+
+
+def _resolved_start_config(cfg) -> dict[str, Any]:
+    """What is ACTUALLY running: mode preset + explicit overrides + env pins.
+
+    Reported instead of echoing the request, which hid both the preset values and
+    env pins (e.g. BUY_AMOUNT_SOL) from the operator.
+    """
+    resolved: dict[str, Any] = {"mode": cfg.mode.value}
+    resolved.update({name: getattr(cfg, name) for name in _RESOLVED_START_FIELDS})
+    return resolved
 
 
 class ManualTradeRequest(BaseModel):
@@ -467,15 +511,10 @@ async def start_bot(request: StartBotRequest):
             raise HTTPException(status_code=400, detail="Bot is already running")
 
         try:
-            config = BotConfig(
-                mode=TradingMode(request.mode.value),
-                buy_amount_sol=request.buy_amount_sol,
-                stop_loss_pct=request.stop_loss_pct,
-                take_profit_pct=request.take_profit_pct,
-                trailing_stop_pct=request.trailing_stop_pct,
-                max_position_age_minutes=request.max_position_age_minutes,
-                min_initial_liquidity_sol=request.min_initial_liquidity_sol,
-                max_initial_market_cap_sol=request.max_initial_market_cap_sol,
+            # from_mode applies the mode's TRADING_PRESETS, then the caller's explicit
+            # overrides; BotConfig.__post_init__ env pins (e.g. BUY_AMOUNT_SOL) win last.
+            config = BotConfig.from_mode(
+                TradingMode(request.mode.value), **request.preset_overrides()
             )
 
             if request.rpc_url:
@@ -496,7 +535,7 @@ async def start_bot(request: StartBotRequest):
 
             bot_state["status"] = "running"
             bot_state["start_time"] = datetime.now()
-            bot_state["config"] = request.model_dump()
+            bot_state["config"] = _resolved_start_config(config)
             bot_state["error"] = None
 
         except HTTPException:
@@ -520,7 +559,7 @@ async def start_bot(request: StartBotRequest):
     return {
         "status": "success",
         "message": f"Fenrir bot started in {request.mode.value} mode",
-        "config": request.model_dump(),
+        "config": _resolved_start_config(config),
     }
 
 
