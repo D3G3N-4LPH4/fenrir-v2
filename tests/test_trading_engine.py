@@ -19,7 +19,7 @@ from solders.pubkey import Pubkey
 from fenrir.config import BotConfig, TradingMode
 from fenrir.core.positions import Position, PositionManager
 from fenrir.protocol.pumpfun import BondingCurveState
-from fenrir.trading.engine import TradingEngine
+from fenrir.trading.engine import TradingEngine, cap_priority_fee
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -144,6 +144,44 @@ def live_engine(live_config, mocks):
         positions=mocks["positions"],
         logger=mocks["logger"],
     )
+
+
+# ===================================================================
+#  Priority-fee capping
+# ===================================================================
+
+
+class TestCapPriorityFee:
+    """A flat lamport fee must not eat a small position.
+
+    degen presets 2_000_000 lamports (0.002 SOL): 0.4% of its intended 0.5 SOL trade
+    but 20% PER SIDE of a 0.01 SOL one — a 40% round-trip drag that turned a real
+    +3.10% trade into a wallet loss.
+    """
+
+    def test_caps_flat_fee_on_small_trade(self):
+        # 3% of 0.01 SOL = 300_000 lamports.
+        assert cap_priority_fee(2_000_000, 0.01, 3.0, 50_000) == 300_000
+
+    def test_leaves_fee_alone_when_trade_is_large(self):
+        # 3% of 0.5 SOL = 15_000_000 > requested — degen's intended size is unaffected.
+        assert cap_priority_fee(2_000_000, 0.5, 3.0, 50_000) == 2_000_000
+
+    def test_never_caps_below_inclusion_floor(self):
+        # 3% of 0.0001 SOL = 300 lamports — too low to land; floor wins.
+        assert cap_priority_fee(2_000_000, 0.0001, 3.0, 50_000) == 50_000
+
+    def test_disabled_when_pct_zero(self):
+        assert cap_priority_fee(2_000_000, 0.01, 0.0, 50_000) == 2_000_000
+
+    def test_unknown_size_passes_through(self):
+        assert cap_priority_fee(2_000_000, 0.0, 3.0, 50_000) == 2_000_000
+
+    def test_round_trip_drag_is_bounded(self):
+        """The cap bounds total fee drag to ~2*max_pct of the position."""
+        size, fee = 0.01, cap_priority_fee(2_000_000, 0.01, 3.0, 50_000)
+        round_trip_sol = 2 * (fee + 5_000) / 1_000_000_000
+        assert round_trip_sol / size < 0.07  # was 0.40 before capping
 
 
 # ===================================================================
@@ -644,7 +682,10 @@ class TestLiveSell:
 
         assert result is True
         mocks["jupiter"].get_quote.assert_called_once()
-        mocks["positions"].close_position.assert_called_once_with(FAKE_TOKEN, "take_profit")
+        # The exit fee is recorded so reported PnL can be net of costs.
+        call = mocks["positions"].close_position.call_args
+        assert call.args == (FAKE_TOKEN, "take_profit")
+        assert call.kwargs["exit_fees_sol"] > 0
 
     @pytest.mark.asyncio
     async def test_sell_migrated_not_closed_when_send_fails(self, live_engine, mocks):

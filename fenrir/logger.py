@@ -87,10 +87,28 @@ class FenrirLogger:
         self.logger.info(f"BUY EXECUTED: {amount_sol:.4f} SOL -> {token[:8]}...")
         self.logger.info(f"   Entry Price: ${price:.8f}")
 
-    def sell_executed(self, token: str, pnl_pct: float, reason: str):
-        """Exit strategy activated."""
+    def sell_executed(
+        self,
+        token: str,
+        pnl_pct: float,
+        reason: str,
+        net_pnl_pct: float | None = None,
+        fees_sol: float | None = None,
+    ):
+        """Exit strategy activated.
+
+        Reports NET of fees when known: a price-only figure flattered small trades
+        badly (a flat 0.002 SOL/tx priority fee is 40% of a 0.01 SOL round trip, so
+        "+3.10%" was really a loss).
+        """
         emoji = "+" if pnl_pct > 0 else ""
-        self.logger.info(f"SELL EXECUTED: {token[:8]}... | PnL: {emoji}{pnl_pct:.2f}%")
+        line = f"SELL EXECUTED: {token[:8]}... | PnL: {emoji}{pnl_pct:.2f}%"
+        if net_pnl_pct is not None:
+            net_emoji = "+" if net_pnl_pct > 0 else ""
+            line += f" | NET: {net_emoji}{net_pnl_pct:.2f}%"
+            if fees_sol:
+                line += f" (fees {fees_sol:.4f} SOL)"
+        self.logger.info(line)
         self.logger.info(f"   Reason: {reason}")
 
     def error(self, context: str, error: Exception):

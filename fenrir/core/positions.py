@@ -26,6 +26,12 @@ class Position:
     amount_sol_invested: float
     peak_price: float  # For trailing stops
     current_price: float = 0.0
+    # Transaction costs actually paid (priority + base fee), so reported performance
+    # reflects the wallet rather than raw price movement. A flat priority fee is a
+    # large share of a small position: 0.002 SOL on a 0.01 SOL trade is 20% PER SIDE,
+    # so a "+3% win" can be a real loss. Exit-trigger logic stays price-based.
+    entry_fees_sol: float = 0.0
+    exit_fees_sol: float = 0.0
     strategy_id: str = "default"  # Which strategy opened this position
     token_symbol: str = "???"  # noqa: S105
     # Dynamic trailing stop override (set by Ouroboros detector or AI)
@@ -47,15 +53,36 @@ class Position:
         self.peak_price = max(self.peak_price, new_price)
 
     def get_pnl_percent(self) -> float:
-        """Calculate profit/loss percentage."""
+        """Price-only profit/loss percentage.
+
+        Deliberately gross: take-profit / stop-loss / trailing thresholds describe
+        PRICE movement ("a 25% stop" means the price fell 25%), so they must not
+        shift with fees. Use :meth:`get_net_pnl_percent` for reporting.
+        """
         if self.entry_price == 0:
             return 0.0
         return ((self.current_price - self.entry_price) / self.entry_price) * 100
 
     def get_pnl_sol(self) -> float:
-        """Calculate profit/loss in SOL."""
+        """Price-only profit/loss in SOL (gross — see :meth:`get_pnl_percent`)."""
         current_value = self.amount_tokens * self.current_price
         return current_value - self.amount_sol_invested
+
+    @property
+    def total_fees_sol(self) -> float:
+        """Transaction costs paid on both sides of the round trip."""
+        return self.entry_fees_sol + self.exit_fees_sol
+
+    def get_net_pnl_sol(self) -> float:
+        """Profit/loss in SOL after transaction costs — what the wallet actually sees."""
+        return self.get_pnl_sol() - self.total_fees_sol
+
+    def get_net_pnl_percent(self) -> float:
+        """Net profit/loss against the true cost basis (investment + entry fee)."""
+        cost_basis = self.amount_sol_invested + self.entry_fees_sol
+        if cost_basis == 0:
+            return 0.0
+        return (self.get_net_pnl_sol() / cost_basis) * 100
 
     def should_take_profit(self, target_pct: float) -> bool:
         """Greed is good, but profits are better."""
@@ -97,6 +124,7 @@ class PositionManager:
         amount_sol: float,
         strategy_id: str = "default",
         token_symbol: str = "???",  # noqa: S107
+        entry_fees_sol: float = 0.0,
     ):
         """Open a new position with ceremony."""
         position = Position(
@@ -109,16 +137,25 @@ class PositionManager:
             current_price=entry_price,
             strategy_id=strategy_id,
             token_symbol=token_symbol,
+            entry_fees_sol=entry_fees_sol,
         )
         self.positions[token_address] = position
         self.logger.info(f"Position opened: {token_address[:8]}... | {amount_tokens:.2f} tokens")
 
-    def close_position(self, token_address: str, reason: str) -> Position | None:
-        """Close and return the position."""
+    def close_position(
+        self, token_address: str, reason: str, exit_fees_sol: float = 0.0
+    ) -> Position | None:
+        """Close and return the position, reporting performance NET of fees."""
         if token_address in self.positions:
             position = self.positions.pop(token_address)
-            pnl = position.get_pnl_percent()
-            self.logger.sell_executed(token_address, pnl, reason)
+            position.exit_fees_sol = exit_fees_sol
+            self.logger.sell_executed(
+                token_address,
+                position.get_pnl_percent(),
+                reason,
+                net_pnl_pct=position.get_net_pnl_percent(),
+                fees_sol=position.total_fees_sol,
+            )
             return position
         return None
 

@@ -15,6 +15,7 @@ from solders.instruction import AccountMeta
 from solders.message import Message
 from solders.pubkey import Pubkey
 from solders.transaction import Transaction, VersionedTransaction
+from spl.token.instructions import CloseAccountParams, close_account
 
 from fenrir.config import BotConfig, TradingMode
 from fenrir.core.client import SolanaClient
@@ -35,6 +36,26 @@ from fenrir.trading.tx_config import TxConfigManager
 
 LAMPORTS_PER_SOL = 1_000_000_000
 DEFAULT_COMPUTE_UNITS = 200_000
+# Base network fee per signature. Our txs carry one, so total tx cost is
+# priority_fee + this (verified on-chain: 2_000_000 + 5_000 = 0.002005 SOL).
+BASE_TX_FEE_LAMPORTS = 5_000
+
+
+def cap_priority_fee(
+    fee_lamports: int, amount_sol: float, max_pct: float, floor_lamports: int
+) -> int:
+    """Clamp a FLAT priority fee to a share of the trade it's paying for.
+
+    A lamport constant doesn't scale with position size: degen's 2_000_000 (0.002
+    SOL) is 0.4% of its intended 0.5 SOL trade but 20% of a 0.01 SOL one — 40% round
+    trip, which no realistic gain overcomes. Caps at ``max_pct`` of the trade, never
+    below ``floor_lamports`` (too cheap and the tx never lands) and never above the
+    requested fee. ``max_pct <= 0`` disables capping.
+    """
+    if max_pct <= 0 or amount_sol <= 0:
+        return fee_lamports
+    cap = int(amount_sol * LAMPORTS_PER_SOL * max_pct / 100.0)
+    return max(floor_lamports, min(fee_lamports, cap))
 
 
 class TradingEngine:
@@ -105,12 +126,29 @@ class TradingEngine:
     # per strategy; otherwise fall back to the flat BotConfig values so
     # default behavior is unchanged.
 
-    async def _resolve_priority_fee(self, strategy_id: str) -> int:
+    async def _resolve_priority_fee(self, strategy_id: str, amount_sol: float = 0.0) -> int:
+        """Resolve the priority fee, capped to a share of the trade when size is known."""
         if self.tx_config is not None:
-            return await self.tx_config.get_priority_fee_lamports(strategy_id)
-        if self.config.dynamic_priority_fee_enabled:
-            return await self._dynamic_priority_fee()
-        return self.config.priority_fee_lamports
+            fee = await self.tx_config.get_priority_fee_lamports(strategy_id)
+        elif self.config.dynamic_priority_fee_enabled:
+            fee = await self._dynamic_priority_fee()
+        else:
+            fee = self.config.priority_fee_lamports
+        return self._cap_fee(fee, amount_sol)
+
+    def _cap_fee(self, fee_lamports: int, amount_sol: float) -> int:
+        capped = cap_priority_fee(
+            fee_lamports,
+            amount_sol,
+            self.config.max_priority_fee_pct_of_trade,
+            self.config.min_priority_fee_lamports,
+        )
+        if capped < fee_lamports:
+            self.logger.info(
+                f"   Priority fee capped: {fee_lamports:,} -> {capped:,} lamports "
+                f"({self.config.max_priority_fee_pct_of_trade:.1f}% of {amount_sol:.4f} SOL)"
+            )
+        return capped
 
     async def _dynamic_priority_fee(self) -> int:
         """Size the priority fee from recent pump-program prioritization fees.
@@ -473,7 +511,7 @@ class TradingEngine:
             amount_lamports = int(amount_sol * LAMPORTS_PER_SOL)
 
             # Resolve per-strategy execution params (tx profile or flat config)
-            priority_fee = await self._resolve_priority_fee(strategy_id)
+            priority_fee = await self._resolve_priority_fee(strategy_id, amount_sol)
             slippage_bps = self._resolve_slippage_bps(strategy_id)
             use_jito = self._resolve_use_jito(strategy_id)
             jito_tip = self._resolve_jito_tip_lamports(strategy_id)
@@ -646,6 +684,7 @@ class TradingEngine:
                 amount_sol=amount_sol,
                 strategy_id=strategy_id,
                 token_symbol=token_data.get("symbol", "???"),
+                entry_fees_sol=(priority_fee + BASE_TX_FEE_LAMPORTS) / LAMPORTS_PER_SOL,
             )
 
             self.logger.info(f"TX Signature: {signature}")
@@ -691,9 +730,12 @@ class TradingEngine:
         try:
             token_mint = Pubkey.from_string(token_address)
 
-            # Resolve per-strategy execution params from the owning position.
+            # Resolve per-strategy execution params from the owning position. The exit
+            # fee is capped against the position's own size, like the entry.
             strategy_id = getattr(position, "strategy_id", "default")
-            priority_fee = await self._resolve_priority_fee(strategy_id)
+            priority_fee = await self._resolve_priority_fee(
+                strategy_id, getattr(position, "amount_sol_invested", 0.0)
+            )
             slippage_bps = self._resolve_slippage_bps(strategy_id)
             use_jito = self._resolve_use_jito(strategy_id)
             jito_tip = self._resolve_jito_tip_lamports(strategy_id)
@@ -831,8 +873,13 @@ class TradingEngine:
                 return False
 
             # 13. Close position
-            self.positions.close_position(token_address, reason)
+            self.positions.close_position(
+                token_address,
+                reason,
+                exit_fees_sol=(priority_fee + BASE_TX_FEE_LAMPORTS) / LAMPORTS_PER_SOL,
+            )
             self.logger.info(f"Sell TX: {signature}")
+            await self._close_token_account(token_mint)
             return True
 
         except Exception as e:
@@ -925,7 +972,7 @@ class TradingEngine:
             Pubkey.from_string(token_address)  # validate the mint
             amount_lamports = int(amount_sol * LAMPORTS_PER_SOL)
 
-            priority_fee = await self._resolve_priority_fee(strategy_id)
+            priority_fee = await self._resolve_priority_fee(strategy_id, amount_sol)
             balance = await self.client.get_balance(self.wallet.pubkey)
             if balance < amount_sol + priority_fee / LAMPORTS_PER_SOL:
                 self.logger.warning(
@@ -940,7 +987,9 @@ class TradingEngine:
             if not quote:
                 self.logger.warning(f"Jupiter quote failed for {token_address[:8]}... buy")
                 return False
-            swap_tx_b64 = await self.jupiter.get_swap_transaction(quote, str(self.wallet.pubkey))
+            swap_tx_b64 = await self.jupiter.get_swap_transaction(
+                quote, str(self.wallet.pubkey), priority_fee_lamports=priority_fee
+            )
             if not swap_tx_b64:
                 self.logger.warning("Jupiter buy swap build failed")
                 return False
@@ -974,6 +1023,7 @@ class TradingEngine:
                 amount_sol=amount_sol,
                 strategy_id=strategy_id,
                 token_symbol=token_data.get("symbol", "???"),
+                entry_fees_sol=(priority_fee + BASE_TX_FEE_LAMPORTS) / LAMPORTS_PER_SOL,
             )
             self.logger.info(f"Jupiter buy TX: {signature}")
             return True
@@ -1019,8 +1069,14 @@ class TradingEngine:
                 self.logger.warning("Jupiter quote failed for migrated token sell")
                 return False
 
-            # Get swap transaction
-            swap_tx_b64 = await self.jupiter.get_swap_transaction(quote, str(self.wallet.pubkey))
+            # Size the exit fee against the position's own value, not a flat constant.
+            exit_priority_fee = await self._resolve_priority_fee(
+                getattr(position, "strategy_id", "default"),
+                getattr(position, "amount_sol_invested", 0.0),
+            )
+            swap_tx_b64 = await self.jupiter.get_swap_transaction(
+                quote, str(self.wallet.pubkey), priority_fee_lamports=exit_priority_fee
+            )
             if not swap_tx_b64:
                 self.logger.warning("Jupiter swap transaction build failed")
                 return False
@@ -1042,11 +1098,60 @@ class TradingEngine:
             self.logger.info(
                 f"Jupiter sell fallback: {token_address[:8]}... | {reason} | TX: {signature}"
             )
-            self.positions.close_position(token_address, reason)
+            self.positions.close_position(
+                token_address,
+                reason,
+                exit_fees_sol=(exit_priority_fee + BASE_TX_FEE_LAMPORTS) / LAMPORTS_PER_SOL,
+            )
+            await self._close_token_account(token_mint)
             return True
 
         except Exception as e:
             self.logger.error(f"Jupiter sell fallback failed for {token_address}", e)
+            return False
+
+    async def _close_token_account(self, token_mint: Pubkey) -> bool:
+        """Reclaim the ~0.002 SOL rent locked in an emptied token account.
+
+        A token account is rent-exempt, not free: opening one on first buy deposits
+        ~0.00204 SOL. Selling empties it but leaves it open, so the deposit stayed
+        stranded and one dead account accumulated per token traded — real money on a
+        0.01 SOL position. Closing returns the rent to the wallet.
+
+        Best-effort: never fails the sell, which has already settled.
+        """
+        try:
+            token_program = await self.client.get_account_owner(token_mint) or TOKEN_PROGRAM
+            ata = self.pumpfun.derive_ata(self.wallet.pubkey, token_mint, token_program)
+
+            info = await self.client.get_token_accounts_by_owner(self.wallet.pubkey, token_mint)
+            if not info:
+                return False
+            if info.get("amount", 0) > 0:
+                # Still holding tokens (partial exit) — closing would fail anyway.
+                return False
+
+            close_ix = close_account(
+                CloseAccountParams(
+                    program_id=token_program,
+                    account=ata,
+                    dest=self.wallet.pubkey,
+                    owner=self.wallet.pubkey,
+                )
+            )
+            blockhash = await self.client.get_latest_blockhash()
+            if not blockhash:
+                return False
+            message = Message.new_with_blockhash([close_ix], self.wallet.pubkey, blockhash)
+            transaction = Transaction.new_unsigned(message)
+            transaction.sign([self.wallet.keypair], blockhash)
+            signature = await self.client.send_transaction(transaction)
+            if signature:
+                self.logger.info(f"   Reclaimed token-account rent (close ATA): {signature}")
+                return True
+            return False
+        except Exception as e:
+            self.logger.warning(f"Could not close token account (rent not reclaimed): {e}")
             return False
 
     async def _sign_send_jupiter_swap(self, swap_tx_b64: str) -> str | None:

@@ -83,10 +83,16 @@ class JupiterSwapEngine:
             self.logger.error("Failed to get Jupiter quote", e)
             return None
 
-    async def get_swap_transaction(self, quote: dict, user_public_key: str) -> str | None:
+    async def get_swap_transaction(
+        self, quote: dict, user_public_key: str, priority_fee_lamports: int | None = None
+    ) -> str | None:
         """
         Build the swap transaction from a quote.
         Turning intention into executable bytes.
+
+        ``priority_fee_lamports`` overrides the flat configured fee — callers that
+        know the trade size pass a size-capped value, since the raw config fee is a
+        lamport constant (0.002 SOL on degen) that eats small positions alive.
         """
         if not self.session:
             await self.initialize()
@@ -106,7 +112,11 @@ class JupiterSwapEngine:
                 "userPublicKey": user_public_key,
                 "wrapAndUnwrapSol": True,
                 "dynamicComputeUnitLimit": True,
-                "prioritizationFeeLamports": self.config.priority_fee_lamports,
+                "prioritizationFeeLamports": (
+                    priority_fee_lamports
+                    if priority_fee_lamports is not None
+                    else self.config.priority_fee_lamports
+                ),
             }
 
             async with self.session.post(url, json=payload) as response:
