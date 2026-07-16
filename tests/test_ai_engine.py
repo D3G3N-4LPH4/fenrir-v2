@@ -408,6 +408,41 @@ class TestAITradingAnalystBuildPrompt:
         unknown = TokenMetadata(token_mint="M", name="A", symbol="A")
         assert "Age: Unknown" in analyst._build_analysis_prompt(unknown, None)
 
+    def test_prompt_renders_momentum(self, analyst):
+        """Volume/price-change must reach the prompt.
+
+        Regression: the scanner has always carried these, but TokenMetadata had no
+        momentum fields, so the model flagged "no volume data provided" and "cannot
+        assess momentum" on a token doing $817k/24h — while being asked to judge it
+        as a SWING trade.
+        """
+        token = TokenMetadata(
+            token_mint="M",
+            name="Mover",
+            symbol="MOV",
+            tier="mid",
+            volume_24h_usd=817_332.0,
+            price_change_1h_pct=-2.5,
+            price_change_24h_pct=-17.78,
+            txns_24h_buys=2990,
+            txns_24h_sells=3106,
+        )
+        prompt = analyst._build_analysis_prompt(token, None)
+
+        assert "Volume 24h: $817,332" in prompt
+        assert "Price Change 24h: -17.78%" in prompt
+        assert "Price Change 1h: -2.50%" in prompt
+        assert "2,990 buys / 3,106 sells (49% buy pressure)" in prompt
+
+    def test_momentum_unknown_when_absent(self, analyst):
+        """A bare launch has no momentum history — Unknown, not a fake zero."""
+        prompt = analyst._build_analysis_prompt(
+            TokenMetadata(token_mint="M", name="A", symbol="A"), None
+        )
+        assert "Volume 24h: Unknown" in prompt
+        assert "Price Change 24h: Unknown" in prompt
+        assert "Buys/Sells 24h: Unknown" in prompt
+
     def test_prompt_includes_market_conditions_when_provided(self, analyst, sample_token_metadata):
         """Market conditions dict should appear in the prompt."""
         market = {
@@ -575,7 +610,13 @@ class TestScannerCandidateReachesAIWithRealNumbers:
                 "devMigrations": 42,
                 "devMints": 2543,
             },
-            "stats24h": {"priceChange": 572.0, "numBuys": 10296, "numSells": 8055},
+            "stats24h": {
+                "priceChange": 572.0,
+                "numBuys": 10296,
+                "numSells": 8055,
+                "buyVolume": 900_000.0,
+                "sellVolume": 642_440.0,
+            },
         }
 
     def test_scanner_candidate_carries_usd_and_audit_fields(self):
@@ -602,6 +643,11 @@ class TestScannerCandidateReachesAIWithRealNumbers:
         assert meta.tier == "mid"
         # Real age flows through, so the model can't guess at timing.
         assert meta.age_minutes == pytest.approx(15 * 1440, rel=0.01)
+        # ...as does momentum the scanner already gathered.
+        assert meta.volume_24h_usd == pytest.approx(1_542_440.0)
+        assert meta.price_change_24h_pct == pytest.approx(572.0)
+        assert meta.txns_24h_buys == 10296
+        assert meta.txns_24h_sells == 8055
 
     def test_launch_shaped_data_leaves_unmeasured_fields_unknown(
         self, ai_enabled_config, mock_logger
