@@ -4,7 +4,7 @@ FENRIR Test Suite - Shared Fixtures
 
 import pytest
 
-from fenrir.config import BotConfig
+from fenrir.config import BotConfig, _ensure_dotenv
 from fenrir.core.positions import PositionManager
 from fenrir.logger import FenrirLogger
 
@@ -58,7 +58,14 @@ _CONFIG_ENV = [
 
 @pytest.fixture(autouse=True)
 def _isolate_config_env(monkeypatch):
-    """Make BotConfig() deterministic regardless of the operator's local .env."""
+    """Make BotConfig() deterministic regardless of the operator's local .env.
+
+    Order matters: BotConfig lazily loads .env on the FIRST construction
+    (config._ensure_dotenv, guarded by a module flag). Clearing before that load
+    happens is useless — load_dotenv would re-inject every var right back. So force
+    the one-time load first, then clear; later _ensure_dotenv calls are no-ops.
+    """
+    _ensure_dotenv()
     for var in _CONFIG_ENV:
         monkeypatch.delenv(var, raising=False)
 
