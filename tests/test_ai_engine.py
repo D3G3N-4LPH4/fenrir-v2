@@ -318,6 +318,32 @@ class TestAITradingAnalystBuildPrompt:
         assert "20.0%" in prompt  # top_10_holder_pct
         assert "CreatorAddr123" in prompt
 
+    def test_prompt_renders_usd_for_established_tokens(self, analyst):
+        """AMM/scanner tokens are USD-denominated — the prompt must show real USD.
+
+        Regression: the prompt only rendered the *_sol fields, so every scanner
+        candidate showed "0.00 SOL" liquidity/mcap and the AI rejected it as a dead
+        token ("zero liquidity, no exit path") at ~95% confidence.
+        """
+        token = TokenMetadata(
+            token_mint="MintX",
+            name="Established",
+            symbol="EST",
+            tier="mid",
+            liquidity_usd=121_559.0,
+            market_cap_usd=854_904.0,
+            holder_count=2366,
+            top_10_holder_pct=19.5,
+        )
+        prompt = analyst._build_analysis_prompt(token, None)
+
+        assert "$121,559" in prompt
+        assert "$854,904" in prompt
+        assert "0.00 SOL" not in prompt  # the bug's signature
+        assert "14.22%" in prompt  # liquidity ratio from USD pair
+        assert "2366" in prompt
+        assert "19.5%" in prompt
+
     def test_prompt_includes_market_conditions_when_provided(self, analyst, sample_token_metadata):
         """Market conditions dict should appear in the prompt."""
         market = {
@@ -451,6 +477,88 @@ class TestMarketSignalContext:
         ctx = brain._build_market_signal_context({"rugcheck_score": 0, "rugcheck_risks": []})
         assert ctx is not None
         assert "none flagged" in ctx
+
+
+class TestScannerCandidateReachesAIWithRealNumbers:
+    """A scanner candidate must never reach the AI as zeros.
+
+    The scanner emits USD keys (market_cap_usd / liquidity_usd) and top_holders_pct;
+    _build_token_metadata read only the launch-shaped *_sol keys and never mapped
+    top-10 holders or creator history. Every mid/large-cap therefore reached the AI
+    with mcap=0, liquidity=0, top_10=0, creator_launches=0 — which reads as a dead
+    token. This binds the scanner's real output to the metadata the AI receives.
+    """
+
+    def _jupiter_token(self) -> dict:
+        # Shape as returned by Jupiter tokens/v2 (trimmed to what the builder reads).
+        return {
+            "id": "G9VVud86SLgb7SnTqRKXJVUkzwLzCf4R89vknWVKbonk",
+            "symbol": "Trump Coin",
+            "name": "Trump Coin",
+            "mcap": 664_009.0,
+            "liquidity": 64_489.0,
+            "usdPrice": 0.0008549,
+            "holderCount": 2366,
+            "graduatedAt": "2026-07-14T05:11:34Z",
+            "twitter": "https://x.com/example",
+            "audit": {
+                "mintAuthorityDisabled": True,
+                "freezeAuthorityDisabled": True,
+                "topHoldersPercentage": 19.464912330559486,
+                "devMigrations": 42,
+                "devMints": 2543,
+            },
+            "stats24h": {"priceChange": 572.0, "numBuys": 10296, "numSells": 8055},
+        }
+
+    def test_scanner_candidate_carries_usd_and_audit_fields(self):
+        from fenrir.trading.scanner import MarketScanner
+
+        cand = MarketScanner._build_candidate(self._jupiter_token(), "mid")
+        assert cand["market_cap_usd"] == 664_009.0
+        assert cand["liquidity_usd"] == 64_489.0
+        assert cand["top_holders_pct"] == pytest.approx(19.4649, abs=1e-3)
+        assert cand["dev_mints"] == 2543  # creator track record, previously dropped
+        assert cand["migrated"] is True
+
+    def test_metadata_from_scanner_candidate_is_not_zeroed(self, ai_enabled_config, mock_logger):
+        from fenrir.trading.scanner import MarketScanner
+
+        cand = MarketScanner._build_candidate(self._jupiter_token(), "mid")
+        meta = ClaudeBrain(ai_enabled_config, mock_logger)._build_token_metadata(cand)
+
+        assert meta.market_cap_usd == 664_009.0
+        assert meta.liquidity_usd == 64_489.0
+        assert meta.holder_count == 2366
+        assert meta.top_10_holder_pct == pytest.approx(19.4649, abs=1e-3)
+        assert meta.creator_previous_launches == 2543
+        assert meta.tier == "mid"
+
+    def test_ensemble_context_shows_usd_not_zero_sol(self, ai_enabled_config, mock_logger):
+        from fenrir.trading.scanner import MarketScanner
+
+        cand = MarketScanner._build_candidate(self._jupiter_token(), "mid")
+        analysis = TokenAnalysis(
+            decision=AIDecision.SKIP, confidence=0.5, risk_score=5.0, reasoning="r"
+        )
+        ctx = ClaudeBrain(ai_enabled_config, mock_logger)._build_ensemble_context(cand, analysis)
+
+        assert "$64,489" in ctx
+        assert "$664,009" in ctx
+        assert "0.00 SOL" not in ctx  # what the panel used to be handed
+
+    def test_launch_shaped_data_still_uses_sol(self, ai_enabled_config, mock_logger):
+        """Fresh pump.fun launches keep the SOL denomination — no regression."""
+        launch = {
+            "token_address": "Mint1",
+            "symbol": "FRESH",
+            "initial_liquidity_sol": 8.0,
+            "market_cap_sol": 42.0,
+        }
+        meta = ClaudeBrain(ai_enabled_config, mock_logger)._build_token_metadata(launch)
+        assert meta.initial_liquidity_sol == 8.0
+        assert meta.current_market_cap_sol == 42.0
+        assert meta.market_cap_usd == 0.0  # untouched for curve launches
 
 
 class TestClaudeBrainEvaluateEntry:
