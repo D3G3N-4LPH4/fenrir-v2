@@ -638,6 +638,13 @@ class ClaudeBrain:
             creator_previous_launches=token_data.get("dev_mints"),
             holder_count=token_data.get("holder_count"),
             age_minutes=token_data.get("age_minutes"),
+            # Momentum the scanner already gathers — without these the model judged
+            # swing trades blind and flagged "no volume data" on active tokens.
+            volume_24h_usd=token_data.get("volume_24h_usd"),
+            price_change_1h_pct=token_data.get("price_change_1h"),
+            price_change_24h_pct=token_data.get("price_change_24h"),
+            txns_24h_buys=token_data.get("num_buys_24h"),
+            txns_24h_sells=token_data.get("num_sells_24h"),
             website=self._sanitize_metadata_field(token_data.get("website"), max_length=200),
             twitter=self._sanitize_metadata_field(token_data.get("twitter"), max_length=200),
             telegram=self._sanitize_metadata_field(token_data.get("telegram"), max_length=200),

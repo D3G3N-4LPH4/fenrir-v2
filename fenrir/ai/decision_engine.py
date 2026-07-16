@@ -103,6 +103,18 @@ def _fmt_unknown(value: Any, fmt: Callable[[Any], str], unknown: str = "Unknown"
     return unknown if value is None else fmt(value)
 
 
+def _fmt_buys_sells(buys: int | None, sells: int | None) -> str:
+    """Render buy/sell counts plus the derived pressure the model would otherwise
+    have to compute (and, lacking the data entirely, used to guess at)."""
+    if buys is None and sells is None:
+        return "Unknown"
+    b, s = buys or 0, sells or 0
+    total = b + s
+    if not total:
+        return f"{b:,} / {s:,}"
+    return f"{b:,} buys / {s:,} sells ({b / total:.0%} buy pressure)"
+
+
 def _fmt_age(minutes: float) -> str:
     if minutes < 60:
         return f"{minutes:.0f} minutes"
@@ -147,6 +159,16 @@ class TokenMetadata:
     # Minutes since the token/pool was created. Without it the model invented timing
     # ("appears to be a fresh launch" about a 15-day-old token).
     age_minutes: float | None = None
+
+    # Momentum. The scanner has carried these since it was written, but they never
+    # reached the prompt — so the model flagged "no volume data provided" and
+    # "cannot assess momentum" on tokens with six-figure daily volume, and had to
+    # judge swing trades with no trend information at all.
+    volume_24h_usd: float | None = None
+    price_change_1h_pct: float | None = None
+    price_change_24h_pct: float | None = None
+    txns_24h_buys: int | None = None
+    txns_24h_sells: int | None = None
 
     # Creator info
     creator_address: str | None = None
@@ -319,6 +341,12 @@ absent data, not as a value of zero, and do not cite them as red flags.
 Liquidity Ratio: {liquidity_ratio:.2%}
 Holder Count: {_fmt_unknown(token.holder_count, lambda v: f"{v:,}")}
 Top 10 Holders Control: {_fmt_unknown(token.top_10_holder_pct, lambda v: f"{v:.1f}%")}
+
+# MOMENTUM
+Volume 24h: {_fmt_unknown(token.volume_24h_usd, lambda v: f"${v:,.0f}")}
+Price Change 1h: {_fmt_unknown(token.price_change_1h_pct, lambda v: f"{v:+.2f}%")}
+Price Change 24h: {_fmt_unknown(token.price_change_24h_pct, lambda v: f"{v:+.2f}%")}
+Buys/Sells 24h: {_fmt_buys_sells(token.txns_24h_buys, token.txns_24h_sells)}
 
 # BONDING CURVE STATUS"""
 
