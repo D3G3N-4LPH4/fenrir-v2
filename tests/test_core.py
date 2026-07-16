@@ -88,6 +88,65 @@ class TestPosition:
         assert position.get_pnl_percent() == -50.0
         assert position.get_pnl_sol() == -0.5
 
+    def test_net_pnl_subtracts_fees(self):
+        """A price gain can still be a wallet loss once fees are counted.
+
+        Real trade: 0.01 SOL into a token that rose 3.10%, reported as a win, while
+        the wallet lost SOL — a flat 0.002 SOL/tx priority fee is 20% per side.
+        """
+        # entry_price is SOL/token: 0.01 SOL bought 1046.99 tokens.
+        entry = 0.01 / 1046.99
+        position = Position(
+            token_address="TEST123",
+            entry_time=datetime.now(),
+            entry_price=entry,
+            amount_tokens=1046.99,
+            amount_sol_invested=0.01,
+            peak_price=entry,
+            entry_fees_sol=0.002005,  # 2_000_000 priority + 5_000 base
+        )
+        position.update_price(entry * 1.031)  # +3.10%, as reported
+        position.exit_fees_sol = 0.002005
+
+        assert position.get_pnl_percent() == pytest.approx(3.10, abs=0.01)  # gross
+        assert position.total_fees_sol == pytest.approx(0.00401)
+        # Net is deeply negative despite the "winning" trade.
+        assert position.get_net_pnl_sol() == pytest.approx(0.01 * 0.031 - 0.00401, abs=1e-6)
+        assert position.get_net_pnl_percent() < -30
+        assert position.get_net_pnl_percent() == pytest.approx(
+            (0.01 * 0.031 - 0.00401) / 0.012005 * 100, abs=0.01
+        )
+
+    def test_net_pnl_without_fees_matches_gross(self):
+        """No fees recorded → net equals gross (sim paths, back-compat)."""
+        position = Position(
+            token_address="TEST123",
+            entry_time=datetime.now(),
+            entry_price=0.000001,
+            amount_tokens=1_000_000,
+            amount_sol_invested=1.0,
+            peak_price=0.000001,
+        )
+        position.update_price(0.000002)
+        assert position.get_net_pnl_sol() == position.get_pnl_sol()
+        assert position.get_net_pnl_percent() == pytest.approx(100.0)
+
+    def test_exit_triggers_stay_price_based_despite_fees(self):
+        """Fees must NOT move stop-loss/take-profit: a 25% stop means PRICE -25%."""
+        position = Position(
+            token_address="TEST123",
+            entry_time=datetime.now(),
+            entry_price=0.000001,
+            amount_tokens=1_000_000,
+            amount_sol_invested=1.0,
+            peak_price=0.000001,
+            entry_fees_sol=0.5,  # absurd fee to prove it can't leak into triggers
+        )
+        position.update_price(0.0000012)  # +20% price
+        assert position.should_take_profit(20.0) is True
+        assert position.should_stop_loss(25.0) is False
+        assert position.get_net_pnl_percent() < 0  # but the wallet is down
+
     def test_take_profit_trigger(self):
         """Test take profit condition."""
         position = Position(

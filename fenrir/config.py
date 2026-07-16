@@ -175,6 +175,14 @@ class BotConfig:
 
     # Execution Settings
     priority_fee_lamports: int = 500_000  # 0.0005 SOL for competitive inclusion
+    # Ceiling on the priority fee as a % of the trade, so a FLAT lamport fee can't
+    # silently eat a small position. degen presets 2_000_000 lamports (0.002 SOL) —
+    # fine at its intended 0.5 SOL size (0.4%/side) but 20% PER SIDE of a 0.01 SOL
+    # trade, i.e. a 40% round-trip drag that no realistic gain overcomes. 0 disables.
+    # Env: MAX_PRIORITY_FEE_PCT_OF_TRADE
+    max_priority_fee_pct_of_trade: float = 3.0
+    # Never cap below this — too low a fee risks never landing.
+    min_priority_fee_lamports: int = 50_000
     use_jito: bool = False  # MEV protection via Jito bundles
     jito_tip_lamports: int = 10000  # Tip for Jito validators
     # Use per-strategy transaction profiles (fenrir.trading.tx_config) instead
@@ -385,6 +393,9 @@ class BotConfig:
         # an operator's .env pin was silently ignored and a start that omitted the size
         # traded the 0.1 default. Runtime changes via POST /bot/config still apply.
         self.buy_amount_sol = _env_float("BUY_AMOUNT_SOL", self.buy_amount_sol)
+        self.max_priority_fee_pct_of_trade = _env_float(
+            "MAX_PRIORITY_FEE_PCT_OF_TRADE", self.max_priority_fee_pct_of_trade
+        )
 
         if not self.ai_local_model_url:
             self.ai_local_model_url = os.getenv(
