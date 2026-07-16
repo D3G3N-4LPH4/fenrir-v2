@@ -32,6 +32,13 @@ Thumbs.db
 *.log
 logs/
 
+# Process stdout/stderr redirect targets (e.g. launching the API detached with
+# Start-Process -RedirectStandardOutput/-RedirectStandardError). These capture the
+# RESOLVED config, which includes the RPC URL with its provider API key embedded —
+# never commit them.
+*.out
+*.err
+
 # Database files
 *.db
 *.db-*
