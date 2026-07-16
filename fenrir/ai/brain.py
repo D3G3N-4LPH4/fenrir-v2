@@ -627,6 +627,13 @@ class ClaudeBrain:
             creator_address=token_data.get("creator"),
             # Scanner-surfaced (mid/large-cap) tokens carry real enrichment —
             # populate it so the prompt's metrics/socials aren't blank zeros.
+            # These keys are USD-denominated and distinct from the launch-shaped
+            # *_sol keys above; reading only the latter fed the AI zeros for every
+            # scanner candidate, which it read as "dead token, no exit path".
+            liquidity_usd=token_data.get("liquidity_usd") or 0.0,
+            market_cap_usd=token_data.get("market_cap_usd") or 0.0,
+            top_10_holder_pct=token_data.get("top_holders_pct") or 0.0,
+            creator_previous_launches=token_data.get("dev_mints") or 0,
             holder_count=token_data.get("holder_count", 0) or 0,
             website=self._sanitize_metadata_field(token_data.get("website"), max_length=200),
             twitter=self._sanitize_metadata_field(token_data.get("twitter"), max_length=200),
@@ -681,10 +688,18 @@ class ClaudeBrain:
                 mom.append(f"top holders {thp:.0f}%")
             if mom:
                 lines.append("Momentum/flow: " + ", ".join(mom))
-        lines += [
-            f"Liquidity: {token_data.get('initial_liquidity_sol', 0):.2f} SOL",
-            f"Market cap: {token_data.get('market_cap_sol', 0):.2f} SOL",
-        ]
+        # Same denomination split as the main prompt: scanner/AMM tokens carry USD,
+        # bonding-curve launches carry SOL. Showing the SOL keys unconditionally fed
+        # the panel "0.00 SOL" for every established token.
+        liq_usd = token_data.get("liquidity_usd") or 0.0
+        mcap_usd = token_data.get("market_cap_usd") or 0.0
+        if liq_usd or mcap_usd:
+            lines += [f"Liquidity: ${liq_usd:,.0f}", f"Market cap: ${mcap_usd:,.0f}"]
+        else:
+            lines += [
+                f"Liquidity: {token_data.get('initial_liquidity_sol', 0):.2f} SOL",
+                f"Market cap: {token_data.get('market_cap_sol', 0):.2f} SOL",
+            ]
         if token_data.get("creator"):
             lines.append(f"Creator: {token_data['creator']}")
         if analysis.reasoning:

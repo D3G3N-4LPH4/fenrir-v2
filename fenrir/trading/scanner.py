@@ -289,6 +289,10 @@ class MarketScanner:
             "num_buys_24h": s24.get("numBuys"),
             "num_sells_24h": s24.get("numSells"),
             "top_holders_pct": audit.get("topHoldersPercentage"),
+            # Creator track record from Jupiter's audit block. A wallet with thousands
+            # of mints is a token factory — a real risk signal the AI should weigh.
+            "dev_mints": audit.get("devMints"),
+            "dev_migrations": audit.get("devMigrations"),
             # No pump bonding curve for these — priced via Jupiter/DexScreener.
             "bonding_curve_state": None,
         }

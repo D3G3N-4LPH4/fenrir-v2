@@ -106,10 +106,17 @@ class TokenMetadata:
     telegram: str | None = None
     discord: str | None = None
 
-    # On-chain data
+    # On-chain data.
+    # Fresh pump.fun launches are priced in SOL off the bonding curve; scanner-surfaced
+    # mid/large-caps trade on an AMM and are quoted in USD. Populate whichever pair the
+    # source actually has — the prompt renders the populated one. (Leaving the USD side
+    # unmapped is what made the AI see "zero liquidity / zero market cap" for every
+    # established token and reject it as dead.)
     bonding_curve_state: BondingCurveState | None = None
     initial_liquidity_sol: float = 0.0
     current_market_cap_sol: float = 0.0
+    liquidity_usd: float = 0.0
+    market_cap_usd: float = 0.0
     holder_count: int = 0
     top_10_holder_pct: float = 0.0
 
@@ -230,12 +237,26 @@ class AITradingAnalyst:
         Build a comprehensive prompt for the LLM.
         This is where the magic happens.
         """
-        # Calculate derived metrics
-        liquidity_ratio = (
-            token.initial_liquidity_sol / token.current_market_cap_sol
-            if token.current_market_cap_sol > 0
-            else 0
-        )
+        # Calculate derived metrics from whichever denomination the source populated
+        # (USD for AMM/scanner tokens, SOL for bonding-curve launches).
+        if token.market_cap_usd > 0 or token.liquidity_usd > 0:
+            liquidity_ratio = (
+                token.liquidity_usd / token.market_cap_usd if token.market_cap_usd > 0 else 0
+            )
+            metrics_block = (
+                f"Liquidity: ${token.liquidity_usd:,.0f}\n"
+                f"Current Market Cap: ${token.market_cap_usd:,.0f}"
+            )
+        else:
+            liquidity_ratio = (
+                token.initial_liquidity_sol / token.current_market_cap_sol
+                if token.current_market_cap_sol > 0
+                else 0
+            )
+            metrics_block = (
+                f"Initial Liquidity: {token.initial_liquidity_sol:.2f} SOL\n"
+                f"Current Market Cap: {token.current_market_cap_sol:.2f} SOL"
+            )
 
         # Established (scanner mid/large-cap) tokens trade on an AMM and must NOT be
         # judged by launch-sniping heuristics (which treat high mcap as a FOMO trap).
@@ -263,8 +284,7 @@ Mint Address: {token.token_mint}
 Description: {token.description or "Not provided"}
 
 # ON-CHAIN METRICS
-Initial Liquidity: {token.initial_liquidity_sol:.2f} SOL
-Current Market Cap: {token.current_market_cap_sol:.2f} SOL
+{metrics_block}
 Liquidity Ratio: {liquidity_ratio:.2%}
 Holder Count: {token.holder_count}
 Top 10 Holders Control: {token.top_10_holder_pct:.1f}%
