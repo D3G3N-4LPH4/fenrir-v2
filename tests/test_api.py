@@ -464,6 +464,44 @@ class TestStartBot:
         assert cfg["take_profit_pct"] == 75.0  # untouched preset
 
     @pytest.mark.asyncio
+    async def test_start_can_override_ai_confidence(self, client_no_auth: AsyncClient):
+        """ai_min_confidence_to_buy is settable at start (degen presets a low 0.4 bar)."""
+        mock_bot = MagicMock()
+        mock_bot.start = AsyncMock()
+
+        with patch("api.server.FenrirBot", return_value=mock_bot) as mock_fenrir:
+            resp = await client_no_auth.post(
+                "/bot/start", json={"mode": "degen", "ai_min_confidence_to_buy": 0.6}
+            )
+
+        assert resp.status_code == 200
+        cfg = resp.json()["config"]
+        assert cfg["ai_min_confidence_to_buy"] == 0.6  # override, not degen's 0.4
+        assert cfg["stop_loss_pct"] == 50.0  # other degen preset values untouched
+        # ...and it reached the config the bot was actually built with.
+        assert mock_fenrir.call_args[0][0].ai_min_confidence_to_buy == 0.6
+
+    @pytest.mark.asyncio
+    async def test_start_uses_mode_ai_confidence_when_unset(self, client_no_auth: AsyncClient):
+        """Unset → the mode's preset confidence applies."""
+        mock_bot = MagicMock()
+        mock_bot.start = AsyncMock()
+
+        with patch("api.server.FenrirBot", return_value=mock_bot):
+            resp = await client_no_auth.post("/bot/start", json={"mode": "degen"})
+
+        assert resp.status_code == 200
+        assert resp.json()["config"]["ai_min_confidence_to_buy"] == 0.4
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_out_of_range_ai_confidence(self, client_no_auth: AsyncClient):
+        """Confidence outside 0-1 is rejected by Pydantic (422), not silently clamped."""
+        resp = await client_no_auth.post(
+            "/bot/start", json={"mode": "degen", "ai_min_confidence_to_buy": 1.5}
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
     async def test_start_response_reports_resolved_config_without_rpc_url(
         self, client_no_auth: AsyncClient, monkeypatch: pytest.MonkeyPatch
     ):

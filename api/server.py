@@ -356,6 +356,9 @@ class StartBotRequest(BaseModel):
     max_initial_market_cap_sol: float | None = Field(
         default=None, gt=0, description="Max market cap"
     )
+    ai_min_confidence_to_buy: float | None = Field(
+        default=None, ge=0.0, le=1.0, description="Minimum AI confidence to buy (0-1)"
+    )
     rpc_url: str | None = Field(default=None, description="Custom RPC URL")
 
     def preset_overrides(self) -> dict[str, Any]:
