@@ -708,6 +708,7 @@ class TestManualTrade:
         """Successful buy trade should return success message."""
         mock_bot = MagicMock()
         mock_bot.trading_engine.execute_buy = AsyncMock(return_value=True)
+        mock_bot.jupiter.search_token = AsyncMock(return_value=None)  # unknown → curve path
         server_module.bot_instance = mock_bot
         server_module.bot_state["status"] = "running"
 
@@ -725,10 +726,85 @@ class TestManualTrade:
         mock_bot.trading_engine.execute_buy.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_manual_buy_routes_migrated_token_off_curve(self, client_no_auth: AsyncClient):
+        """A migrated/AMM token must carry tier+migrated so it routes via Jupiter.
+
+        Regression: the handler fabricated token_data with no tier/migrated, so
+        _is_non_curve_token was always False and EVERY manual buy was sent down the
+        pump.fun bonding-curve path — which fails outright for an AMM token.
+        """
+        mock_bot = MagicMock()
+        mock_bot.trading_engine.execute_buy = AsyncMock(return_value=True)
+        mock_bot.jupiter.search_token = AsyncMock(
+            return_value={
+                "id": "MIGRATED_MINT",
+                "symbol": "EST",
+                "name": "Established",
+                "mcap": 727_639.0,
+                "liquidity": 69_700.0,
+                "holderCount": 2375,
+                "graduatedAt": "2026-07-14T05:11:34Z",
+                "audit": {"topHoldersPercentage": 19.3, "devMints": 2543},
+                "stats24h": {"priceChange": 572.0},
+            }
+        )
+        mock_bot.scanner._tier = MagicMock(return_value="mid")
+        server_module.bot_instance = mock_bot
+        server_module.bot_state["status"] = "running"
+
+        resp = await client_no_auth.post(
+            "/bot/trade", json={"action": "buy", "token_address": "MIGRATED_MINT"}
+        )
+
+        assert resp.status_code == 200
+        td = mock_bot.trading_engine.execute_buy.call_args[0][0]
+        assert td["tier"] == "mid"
+        assert td["migrated"] is True  # -> _is_non_curve_token -> Jupiter route
+        assert td["market_cap_usd"] == 727_639.0  # real, not the old fabricated 50 SOL
+        assert td["liquidity_usd"] == 69_700.0
+        assert td["dev_mints"] == 2543
+        assert "launch_time" not in td  # no longer claims an old coin just launched
+
+    @pytest.mark.asyncio
+    async def test_manual_buy_honors_amount(self, client_no_auth: AsyncClient):
+        """The amount field was silently ignored — buys always used config size."""
+        mock_bot = MagicMock()
+        mock_bot.trading_engine.execute_buy = AsyncMock(return_value=True)
+        mock_bot.jupiter.search_token = AsyncMock(return_value=None)
+        server_module.bot_instance = mock_bot
+        server_module.bot_state["status"] = "running"
+
+        resp = await client_no_auth.post(
+            "/bot/trade",
+            json={"action": "buy", "token_address": "TOKEN1", "amount": 0.02},
+        )
+
+        assert resp.status_code == 200
+        assert mock_bot.trading_engine.execute_buy.call_args.kwargs["amount_sol"] == 0.02
+
+    @pytest.mark.asyncio
+    async def test_manual_buy_unknown_token_uses_curve_path(self, client_no_auth: AsyncClient):
+        """A token Jupiter doesn't know is a live pump.fun curve token."""
+        mock_bot = MagicMock()
+        mock_bot.trading_engine.execute_buy = AsyncMock(return_value=True)
+        mock_bot.jupiter.search_token = AsyncMock(return_value=None)
+        server_module.bot_instance = mock_bot
+        server_module.bot_state["status"] = "running"
+
+        resp = await client_no_auth.post(
+            "/bot/trade", json={"action": "buy", "token_address": "FRESH_MINT"}
+        )
+
+        assert resp.status_code == 200
+        td = mock_bot.trading_engine.execute_buy.call_args[0][0]
+        assert td == {"token_address": "FRESH_MINT"}  # engine prices it off the curve
+
+    @pytest.mark.asyncio
     async def test_trade_buy_failure(self, client_no_auth: AsyncClient):
         """Failed buy trade should return 500."""
         mock_bot = MagicMock()
         mock_bot.trading_engine.execute_buy = AsyncMock(return_value=False)
+        mock_bot.jupiter.search_token = AsyncMock(return_value=None)
         server_module.bot_instance = mock_bot
         server_module.bot_state["status"] = "running"
 
@@ -818,6 +894,7 @@ class TestManualTrade:
         """Action field should be case-insensitive (BUY, Sell, etc.)."""
         mock_bot = MagicMock()
         mock_bot.trading_engine.execute_buy = AsyncMock(return_value=True)
+        mock_bot.jupiter.search_token = AsyncMock(return_value=None)
         server_module.bot_instance = mock_bot
         server_module.bot_state["status"] = "running"
 

@@ -159,6 +159,32 @@ class JupiterSwapEngine:
             self.logger.error("Failed to fetch Jupiter trending tokens", e)
             return []
 
+    async def search_token(self, mint: str) -> dict | None:
+        """Look up ONE token by mint address (keyless Tokens-v2 search).
+
+        Returns the same token shape as :meth:`get_trending_tokens` entries (mcap,
+        liquidity, holderCount, graduatedAt, audit, socials) or None if unknown.
+        Search is fuzzy, so only an exact mint match is accepted.
+        """
+        if not self.session:
+            await self.initialize()
+        assert self.session is not None
+        try:
+            url = f"{self.TOKENS_API}/search?query={mint}"
+            async with self.session.get(url) as response:
+                if response.status != 200:
+                    self.logger.warning(f"Jupiter search {mint[:8]}...: {response.status}")
+                    return None
+                data = await response.json()
+            tokens = data if isinstance(data, list) else data.get("tokens", [])
+            for tok in tokens:
+                if tok.get("id") == mint:
+                    return cast("dict", tok)
+            return None
+        except Exception as e:
+            self.logger.error("Failed to search Jupiter token", e)
+            return None
+
     async def close(self):
         """Clean up resources."""
         if self.session:

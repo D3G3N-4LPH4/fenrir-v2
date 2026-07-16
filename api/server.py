@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from fenrir.events.bus import EventListener
     from fenrir.events.types import TradeEvent
     from fenrir.strategies import STRATEGY_REGISTRY
+    from fenrir.trading.scanner import MarketScanner
 else:
     try:
         from fenrir import (  # noqa: F401
@@ -55,11 +56,13 @@ else:
         from fenrir.events.bus import EventListener
         from fenrir.events.types import TradeEvent
         from fenrir.strategies import STRATEGY_REGISTRY
+        from fenrir.trading.scanner import MarketScanner
     except ImportError:
         print("Warning: fenrir package not found.")
         print("   Make sure the fenrir/ package is in your Python path.")
         BotConfig = None
         FenrirBot = None
+        MarketScanner = None
         STRATEGY_REGISTRY = {}
         TradingMode = None
         EventListener = object
@@ -441,6 +444,31 @@ class ManualTradeRequest(BaseModel):
     amount: float | None = Field(default=None, description="Amount (SOL for buy, tokens for sell)")
 
 
+async def _manual_buy_token_data(address: str) -> dict[str, Any]:
+    """Resolve REAL market data for a manual buy — never fabricate it.
+
+    This used to hand execute_buy a hardcoded dict (10 SOL liquidity, 50 SOL mcap,
+    launch_time=now). That was wrong three ways: the numbers were fiction, it told
+    the exit logic an established coin had just launched, and — because it carried
+    no ``tier``/``migrated`` — ``_is_non_curve_token`` sent EVERY address down the
+    pump.fun bonding-curve path, which simply fails for AMM/migrated tokens.
+
+    Jupiter knows migrated/AMM tokens (``graduatedAt``, mcap, liquidity, audit), so
+    reuse the market scanner's own candidate builder for them. Anything Jupiter
+    doesn't know is treated as a live pump.fun curve token and priced from the curve
+    by the engine.
+    """
+    assert bot_instance is not None
+    tok = await bot_instance.jupiter.search_token(address)
+    if tok:
+        tier = bot_instance.scanner._tier(tok.get("mcap") or 0.0)
+        if tier or tok.get("graduatedAt"):
+            # A graduated token trades on an AMM even if it's below the mid-cap
+            # threshold — route it off the curve regardless of tier.
+            return MarketScanner._build_candidate(tok, tier or "mid")
+    return {"token_address": address}
+
+
 class BotStatusResponse(BaseModel):
     """Bot status response"""
 
@@ -733,13 +761,10 @@ async def execute_manual_trade(request: ManualTradeRequest):
 
     try:
         if request.action.lower() == "buy":
-            token_data = {
-                "token_address": request.token_address,
-                "initial_liquidity_sol": 10.0,
-                "market_cap_sol": 50.0,
-                "launch_time": datetime.now(),
-            }
-            success = await bot_instance.trading_engine.execute_buy(token_data)
+            token_data = await _manual_buy_token_data(request.token_address)
+            success = await bot_instance.trading_engine.execute_buy(
+                token_data, amount_sol=request.amount
+            )
 
             if success:
                 await broadcast_update(
