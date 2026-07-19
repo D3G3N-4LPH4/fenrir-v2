@@ -150,6 +150,20 @@ class TradingEngine:
             )
         return capped
 
+    def _tx_fee_sol(self, priority_fee_lamports: int) -> float:
+        """Total SOL cost of one transaction: priority fee + base network fee."""
+        return (priority_fee_lamports + BASE_TX_FEE_LAMPORTS) / LAMPORTS_PER_SOL
+
+    async def _sim_tx_fee_sol(self, strategy_id: str, amount_sol: float) -> float:
+        """The transaction cost a trade WOULD incur, for simulation accounting.
+
+        Simulation sends no transaction, but must still book the same fee a live
+        trade of this size/strategy would pay — otherwise sim reports gross price
+        movement and flatters small trades exactly as the live path used to (a flat
+        priority fee is a large share of a 0.01 SOL trade). Mirrors the live sites.
+        """
+        return self._tx_fee_sol(await self._resolve_priority_fee(strategy_id, amount_sol))
+
     async def _dynamic_priority_fee(self) -> int:
         """Size the priority fee from recent pump-program prioritization fees.
 
@@ -502,6 +516,7 @@ class TradingEngine:
                 amount_sol=amount_sol,
                 strategy_id=strategy_id,
                 token_symbol=token_data.get("symbol", "???"),
+                entry_fees_sol=await self._sim_tx_fee_sol(strategy_id, amount_sol),
             )
             return True
 
@@ -684,7 +699,7 @@ class TradingEngine:
                 amount_sol=amount_sol,
                 strategy_id=strategy_id,
                 token_symbol=token_data.get("symbol", "???"),
-                entry_fees_sol=(priority_fee + BASE_TX_FEE_LAMPORTS) / LAMPORTS_PER_SOL,
+                entry_fees_sol=self._tx_fee_sol(priority_fee),
             )
 
             self.logger.info(f"TX Signature: {signature}")
@@ -719,11 +734,18 @@ class TradingEngine:
         if self.config.mode == TradingMode.SIMULATION:
             assert position is not None  # SIM + no position already returned above
             self.logger.info("SIMULATION MODE - No real transaction sent")
-            # Calculate simulated exit price from current position data
-            pnl_pct = position.get_pnl_percent()
-            pnl_sol = position.get_pnl_sol()
-            self.logger.info(f"   Sim exit: PnL {pnl_pct:+.2f}% ({pnl_sol:+.4f} SOL)")
-            self.positions.close_position(token_address, reason)
+            # Book the exit fee this trade WOULD pay, so sim PnL is net like live.
+            exit_fees = await self._sim_tx_fee_sol(
+                getattr(position, "strategy_id", "default"),
+                position.amount_sol_invested,
+            )
+            position.exit_fees_sol = exit_fees  # so the net figures below include it
+            self.logger.info(
+                f"   Sim exit: PnL {position.get_pnl_percent():+.2f}% "
+                f"| NET {position.get_net_pnl_percent():+.2f}% "
+                f"({position.get_net_pnl_sol():+.4f} SOL, fees {position.total_fees_sol:.4f})"
+            )
+            self.positions.close_position(token_address, reason, exit_fees_sol=exit_fees)
             return True
 
         # -- Live execution via direct pump.fun program --
@@ -876,7 +898,7 @@ class TradingEngine:
             self.positions.close_position(
                 token_address,
                 reason,
-                exit_fees_sol=(priority_fee + BASE_TX_FEE_LAMPORTS) / LAMPORTS_PER_SOL,
+                exit_fees_sol=self._tx_fee_sol(priority_fee),
             )
             self.logger.info(f"Sell TX: {signature}")
             await self._close_token_account(token_mint)
@@ -942,6 +964,7 @@ class TradingEngine:
             amount_sol=amount_sol,
             strategy_id=strategy_id,
             token_symbol=token_data.get("symbol", "???"),
+            entry_fees_sol=await self._sim_tx_fee_sol(strategy_id, amount_sol),
         )
         return True
 
@@ -1023,7 +1046,7 @@ class TradingEngine:
                 amount_sol=amount_sol,
                 strategy_id=strategy_id,
                 token_symbol=token_data.get("symbol", "???"),
-                entry_fees_sol=(priority_fee + BASE_TX_FEE_LAMPORTS) / LAMPORTS_PER_SOL,
+                entry_fees_sol=self._tx_fee_sol(priority_fee),
             )
             self.logger.info(f"Jupiter buy TX: {signature}")
             return True
@@ -1101,7 +1124,7 @@ class TradingEngine:
             self.positions.close_position(
                 token_address,
                 reason,
-                exit_fees_sol=(exit_priority_fee + BASE_TX_FEE_LAMPORTS) / LAMPORTS_PER_SOL,
+                exit_fees_sol=self._tx_fee_sol(exit_priority_fee),
             )
             await self._close_token_account(token_mint)
             return True
