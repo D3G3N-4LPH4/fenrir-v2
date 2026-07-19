@@ -282,8 +282,9 @@ class TestDropLenses:
 
             def post(self, url, headers=None, json=None):  # noqa: A002
                 self.calls += 1
-                self.names.append(json["messages"][0]["content"][:40])
-                s = _content_score(json)
+                body = json or {}
+                self.names.append(body["messages"][0]["content"][:40])
+                s = _content_score(body)
                 return _CM(_Resp(200, _ok_body(f'{{"score": {s}, "decision": "BUY"}}')))
 
             async def close(self):
@@ -309,7 +310,7 @@ class TestDropLenses:
 
             def post(self, url, headers=None, json=None):  # noqa: A002
                 self.calls += 1
-                c = json["messages"][0]["content"]
+                c = (json or {})["messages"][0]["content"]
                 s = 20 if ("RISK" in c or "RUG" in c) else 70
                 return _CM(_Resp(200, _ok_body(f'{{"score": {s}, "decision": "SKIP"}}')))
 
