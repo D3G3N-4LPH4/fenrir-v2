@@ -229,6 +229,47 @@ class TestSimulationBuy:
         call_args = mocks["positions"].open_position.call_args
         assert call_args.kwargs["amount_sol"] == 0.5
 
+    @pytest.mark.asyncio
+    async def test_sim_buy_books_the_entry_fee(self, sim_engine, mocks):
+        """Sim must record the fee a live trade of this size would pay.
+
+        Keystone of the honest-economics work: without this, sim reports gross price
+        movement and can't validate the net-PnL / fee-cap logic without real SOL.
+        config priority fee is 100_000 lamports, uncapped at 0.1 SOL.
+        """
+        await sim_engine.execute_buy(_make_token_data(curve=FRESH_CURVE))
+        entry_fees = mocks["positions"].open_position.call_args.kwargs["entry_fees_sol"]
+        assert entry_fees == pytest.approx((100_000 + 5_000) / 1e9)  # priority + base
+
+    @pytest.mark.asyncio
+    async def test_sim_round_trip_net_pnl_reflects_fees(self, config, mocks):
+        """End-to-end in sim with a REAL PositionManager: a small gross gain is a net
+        loss once both fees are booked — the exact failure mode a live 0.01 trade hit,
+        now observable in simulation at zero cost."""
+        from fenrir.core.positions import PositionManager
+
+        pm = PositionManager(config, mocks["logger"])
+        engine = TradingEngine(
+            config=config,
+            wallet=mocks["wallet"],
+            solana_client=mocks["solana_client"],
+            jupiter=mocks["jupiter"],
+            positions=pm,
+            logger=mocks["logger"],
+        )
+        # Tiny position so the flat fee dominates, like the real 0.01 SOL trade.
+        assert await engine.execute_buy(_make_token_data(curve=FRESH_CURVE), amount_sol=0.01)
+        pos = pm.positions[FAKE_TOKEN]
+        pos.update_price(pos.entry_price * 1.03)  # +3% gross
+
+        assert pos.get_pnl_percent() == pytest.approx(3.0, abs=0.01)
+        assert await engine.execute_sell(FAKE_TOKEN, "take_profit")
+        # Round trip books 2x (100_000 + 5_000) = 0.00021 SOL of fees on a 0.01 SOL
+        # position: a +3% gross move (+0.0003 SOL) nets barely positive; drop gross
+        # to +1% and it's a loss — the point being sim now SEES the fees.
+        assert pos.total_fees_sol == pytest.approx(2 * (105_000 / 1e9))
+        assert pos.get_net_pnl_sol() < pos.get_pnl_sol()
+
 
 # ===================================================================
 #  Simulation Mode — Sell
@@ -245,7 +286,10 @@ class TestSimulationSell:
         result = await sim_engine.execute_sell(FAKE_TOKEN, "take_profit")
 
         assert result is True
-        mocks["positions"].close_position.assert_called_once_with(FAKE_TOKEN, "take_profit")
+        # Sim now books the exit fee it WOULD pay, so sim PnL is net like live.
+        call = mocks["positions"].close_position.call_args
+        assert call.args == (FAKE_TOKEN, "take_profit")
+        assert call.kwargs["exit_fees_sol"] > 0
         # Logger should have been called with PnL information
         assert mocks["logger"].info.call_count >= 2  # at least "executing sell" + "sim exit"
 
@@ -774,10 +818,10 @@ class TestManagePositions:
         await sim_engine.manage_positions()
 
         mocks["positions"].check_exit_conditions.assert_called_once()
-        # In simulation mode execute_sell should close the position
-        mocks["positions"].close_position.assert_called_once_with(
-            FAKE_TOKEN, "Take Profit: 120.00%"
-        )
+        # In simulation mode execute_sell should close the position (now fee-aware).
+        call = mocks["positions"].close_position.call_args
+        assert call.args == (FAKE_TOKEN, "Take Profit: 120.00%")
+        assert call.kwargs["exit_fees_sol"] > 0
 
     @pytest.mark.asyncio
     async def test_no_exits_does_nothing(self, sim_engine, mocks):
