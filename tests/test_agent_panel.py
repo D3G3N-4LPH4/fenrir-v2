@@ -21,6 +21,11 @@ def _panel() -> MultiAgentPanel:
     return MultiAgentPanel(api_key="k", model="test/model")  # noqa: S106
 
 
+async def _no_sleep(*_a, **_k):
+    """Patch out backoff delays so retry tests run instantly."""
+    return None
+
+
 def _ar(name: str, score: float, veto: bool = False, failed: bool = False) -> AgentResult:
     return AgentResult(name, score, "BUY" if score >= 60 else "SKIP", "r", veto, failed)
 
@@ -58,12 +63,17 @@ class TestAggregate:
         assert r.conviction is ConvictionLevel.REJECT
         assert r.should_trade is False
 
-    def test_all_failed_rejects(self):
+    def test_all_failed_degrades_to_brain_only(self):
+        # Panel unavailable (every agent errored) must NOT flip the brain's YES to a
+        # NO — it degrades to a brain-only pass, matching the veto path. Previously
+        # this hard-rejected, so an API throttle silently killed every buy.
         r = _panel()._aggregate(
             [_ar("risk", 0, veto=True, failed=True), _ar("momentum", 0, failed=True)]
         )
-        assert r.conviction is ConvictionLevel.REJECT
-        assert r.veto_reason == "all agents failed"
+        assert r.conviction is ConvictionLevel.DEGRADED
+        assert r.position_multiplier == 1.0
+        assert r.should_trade is True
+        assert r.veto_reason == "panel unavailable — brain-only"
 
     def test_relaxed_buy_threshold_passes_moderate_scores(self):
         # Established swing scores (risk 72 / momentum 50 / narrative 40): the
@@ -110,37 +120,71 @@ class TestParse:
 # --- integration: parallel score() with a mocked session -------------------
 
 
+def _ok_body(content: str) -> dict:
+    return {"choices": [{"message": {"content": content}}]}
+
+
+def _throttle_body() -> dict:
+    # OpenRouter's rate-limit shape: HTTP 200, an error object, and NO choices.
+    return {"error": {"message": "Rate limit exceeded", "code": 429}}
+
+
 class _Resp:
-    def __init__(self, content: str):
-        self.status = 200
-        self._c = content
+    def __init__(self, status: int, body: dict):
+        self.status = status
+        self._body = body
 
     async def text(self):  # pragma: no cover - only on error paths
-        return self._c
+        return str(self._body)
 
-    async def json(self):
-        return {"choices": [{"message": {"content": self._c}}]}
+    async def json(self, content_type=None):  # accept the content_type kwarg we pass
+        return self._body
 
 
 class _CM:
-    def __init__(self, content):
-        self._c = content
+    def __init__(self, resp: _Resp):
+        self._resp = resp
 
     async def __aenter__(self):
-        return _Resp(self._c)
+        return self._resp
 
     async def __aexit__(self, *a):
         return False
 
 
 class _Session:
-    def __init__(self, content):
+    """Returns a fixed successful body for every call."""
+
+    def __init__(self, content: str):
         self._c = content
         self.calls = 0
 
     def post(self, url, headers=None, json=None):  # noqa: A002
         self.calls += 1
-        return _CM(self._c)
+        return _CM(_Resp(200, _ok_body(self._c)))
+
+    async def close(self):
+        pass
+
+
+class _SeqSession:
+    """Returns a scripted sequence of (status, body) per agent, cycling through the
+    same script for each of the 3 agents so retry behavior is deterministic."""
+
+    def __init__(self, script: list[tuple[int, dict]]):
+        self._script = script
+        self.calls = 0
+        self._per_agent: dict[int, int] = {}
+
+    def post(self, url, headers=None, json=None):  # noqa: A002
+        # Key the script position by agent persona so each agent walks the same
+        # script independently regardless of interleave.
+        content = (json or {})["messages"][0]["content"]
+        idx = self._per_agent.get(hash(content), 0)
+        self._per_agent[hash(content)] = idx + 1
+        self.calls += 1
+        status, body = self._script[min(idx, len(self._script) - 1)]
+        return _CM(_Resp(status, body))
 
     async def close(self):
         pass
@@ -166,6 +210,52 @@ class TestScoreIntegration:
         result = await panel.score("ctx", sol_amount=0.5)
         s = result.summary()
         assert "risk=" in s and "momentum=" in s and "narrative=" in s
+
+    @pytest.mark.asyncio
+    async def test_throttle_then_success_is_retried(self, monkeypatch):
+        # A 200-with-error throttle body (no choices) must be retried, not read as a
+        # verdict — the exact failure that crashed every agent on 'choices'.
+        monkeypatch.setattr("fenrir.ai.agent_panel.asyncio.sleep", _no_sleep)
+        panel = _panel()
+        panel._session = cast(
+            aiohttp.ClientSession,
+            _SeqSession(
+                [
+                    (200, _throttle_body()),  # attempt 1: throttled
+                    (200, _ok_body('{"score": 78, "decision": "BUY", "reasoning": "ok"}')),
+                ]
+            ),
+        )
+        result = await panel.score("ctx", sol_amount=0.5)
+        # Every agent recovered on retry → real verdict, not a crash-reject.
+        assert result.conviction is ConvictionLevel.HIGH_CONVICTION
+        assert all(not a.failed for a in result.agents)
+        assert cast(_SeqSession, panel._session).calls == 6  # 3 agents x 2 attempts
+
+    @pytest.mark.asyncio
+    async def test_persistent_throttle_exhausts_retries_and_fails_gracefully(self, monkeypatch):
+        # A throttle that never clears fails the agent WITHOUT raising, and the panel
+        # degrades to brain-only rather than a hard reject.
+        monkeypatch.setattr("fenrir.ai.agent_panel.asyncio.sleep", _no_sleep)
+        panel = _panel()  # max_retries defaults to 2 → 3 attempts
+        panel._session = cast(aiohttp.ClientSession, _SeqSession([(200, _throttle_body())]))
+        result = await panel.score("ctx", sol_amount=0.5)
+        assert all(a.failed for a in result.agents)
+        assert result.conviction is ConvictionLevel.DEGRADED  # brain-only, not REJECT
+        assert result.should_trade is True
+        assert cast(_SeqSession, panel._session).calls == 9  # 3 agents x 3 attempts
+
+    @pytest.mark.asyncio
+    async def test_non_retryable_status_is_not_retried(self, monkeypatch):
+        # A 400 (bad request) is a permanent error — fail fast, don't burn retries.
+        monkeypatch.setattr("fenrir.ai.agent_panel.asyncio.sleep", _no_sleep)
+        panel = _panel()
+        panel._session = cast(
+            aiohttp.ClientSession, _SeqSession([(400, {"error": {"message": "bad"}})])
+        )
+        result = await panel.score("ctx", sol_amount=0.5)
+        assert all(a.failed for a in result.agents)
+        assert cast(_SeqSession, panel._session).calls == 3  # 1 attempt per agent, no retry
 
 
 class TestVetoOnly:
