@@ -18,7 +18,9 @@ Aggregation:
   - All succeeded agents ≥ buy_threshold         → HIGH_CONVICTION (full size).
   - Majority (≥50%) ≥ buy_threshold              → LOW_CONVICTION (half size).
   - Fewer                                        → REJECT.
-  - All agents failed                            → REJECT.
+  - All agents failed (panel unavailable)        → DEGRADED brain-only pass — a
+    missing second opinion must not flip the brain's YES to NO. Agent calls retry
+    the API throttle and cap concurrency, so this is rare, not the common path.
   - Some (not all) agents failed but a decision
     was still reached                            → flagged DEGRADED.
 
@@ -31,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 from dataclasses import dataclass, field
 
 import aiohttp
@@ -40,6 +43,9 @@ from fenrir.ai.ensemble_scorer import ConvictionLevel
 logger = logging.getLogger(__name__)
 
 OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions"
+
+# Statuses worth retrying: rate limit (429) and transient server/overload errors.
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 529})
 
 
 @dataclass
@@ -145,6 +151,8 @@ class MultiAgentPanel:
         buy_threshold: float = 60.0,
         veto_floor: float = 40.0,
         timeout_seconds: float = 10.0,
+        max_concurrency: int = 2,
+        max_retries: int = 2,
     ):
         self.api_key = api_key
         self.model = model
@@ -152,6 +160,13 @@ class MultiAgentPanel:
         self.buy_threshold = buy_threshold
         self.veto_floor = veto_floor
         self.timeout = timeout_seconds
+        # The brain and all panel agents hit the SAME model; firing every agent at
+        # once (plus the brain that just ran) tripped OpenRouter's rate limit, which
+        # replies HTTP 200 with an error body and no `choices`. That crashed every
+        # agent, so the panel silently rejected every buy. Cap in-flight agent calls
+        # and retry the transient throttle rather than treat it as a verdict.
+        self._sem = asyncio.Semaphore(max(1, max_concurrency))
+        self.max_retries = max_retries
         self._session: aiohttp.ClientSession | None = None
 
     async def initialize(self) -> None:
@@ -238,19 +253,44 @@ class MultiAgentPanel:
             "temperature": 0.2,
             "max_tokens": 150,
         }
-        try:
-            async with self._session.post(OPENROUTER_API, headers=headers, json=payload) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    logger.warning("Agent %s: HTTP %d — %s", agent.name, resp.status, text[:80])
-                    return AgentResult(
-                        agent.name, 0.0, "SKIP", "api error", agent.veto, True, text[:100]
-                    )
-                data = await resp.json()
-                return self._parse(agent, data["choices"][0]["message"]["content"])
-        except Exception as exc:  # noqa: BLE001 - one agent failing shouldn't sink the panel
-            logger.warning("Agent %s: %s", agent.name, exc)
-            return AgentResult(agent.name, 0.0, "SKIP", "exception", agent.veto, True, str(exc))
+        last_err = "unknown"
+        for attempt in range(self.max_retries + 1):
+            try:
+                async with (
+                    self._sem,
+                    self._session.post(OPENROUTER_API, headers=headers, json=payload) as resp,
+                ):
+                    status = resp.status
+                    # OpenRouter returns text/plain error bodies too — don't assume JSON.
+                    data = await resp.json(content_type=None)
+
+                choices = data.get("choices") if isinstance(data, dict) else None
+                if status == 200 and choices:
+                    return self._parse(agent, choices[0]["message"]["content"])
+
+                # A 200 with no `choices` is a throttle/error body, not a verdict.
+                err = data.get("error") if isinstance(data, dict) else None
+                err_msg = err.get("message") if isinstance(err, dict) else None
+                last_err = str(err_msg) if err_msg else f"HTTP {status}, no choices"
+                retryable = status in _RETRYABLE_STATUS or (status == 200 and not choices)
+            except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as exc:
+                last_err = str(exc)
+                retryable = True
+
+            if not retryable or attempt == self.max_retries:
+                break
+            # Exponential backoff with jitter spreads the retries off the rate limit.
+            await asyncio.sleep(0.4 * (2**attempt) + random.uniform(0, 0.3))
+
+        logger.warning(
+            "Agent %s failed after %d attempt(s): %s",
+            agent.name,
+            self.max_retries + 1,
+            str(last_err)[:120],
+        )
+        return AgentResult(
+            agent.name, 0.0, "SKIP", "api error", agent.veto, True, str(last_err)[:120]
+        )
 
     def _parse(self, agent: Agent, response: str) -> AgentResult:
         try:
@@ -275,7 +315,13 @@ class MultiAgentPanel:
         threshold = buy_threshold if buy_threshold is not None else self.buy_threshold
         ok = [r for r in results if not r.failed]
         if not ok:
-            return PanelResult(ConvictionLevel.REJECT, 0.0, 0.0, results, "all agents failed")
+            # Panel unavailable (every agent errored) — a missing second opinion must
+            # not override the brain's YES into a NO. Degrade to a brain-only pass,
+            # matching _aggregate_veto, rather than silently reject every trade when
+            # the API is flaky. (Retry/concurrency limits make this rare.)
+            return PanelResult(
+                ConvictionLevel.DEGRADED, 1.0, 0.0, results, "panel unavailable — brain-only"
+            )
 
         # Veto: any veto agent below the safety floor kills the trade.
         for r in ok:
