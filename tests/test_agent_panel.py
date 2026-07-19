@@ -258,6 +258,79 @@ class TestScoreIntegration:
         assert cast(_SeqSession, panel._session).calls == 3  # 1 attempt per agent, no retry
 
 
+class TestDropLenses:
+    """Established (mid/large) tokens judge on risk + momentum, not meme-narrative."""
+
+    @pytest.mark.asyncio
+    async def test_drop_narrative_lets_safe_momentum_token_pass(self):
+        # [risk=85, momentum=85, narrative=18]: with narrative it's minority-buy →
+        # REJECT; dropping it → risk+momentum both clear → HIGH_CONVICTION.
+        panel = _panel()
+
+        def _content_score(json):  # noqa: A002
+            c = json["messages"][0]["content"]
+            if "RISK" in c or "RUG" in c:
+                return 85
+            if "MOMENTUM" in c:
+                return 85
+            return 18  # narrative
+
+        class _ScoreSession:
+            def __init__(self):
+                self.calls = 0
+                self.names = []
+
+            def post(self, url, headers=None, json=None):  # noqa: A002
+                self.calls += 1
+                self.names.append(json["messages"][0]["content"][:40])
+                s = _content_score(json)
+                return _CM(_Resp(200, _ok_body(f'{{"score": {s}, "decision": "BUY"}}')))
+
+            async def close(self):
+                pass
+
+        sess = _ScoreSession()
+        panel._session = cast(aiohttp.ClientSession, sess)
+        result = await panel.score("ctx", buy_threshold=48, drop_lenses={"narrative"})
+
+        assert sess.calls == 2  # narrative agent never called
+        assert {a.name for a in result.agents} == {"risk", "momentum"}
+        assert result.conviction is ConvictionLevel.HIGH_CONVICTION
+        assert result.should_trade is True
+
+    @pytest.mark.asyncio
+    async def test_dropping_narrative_keeps_the_risk_veto(self):
+        # Even without narrative, an unsafe token (risk below floor) is still vetoed.
+        panel = _panel()
+
+        class _LowRisk:
+            def __init__(self):
+                self.calls = 0
+
+            def post(self, url, headers=None, json=None):  # noqa: A002
+                self.calls += 1
+                c = json["messages"][0]["content"]
+                s = 20 if ("RISK" in c or "RUG" in c) else 70
+                return _CM(_Resp(200, _ok_body(f'{{"score": {s}, "decision": "SKIP"}}')))
+
+            async def close(self):
+                pass
+
+        panel._session = cast(aiohttp.ClientSession, _LowRisk())
+        result = await panel.score("ctx", buy_threshold=48, drop_lenses={"narrative"})
+        assert result.conviction is ConvictionLevel.REJECT
+        assert "risk" in (result.veto_reason or "")
+
+    @pytest.mark.asyncio
+    async def test_never_drops_the_last_veto_agent(self):
+        # Dropping "risk" (the only veto) must be refused by score() — it would
+        # disable the safety gate. The risk agent must still be evaluated.
+        panel = _panel()
+        panel._session = cast(aiohttp.ClientSession, _Session('{"score": 70, "decision": "BUY"}'))
+        result = await panel.score("ctx", drop_lenses={"risk"})
+        assert any(a.name == "risk" for a in result.agents)
+
+
 class TestVetoOnly:
     """Risk-only (fresh-launch) path: run only the veto lens, aggregate as a veto."""
 
