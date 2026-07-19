@@ -320,11 +320,15 @@ class ClaudeBrain:
                         "large",
                     ):
                         # Established swing candidates score more moderately than
-                        # launch snipes — relax the per-lens BUY bar for them.
+                        # launch snipes — relax the per-lens BUY bar, and drop the
+                        # narrative (meme-virality) lens, which doesn't apply to an
+                        # established AMM token and otherwise vetoes-by-conviction
+                        # even when risk+momentum are strong.
                         ensemble = await scorer.score(
                             context=ensemble_ctx,
                             sol_amount=self.config.buy_amount_sol,
                             buy_threshold=self.config.ai_established_buy_threshold,
+                            drop_lenses={"narrative"},
                         )
                     else:
                         ensemble = await scorer.score(

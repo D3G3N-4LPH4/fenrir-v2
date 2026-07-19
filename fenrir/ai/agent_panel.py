@@ -184,6 +184,7 @@ class MultiAgentPanel:
         sol_amount: float = 0.0,
         veto_only: bool = False,
         buy_threshold: float | None = None,
+        drop_lenses: set[str] | None = None,
     ) -> PanelResult:
         """Evaluate `context` with the panel in parallel and aggregate.
 
@@ -198,9 +199,21 @@ class MultiAgentPanel:
         `buy_threshold` overrides the per-lens BUY cutoff for this call — used to
         relax the bar for established (swing-trade) candidates, which score more
         moderately than high-conviction launch snipes.
+
+        `drop_lenses` removes named lenses for this call. The narrative lens scores
+        FRESH-meme virality (name originality, meta-fit); applied to established
+        mid/large-caps it near-constantly scored ~28 and dragged conviction below
+        the bar, rejecting even tokens the risk lens judged very safe. Established
+        tokens are judged on risk + momentum, not meme-freshness — the panel mirror
+        of the tier-aware framing already used for the main brain.
         """
         await self.initialize()
         agents = [a for a in self.agents if a.veto] if veto_only else self.agents
+        if drop_lenses:
+            kept = [a for a in agents if a.name not in drop_lenses]
+            # Never drop the last veto (safety) agent — that would disable the gate.
+            if any(a.veto for a in kept):
+                agents = kept
         raw = await asyncio.gather(
             *(self._ask(agent, context) for agent in agents),
             return_exceptions=True,
