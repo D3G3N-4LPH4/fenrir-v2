@@ -1144,3 +1144,64 @@ class TestNonCurveBuy:
             result = await live_engine.execute_sell(FAKE_TOKEN, "take_profit")
         assert result is True
         jup.assert_awaited_once()
+
+
+# ===================================================================
+#  Token-account rent reclaim
+# ===================================================================
+
+
+class TestCloseTokenAccount:
+    """A full exit must reclaim the ~0.002 SOL rent locked in the token account.
+
+    The RPC does not reflect a swap immediately: right after selling, the account
+    still reads its PRE-sell balance. A single read saw amount > 0, concluded
+    "partial exit", and skipped the close — so the rent was stranded on EVERY full
+    exit. Observed live: 0.002039 SOL left behind after a complete sell.
+    """
+
+    @staticmethod
+    def _prep(mocks, balances):
+        mocks["solana_client"].get_token_accounts_by_owner = AsyncMock(side_effect=balances)
+        mocks["solana_client"].get_account_owner = AsyncMock(return_value=None)
+        mocks["solana_client"].get_latest_blockhash = AsyncMock(return_value=MagicMock())
+        mocks["solana_client"].send_transaction = AsyncMock(return_value="closesig")
+
+    @pytest.mark.asyncio
+    async def test_closes_once_balance_drains_on_a_later_poll(self, live_engine, mocks):
+        # Stale reads first (pre-sell balance), then the drained account.
+        self._prep(mocks, [{"amount": 24_379_153}, {"amount": 24_379_153}, {"amount": 0}])
+        with (
+            patch("fenrir.trading.engine.asyncio.sleep", new=AsyncMock()),
+            patch("fenrir.trading.engine.close_account", return_value=MagicMock()),
+            patch("fenrir.trading.engine.Message") as MockMsg,
+            patch("fenrir.trading.engine.Transaction") as MockTx,
+        ):
+            MockMsg.new_with_blockhash.return_value = MagicMock()
+            MockTx.new_unsigned.return_value = MagicMock()
+            ok = await live_engine._close_token_account(Pubkey.from_string(FAKE_TOKEN))
+
+        assert ok is True
+        mocks["solana_client"].send_transaction.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_does_not_close_on_a_genuine_partial_exit(self, live_engine, mocks):
+        """Balance never drains → tokens really are still held; leave it open."""
+        self._prep(mocks, [{"amount": 5_000}] * 5)
+        with (
+            patch("fenrir.trading.engine.asyncio.sleep", new=AsyncMock()),
+            patch("fenrir.trading.engine.close_account", return_value=MagicMock()),
+        ):
+            ok = await live_engine._close_token_account(Pubkey.from_string(FAKE_TOKEN))
+
+        assert ok is False
+        mocks["solana_client"].send_transaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_account_is_a_noop(self, live_engine, mocks):
+        self._prep(mocks, [None])
+        with patch("fenrir.trading.engine.asyncio.sleep", new=AsyncMock()):
+            ok = await live_engine._close_token_account(Pubkey.from_string(FAKE_TOKEN))
+
+        assert ok is False
+        mocks["solana_client"].send_transaction.assert_not_awaited()

@@ -1166,11 +1166,23 @@ class TradingEngine:
             token_program = await self.client.get_account_owner(token_mint) or TOKEN_PROGRAM
             ata = self.pumpfun.derive_ata(self.wallet.pubkey, token_mint, token_program)
 
-            info = await self.client.get_token_accounts_by_owner(self.wallet.pubkey, token_mint)
-            if not info:
-                return False
-            if info.get("amount", 0) > 0:
-                # Still holding tokens (partial exit) — closing would fail anyway.
+            # A swap's effect is not visible to the RPC immediately: right after
+            # selling, the account still reads its PRE-sell balance. A single read
+            # therefore saw amount > 0, concluded "partial exit", and skipped the
+            # close — stranding the rent on every full exit (observed live: 0.002039
+            # SOL left behind after a complete sell). Poll until it drains.
+            drained = False
+            for attempt in range(5):
+                info = await self.client.get_token_accounts_by_owner(self.wallet.pubkey, token_mint)
+                if not info:
+                    return False  # no account to close
+                if int(info.get("amount", 0) or 0) == 0:
+                    drained = True
+                    break
+                if attempt < 4:
+                    await asyncio.sleep(2.0)
+            if not drained:
+                # Genuinely still holding tokens (partial exit) — close would fail.
                 return False
 
             close_ix = close_account(
