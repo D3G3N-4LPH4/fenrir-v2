@@ -28,6 +28,9 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 
+WSOL_MINT = "So11111111111111111111111111111111111111112"
+
+
 class PriceSource(Enum):
     """Price data sources."""
 
@@ -42,7 +45,10 @@ class PriceSource(Enum):
 class PriceQuote:
     """A price quote from a specific source."""
 
-    price: float  # Price in SOL
+    # SOL per token. Every source MUST normalize to this — mixing a USD-denominated
+    # quote into the confidence-weighted average silently corrupts every position's
+    # PnL, since the engine compares `tokens * price` against SOL invested.
+    price: float
     source: PriceSource
     timestamp: datetime
     confidence: float = 1.0  # 0.0-1.0 confidence score
@@ -159,11 +165,15 @@ class PriceFeedManager:
         return aggregated
 
     async def _fetch_all_sources(self, token_mint: str) -> list[PriceQuote]:
-        """Fetch prices from all available sources."""
+        """Fetch prices from all available SOL-denominated sources.
+
+        Birdeye is deliberately excluded: it returns USD, and the aggregator
+        confidence-weights every quote into one number, so a USD source would
+        corrupt the SOL price the engine marks positions against.
+        """
         tasks = [
-            self._fetch_jupiter_price(token_mint),
-            self._fetch_birdeye_price(token_mint),
-            self._fetch_dexscreener_price(token_mint),
+            self._fetch_jupiter_price(token_mint),  # vsToken=SOL -> already SOL
+            self._fetch_dexscreener_price(token_mint),  # SOL-quoted pairs only
         ]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -223,6 +233,10 @@ class PriceFeedManager:
         """
         Fetch price from Birdeye API.
         Birdeye provides detailed token analytics.
+
+        NOTE: `/defi/price` returns a USD price, but `PriceQuote.price` is
+        SOL-per-token. This source is intentionally left out of the aggregation
+        (see `_fetch_all_sources`) until a USD->SOL conversion is added.
         """
         if not self.session or not self.birdeye_api_key:
             return None
@@ -279,13 +293,27 @@ class PriceFeedManager:
                 if not data.get("pairs"):
                     return None
 
-                # Get the highest liquidity pair
-                pairs = data["pairs"]
-                best_pair = max(pairs, key=lambda p: float(p.get("liquidity", {}).get("usd", 0)))
+                # `priceNative` is denominated in the pair's QUOTE token — it is only
+                # SOL-per-token for a SOL-quoted pair. A token's deepest pool is often
+                # a USDC pair, whose priceNative is DOLLARS. Picking purely by
+                # liquidity returned 778.36 for MET (its $413M USDC pool) when the
+                # token actually traded at 0.002057 SOL — a ~380,000x error that the
+                # engine then marked positions against, producing phantom PnL.
+                # Restrict to pairs where this mint is the BASE and SOL is the QUOTE.
+                sol_pairs = [
+                    p
+                    for p in data["pairs"]
+                    if (p.get("baseToken") or {}).get("address") == token_mint
+                    and (p.get("quoteToken") or {}).get("address") == WSOL_MINT
+                ]
+                if not sol_pairs:
+                    # No SOL-quoted market: return nothing rather than emit a USD
+                    # price into a field the engine reads as SOL.
+                    return None
 
-                # Convert USD price to SOL price
-                # Note: This assumes we have SOL/USD price, which we'd need to fetch separately
-                # For simplicity, we'll use the native price if available
+                best_pair = max(
+                    sol_pairs, key=lambda p: float((p.get("liquidity") or {}).get("usd") or 0)
+                )
                 price_native = best_pair.get("priceNative")
 
                 if not price_native or float(price_native) <= 0:
