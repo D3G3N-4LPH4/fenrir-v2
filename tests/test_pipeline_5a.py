@@ -404,3 +404,38 @@ class TestScoutFallback:
         eval_mock.assert_awaited_once()  # only the strategy, not an extra scout eval
         assert eval_mock.await_args is not None
         assert eval_mock.await_args.args[0] is strat
+
+
+# ---------------------------------------------------------------------------
+# Buy-event entry price
+# ---------------------------------------------------------------------------
+
+
+class TestBuyEventEntryPrice:
+    """The buy event must report the price the position actually opened at.
+
+    It used to read the price off the bonding curve (or hardcode 0.0). Established
+    /AMM tokens have no curve — `bonding_curve_state` is explicitly None — so every
+    scanner-surfaced buy reported an entry price of 0 to the event feed and
+    dashboard while the position held the correct price.
+    """
+
+    def test_reads_entry_from_opened_position(self, tmp_path: Path) -> None:
+        from datetime import datetime
+
+        from fenrir.core.positions import Position
+
+        bot = _make_bot(tmp_path)
+        bot.positions.positions["MINT1"] = Position(
+            token_address="MINT1",
+            entry_time=datetime.now(),
+            entry_price=0.000399,  # a real AMM price, no curve involved
+            amount_tokens=25.06,
+            amount_sol_invested=0.01,
+            peak_price=0.000399,
+        )
+        assert bot._opened_entry_price("MINT1") == pytest.approx(0.000399)
+
+    def test_missing_position_is_zero_not_an_error(self, tmp_path: Path) -> None:
+        bot = _make_bot(tmp_path)
+        assert bot._opened_entry_price("NOPE") == 0.0
