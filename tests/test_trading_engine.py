@@ -242,6 +242,76 @@ class TestSimulationBuy:
         assert entry_fees == pytest.approx((100_000 + 5_000) / 1e9)  # priority + base
 
     @pytest.mark.asyncio
+    async def test_sim_non_curve_buy_prices_entry_from_feed(self, sim_engine, mocks):
+        """Sim entry must use the feed the management loop marks against, like live.
+
+        Pricing from the swap quote put entry on a different scale than the mark, so
+        PnL was phantom the instant the position was marked.
+        """
+        mocks["jupiter"].get_quote.return_value = {"outAmount": "2000000"}  # 2.0 @6dp
+        feed_quote = MagicMock()
+        feed_quote.price = 0.0042  # SOL/token from the feed, differs from 0.01/2.0
+        sim_engine.price_feed = MagicMock()
+        sim_engine.price_feed.get_price = AsyncMock(return_value=feed_quote)
+        td = {"token_address": FAKE_TOKEN, "tier": "large", "symbol": "BIG", "decimals": 6}
+
+        assert await sim_engine.execute_buy(td, 0.01) is True
+
+        kwargs = mocks["positions"].open_position.call_args.kwargs
+        assert kwargs["entry_price"] == pytest.approx(0.0042)  # feed, not quote-derived
+        # Tokens derived from the feed price keep tokens * entry == amount_sol.
+        assert kwargs["amount_tokens"] == pytest.approx(0.01 / 0.0042)
+
+    @pytest.mark.asyncio
+    async def test_sim_non_curve_buy_falls_back_to_quote_without_feed(self, sim_engine, mocks):
+        """No feed → quote-derived entry (position still openable, entry/mark aligned)."""
+        mocks["jupiter"].get_quote.return_value = {"outAmount": "2000000"}  # 2.0 @6dp
+        sim_engine.price_feed = None
+        td = {"token_address": FAKE_TOKEN, "tier": "large", "symbol": "BIG", "decimals": 6}
+
+        assert await sim_engine.execute_buy(td, 0.01) is True
+
+        kwargs = mocks["positions"].open_position.call_args.kwargs
+        assert kwargs["entry_price"] == pytest.approx(0.01 / 2.0)
+        assert kwargs["amount_tokens"] == pytest.approx(2.0)
+
+    @pytest.mark.asyncio
+    async def test_sim_non_curve_buy_survives_bad_decimals(self, sim_engine, mocks):
+        """Regression: cbBTC opened at entry ~0 and 'gained' 7,499% when marked.
+
+        A wrong `decimals` (6 for an 8-decimal token) inflates out_ui 100x, which
+        made the quote-derived entry 100x too LOW — so the first mark from the feed
+        showed a phantom four-figure gain, and took profit on it. Feed pricing plus
+        feed-derived tokens make the position immune to the bad decimals read.
+        """
+        # Real: ~400 SOL/token, so 0.01 SOL buys 0.000025 tokens (2500 base @8dp).
+        mocks["jupiter"].get_quote.return_value = {"outAmount": "2500"}
+        feed_quote = MagicMock()
+        feed_quote.price = 400.0
+        sim_engine.price_feed = MagicMock()
+        sim_engine.price_feed.get_price = AsyncMock(return_value=feed_quote)
+        # decimals misread as 6 (actually 8) → out_ui = 0.0025, 100x too many tokens.
+        td = {"token_address": FAKE_TOKEN, "tier": "large", "symbol": "BTCish", "decimals": 6}
+
+        assert await sim_engine.execute_buy(td, 0.01) is True
+
+        kwargs = mocks["positions"].open_position.call_args.kwargs
+        assert kwargs["entry_price"] == pytest.approx(400.0)  # NOT the 0.01/0.0025 = 4.0
+        assert kwargs["amount_tokens"] == pytest.approx(0.01 / 400.0)
+        # Marked at the same feed price, PnL is ~0 — not the +7499% that fired a
+        # take-profit on a position that never moved.
+        pos = Position(
+            token_address=FAKE_TOKEN,
+            entry_time=datetime.now(),
+            entry_price=kwargs["entry_price"],
+            amount_tokens=kwargs["amount_tokens"],
+            amount_sol_invested=0.01,
+            peak_price=kwargs["entry_price"],
+        )
+        pos.update_price(400.0)
+        assert pos.get_pnl_percent() == pytest.approx(0.0)
+
+    @pytest.mark.asyncio
     async def test_sim_round_trip_net_pnl_reflects_fees(self, config, mocks):
         """End-to-end in sim with a REAL PositionManager: a small gross gain is a net
         loss once both fees are booked — the exact failure mode a live 0.01 trade hit,
