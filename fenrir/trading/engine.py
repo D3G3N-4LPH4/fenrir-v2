@@ -943,8 +943,16 @@ class TradingEngine:
     async def _sim_buy_non_curve(
         self, token_data: dict, amount_sol: float, strategy_id: str
     ) -> bool:
-        """Open a simulated position for a non-curve token, priced from a Jupiter
-        quote so entry price shares the price feed's SOL-per-token scale."""
+        """Open a simulated position for a non-curve token.
+
+        Entry is priced from the SAME external feed the management loop marks
+        against (as the live Jupiter buy does), NOT from the swap quote. A
+        quote-derived price depends on the token's decimals and trade size, so for
+        tokens whose scale differs from the feed's it lands on a different scale
+        entirely — cbBTC opened at an entry of ~0 and then "gained" 7,499% the
+        moment the feed marked it. Falling back to the quote only when the feed is
+        unavailable keeps a position openable, with entry and mark still aligned.
+        """
         token_address = token_data["token_address"]
         slippage_bps = self._resolve_slippage_bps(strategy_id)
         quote = await self.jupiter.get_quote(
@@ -957,10 +965,21 @@ class TradingEngine:
         out_ui = int(quote["outAmount"]) / (10**decimals)
         if out_ui <= 0:
             return False
+        feed_price = await self._feed_entry_price(token_address)
+        if feed_price is not None:
+            # Derive tokens from the feed price (tokens * entry == amount_sol, as the
+            # sim curve buy does) so the position can't inherit a bad decimals read —
+            # a wrong `decimals` corrupts out_ui, which corrupted both the old entry
+            # price AND the token count, so PnL was wrong in SOL as well as percent.
+            entry_price: float = feed_price
+            amount_tokens = amount_sol / feed_price
+        else:
+            entry_price = amount_sol / out_ui
+            amount_tokens = out_ui
         self.positions.open_position(
             token_address=token_address,
-            entry_price=amount_sol / out_ui,
-            amount_tokens=out_ui,
+            entry_price=entry_price,
+            amount_tokens=amount_tokens,
             amount_sol=amount_sol,
             strategy_id=strategy_id,
             token_symbol=token_data.get("symbol", "???"),
