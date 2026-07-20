@@ -600,18 +600,12 @@ class FenrirBot:
             self.budget_tracker.record_buy(strategy.strategy_id, effective_amount)
             strategy.record_spend(effective_amount)
 
-            # Get entry price from bonding curve state if available
-            entry_price = 0.0
-            bc = token_data.get("bonding_curve_state")
-            if bc and hasattr(bc, "get_price"):
-                entry_price = bc.get_price()
-
             await self.event_bus.emit(
                 buy_executed_event(
                     token_address=token_addr,
                     symbol=symbol,
                     amount_sol=effective_amount,
-                    entry_price=entry_price,
+                    entry_price=self._opened_entry_price(token_addr),
                     simulation=(self.config.mode == TradingMode.SIMULATION),
                     strategy_id=strategy.strategy_id,
                 )
@@ -670,6 +664,17 @@ class FenrirBot:
                 self.logger.info("Market scanner stopped (live config update)")
 
         return []
+
+    def _opened_entry_price(self, token_address: str) -> float:
+        """Entry price of the position the engine just opened.
+
+        The buy event used to read the price off the bonding curve (or hardcode
+        0.0), so every established/AMM buy — which has no curve — reported an entry
+        price of 0 to the event feed and dashboard while the position itself held
+        the correct price. The engine already resolved it; just read it back.
+        """
+        position = self.positions.positions.get(token_address)
+        return float(getattr(position, "entry_price", 0.0) or 0.0)
 
     def _tier_context(self, token_data: dict) -> str:
         """Reframe the AI prompt for a scanned mid/large-cap so it isn't judged by
@@ -792,7 +797,7 @@ class FenrirBot:
                     token_address=token_addr,
                     symbol=symbol,
                     amount_sol=amount,
-                    entry_price=0.0,
+                    entry_price=self._opened_entry_price(token_addr),
                     simulation=(self.config.mode == TradingMode.SIMULATION),
                     strategy_id=strat_id,
                 )
