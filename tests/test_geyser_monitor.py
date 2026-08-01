@@ -25,7 +25,7 @@ CREATE_LOG = "Program log: Instruction: CreateV2"
 def _monitor(**cfg_over: Any) -> PumpFunMonitor:
     cfg = BotConfig(mode=TradingMode.SIMULATION, ai_analysis_enabled=False, **cfg_over)
     m = PumpFunMonitor(cfg, Mock(), Mock())
-    m.client.pumpfun_program = PUMP
+    m.client.pumpfun_program = PUMP  # type: ignore[assignment]  # Mock client
     return m
 
 
@@ -132,7 +132,7 @@ class TestHandleGeyserTx:
     @pytest.mark.asyncio
     async def test_no_createv2_hint_is_skipped(self):
         m = _monitor()
-        m.client.get_transaction = AsyncMock()
+        m.client.get_transaction = AsyncMock()  # type: ignore[method-assign]  # Mock client
         await m._handle_geyser_tx(_tx_update(b"\x02" * 64, ["unrelated log"]), AsyncMock())
         m.client.get_transaction.assert_not_awaited()  # cheap hint gate, no RPC
 
@@ -148,7 +148,7 @@ class TestHandleGeyserTx:
     @pytest.mark.asyncio
     async def test_vote_and_failed_skipped(self):
         m = _monitor()
-        m.client.get_transaction = AsyncMock()
+        m.client.get_transaction = AsyncMock()  # type: ignore[method-assign]  # Mock client
         await m._handle_geyser_tx(_tx_update(b"\x04" * 64, [CREATE_LOG], is_vote=True), AsyncMock())
         await m._handle_geyser_tx(_tx_update(b"\x05" * 64, [CREATE_LOG], has_err=True), AsyncMock())
         m.client.get_transaction.assert_not_awaited()
