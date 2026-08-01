@@ -102,6 +102,13 @@ class PumpFunMonitor:
         self.running = True
         self.logger.info("FENRIR awakens... Monitoring pump.fun launches")
 
+        # Low-latency Yellowstone gRPC transport, when a provider is configured.
+        # Falls back to the WebSocket path on repeated failure; unconfigured setups
+        # skip it entirely and behave exactly as before.
+        if self.config.geyser_grpc_endpoint:
+            await self._monitor_geyser(on_launch)
+            return
+
         if self.config.websocket_enabled:
             if self.config.migration_feed_enabled:
                 # Run the launch feed and the (experimental) migration feed
@@ -222,6 +229,131 @@ class PumpFunMonitor:
                 f"WebSocket failed {self.MAX_WS_RECONNECT_ATTEMPTS} times - falling back to polling"
             )
             await self._monitor_polling(on_launch)
+
+    def _geyser_channel(self):  # noqa: ANN202 - grpc.aio.Channel, imported lazily
+        """Build a secure Yellowstone gRPC channel from config.
+
+        Endpoint is the provider's HTTPS RPC URL (e.g. Alchemy
+        https://solana-mainnet.g.alchemy.com/v2/<key>); the gRPC target is that
+        host on :443, and auth is the API key sent as the `x-token` metadata header
+        (the Yellowstone standard — verified live against Alchemy).
+        """
+        from urllib.parse import urlparse
+
+        import grpc
+
+        host = urlparse(self.config.geyser_grpc_endpoint).hostname
+        if not host:
+            host = self.config.geyser_grpc_endpoint
+        target = f"{host}:443"
+        return grpc.aio.secure_channel(target, grpc.ssl_channel_credentials())
+
+    def _geyser_subscribe_request(self):  # noqa: ANN202 - geyser_pb2.SubscribeRequest
+        """Subscribe to non-vote, non-failed transactions touching pump.fun."""
+        from fenrir.protocol.geyser import geyser_pb2
+
+        req = geyser_pb2.SubscribeRequest()
+        f = req.transactions["pump"]
+        f.account_include.append(str(self.client.pumpfun_program))
+        f.vote = False
+        f.failed = False
+        commitment = {
+            "processed": geyser_pb2.CommitmentLevel.PROCESSED,
+            "confirmed": geyser_pb2.CommitmentLevel.CONFIRMED,
+            "finalized": geyser_pb2.CommitmentLevel.FINALIZED,
+        }.get(self.config.geyser_commitment.lower(), geyser_pb2.CommitmentLevel.PROCESSED)
+        req.commitment = commitment
+        return req
+
+    async def _monitor_geyser(self, on_launch: Callable[..., Any]) -> None:
+        """Real-time monitoring via Yellowstone gRPC (Geyser).
+
+        Geyser pushes the full transaction (incl. log messages), so the CreateV2
+        launch hint is read straight off the stream — no per-tx RPC for detection.
+        The full-tx parse then reuses the SAME _is_token_launch / _extract_token_data
+        as the WebSocket path, so downstream token_data is identical. Falls back to
+        the WebSocket path after repeated failures rather than going dark.
+        """
+        import grpc
+
+        from fenrir.protocol.geyser import geyser_pb2_grpc
+
+        self.logger.info("Geyser gRPC monitoring active (Yellowstone)")
+        consecutive_failures = 0
+        backoff = 1.0
+
+        while self.running and consecutive_failures < self.MAX_WS_RECONNECT_ATTEMPTS:
+            channel = None
+            try:
+                channel = self._geyser_channel()
+                stub = geyser_pb2_grpc.GeyserStub(channel)
+                metadata = [("x-token", self.config.geyser_x_token)]
+
+                async def _requests():
+                    yield self._geyser_subscribe_request()
+
+                stream = stub.Subscribe(_requests(), metadata=metadata)
+                consecutive_failures = 0
+                backoff = 1.0
+                self.logger.info("Subscribed to pump.fun transactions (Geyser)")
+
+                async for update in stream:
+                    if not self.running:
+                        break
+                    if update.WhichOneof("update_oneof") != "transaction":
+                        continue
+                    await self._handle_geyser_tx(update.transaction, on_launch)
+
+            except grpc.aio.AioRpcError as e:
+                consecutive_failures += 1
+                self.logger.warning(
+                    f"Geyser stream error: {e.code().name}. "
+                    f"Reconnecting ({consecutive_failures}/{self.MAX_WS_RECONNECT_ATTEMPTS})..."
+                )
+                await asyncio.sleep(min(backoff, 30))
+                backoff *= 2
+            except Exception as e:
+                consecutive_failures += 1
+                self.logger.error("Geyser monitor error", e)
+                await asyncio.sleep(min(backoff, 30))
+                backoff *= 2
+            finally:
+                if channel is not None:
+                    await channel.close()
+
+        if self.running:
+            self.logger.warning(
+                f"Geyser failed {self.MAX_WS_RECONNECT_ATTEMPTS} times - "
+                "falling back to WebSocket"
+            )
+            await self._monitor_websocket(on_launch)
+
+    async def _handle_geyser_tx(self, tx_update: Any, on_launch: Callable[..., Any]) -> None:
+        """Detect a launch from one Geyser transaction update.
+
+        Mirrors the WebSocket handler: dedup by signature, gate on the CreateV2 log
+        hint, then reuse the shared full-tx parse so token_data matches exactly.
+        """
+        info = tx_update.transaction
+        if info.is_vote:
+            return
+        meta = info.meta
+        if meta.HasField("err"):  # failed tx (also filtered server-side); skip
+            return
+        signature = base58.b58encode(bytes(info.signature)).decode()
+        if not signature or self._is_seen(signature):
+            return
+        self._mark_seen(signature)
+
+        logs = list(meta.log_messages)
+        if not any("Instruction: CreateV2" in log for log in logs):
+            return
+
+        tx = await self.client.get_transaction(signature)
+        if tx and self._is_token_launch(tx):
+            token_data = await self._extract_token_data(tx)
+            if token_data and self._meets_criteria(token_data):
+                await on_launch(token_data)
 
     async def _monitor_migration_websocket(self, on_launch: Callable[..., Any]) -> None:
         """

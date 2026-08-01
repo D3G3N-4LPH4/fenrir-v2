@@ -193,6 +193,14 @@ class BotConfig:
     # Monitoring
     websocket_enabled: bool = True  # Real-time vs polling
     poll_interval_seconds: float = 2.0  # If WebSocket fails
+    # Yellowstone gRPC (Geyser) low-latency transport. When geyser_grpc_endpoint is
+    # set, the monitor streams pump.fun transactions over gRPC instead of the public
+    # WebSocket logsSubscribe (lower latency, no dropped notifications under load).
+    # Empty -> the WebSocket path runs exactly as before, so existing setups are
+    # unaffected. Env: GEYSER_GRPC_ENDPOINT / GEYSER_X_TOKEN / GEYSER_COMMITMENT.
+    geyser_grpc_endpoint: str = ""
+    geyser_x_token: str = ""
+    geyser_commitment: str = "processed"  # processed = lowest latency for sniping
 
     # Strategy selection & budgets
     # Which registered strategies to run (IDs from fenrir.strategies.STRATEGY_REGISTRY).
@@ -351,6 +359,11 @@ class BotConfig:
             self.rpc_url = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
         if not self.ws_url:
             self.ws_url = os.getenv("SOLANA_WS_URL", "wss://api.mainnet-beta.solana.com")
+        if not self.geyser_grpc_endpoint:
+            self.geyser_grpc_endpoint = os.getenv("GEYSER_GRPC_ENDPOINT", "")
+        if not self.geyser_x_token:
+            self.geyser_x_token = os.getenv("GEYSER_X_TOKEN", "")
+        self.geyser_commitment = os.getenv("GEYSER_COMMITMENT", self.geyser_commitment)
         if not self.private_key:
             self.private_key = os.getenv("WALLET_PRIVATE_KEY", "")
 

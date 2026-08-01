@@ -44,3 +44,5 @@ ruff==0.8.6
 mypy==1.14.1
 pyright==1.1.411
 pre-commit==4.0.1
+grpcio>=1.60
+protobuf>=4.25
