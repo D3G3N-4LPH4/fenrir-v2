@@ -108,6 +108,10 @@ ignore_errors = true
 
 [tool.pyright]
 pythonVersion = "3.12"
+# Auto-generated Yellowstone gRPC protobuf stubs — not our source (they use
+# grpc.experimental, which Pyright flags). Regenerate via grpc_tools; see
+# fenrir/protocol/geyser/__init__.py.
+exclude = ["fenrir/protocol/geyser"]
 # No venv pinned on purpose: pyright uses whatever interpreter invokes it
 # (locally `.venv` is auto-detected; CI installs deps into the runner's Python).
 # Pinning venv=".venv" would break CI import resolution.
