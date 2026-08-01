@@ -17,6 +17,8 @@ dependencies = [
     "aiohttp>=3.9.0",
     "websockets>=11.0,<12.0",  # capped by solana 0.35.0 (websockets<12); use top-level websockets.connect
     "python-dotenv>=1.0.0",
+    "grpcio>=1.60",  # Yellowstone gRPC (Geyser) low-latency monitor transport
+    "protobuf>=4.25",  # generated Geyser stubs (fenrir/protocol/geyser)
 ]
 
 [project.optional-dependencies]
@@ -44,6 +46,7 @@ dev = [
     "mypy>=1.8.0",
     "pyright>=1.1.400",
     "pre-commit>=3.6.0",
+    "grpcio-tools>=1.60",  # regenerate the vendored Geyser stubs
 ]
 all = ["fenrir[api,data,dashboard,duality,dev]"]
 
@@ -64,6 +67,8 @@ markers = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+# Auto-generated Yellowstone gRPC protobuf stubs — not hand-written source.
+extend-exclude = ["fenrir/protocol/geyser"]
 
 [tool.ruff.lint]
 select = [
@@ -93,9 +98,20 @@ warn_unused_configs = true
 disallow_untyped_defs = false
 check_untyped_defs = true
 ignore_missing_imports = true
+# Vendored, auto-generated Yellowstone gRPC protobuf stubs — not our source to
+# type-check (a protobuf field named `bytes` trips mypy's .pyi parsing).
+exclude = "fenrir/protocol/geyser/(geyser|solana_storage)_pb2"
+
+[[tool.mypy.overrides]]
+module = "fenrir.protocol.geyser.*"
+ignore_errors = true
 
 [tool.pyright]
 pythonVersion = "3.12"
+# Auto-generated Yellowstone gRPC protobuf stubs — not our source (they use
+# grpc.experimental, which Pyright flags). Regenerate via grpc_tools; see
+# fenrir/protocol/geyser/__init__.py.
+exclude = ["fenrir/protocol/geyser"]
 # No venv pinned on purpose: pyright uses whatever interpreter invokes it
 # (locally `.venv` is auto-detected; CI installs deps into the runner's Python).
 # Pinning venv=".venv" would break CI import resolution.
