@@ -17,8 +17,10 @@ Key design decisions:
   - All values overridable via .env for live tuning without code changes
 
 Self-contained: this module maps strategy IDs (including the signal strategies
-added in the strategies package) to execution profiles. It is not yet wired
-into the trading engine — that reconciliation lands in a later PR.
+added in the strategies package) to execution profiles. The trading engine
+resolves per-strategy slippage / priority fee / Jito from these profiles when
+``BotConfig.tx_profiles_enabled`` is set (on by default; TX_PROFILES_ENABLED=false
+restores the flat BotConfig settings).
 """
 
 from __future__ import annotations

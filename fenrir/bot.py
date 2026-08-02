@@ -104,9 +104,12 @@ class FenrirBot:
         self.jupiter = JupiterSwapEngine(config, self.logger, breaker=self.breakers.jupiter)
         self.positions = PositionManager(config, self.logger)
 
-        # Jito MEV protection (optional)
+        # Jito MEV protection. Needed when the flat use_jito flag is set OR when
+        # per-strategy profiles are active — a profile (e.g. the sniper's
+        # UltraEarlySnipe) can enable atomic Jito bundles even if the flat flag is
+        # off, and _resolve_use_jito returns False when this instance is None.
         self.jito: JitoMEVProtection | None = None
-        if config.use_jito:
+        if config.use_jito or config.tx_profiles_enabled:
             self.jito = JitoMEVProtection(
                 region="mainnet",
                 tip_lamports=config.jito_tip_lamports,
