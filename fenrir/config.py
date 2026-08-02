@@ -239,6 +239,14 @@ class BotConfig:
     # flat settings above.
     tx_profiles_enabled: bool = True
 
+    # Multi-agent decision pipeline (Phase 3, strangler). When enabled, detections
+    # are handed to the ScannerAgent/SizingAgent/ExecutionAgent pipeline (queue-backed
+    # workers) instead of the inline per-launch loop, so a slow AI eval or trade never
+    # stalls ingestion of subsequent launches. Off by default: the inline path is
+    # unchanged. Both paths share the same scan/size/execute helpers, so decisions are
+    # identical — only the concurrency differs.
+    multi_agent_pipeline_enabled: bool = False
+
     # Monitoring
     websocket_enabled: bool = True  # Real-time vs polling
     poll_interval_seconds: float = 2.0  # If WebSocket fails
@@ -570,6 +578,9 @@ class BotConfig:
         )
         self.discovery_min_alert_score = _env_float(
             "DISCOVERY_MIN_ALERT_SCORE", self.discovery_min_alert_score
+        )
+        self.multi_agent_pipeline_enabled = _env_bool(
+            "MULTI_AGENT_PIPELINE_ENABLED", self.multi_agent_pipeline_enabled
         )
         env_disc_cats = os.getenv("DISCOVERY_SOLANA_CATEGORIES", "")
         if env_disc_cats:

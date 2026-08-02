@@ -28,6 +28,7 @@ from typing import Any
 
 from fenrir.events.bus import EventBus, EventListener
 from fenrir.events.types import (
+    EventCategory,
     TradeEvent,
     candidate_flagged_event,
     position_sized_event,
@@ -192,13 +193,36 @@ class AgentPipeline:
         size: Callable[[str, dict], Awaitable[float | None]],
         execute: Callable[[dict, float, str], Awaitable[bool]],
         logger: Any = None,
+        scanner_from_bus: bool = True,
     ) -> None:
+        """``scanner_from_bus`` controls how detections reach the ScannerAgent. When
+        True (the default, used in tests) the scanner subscribes to TOKEN_DETECTED on
+        the bus. The bot passes False and feeds full-fidelity token_data via
+        :meth:`submit`, because the public ``token_detected_event`` is a lossy summary
+        (no bonding-curve/mint/LP fields) — driving trades off it would lose data."""
         self.scanner = ScannerAgent(bus, claims, logger)
         self.sizer = SizingAgent(bus, size, logger)
         self.executor = ExecutionAgent(bus, execute, logger)
         self._agents: list[PipelineAgent] = [self.scanner, self.sizer, self.executor]
-        for agent in self._agents:
-            bus.register(agent)
+        # The sizer/executor are always bus-driven (fed by upstream agents' events);
+        # the scanner subscribes only when it should ingest from the bus.
+        bus.register(self.sizer)
+        bus.register(self.executor)
+        if scanner_from_bus:
+            bus.register(self.scanner)
+
+    async def submit(self, token_data: dict) -> None:
+        """Feed a fully-enriched token_data into the pipeline at the scanner stage,
+        bypassing the lossy bus detection event. Returns as soon as it is enqueued —
+        a slow AI eval or trade downstream never blocks the caller (the monitor)."""
+        event = TradeEvent(
+            event_type="TOKEN_DETECTED",
+            category=EventCategory.DETECTION,
+            token_address=token_data.get("token_address"),
+            token_symbol=token_data.get("symbol"),
+            data=token_data,
+        )
+        await self.scanner.on_event(event)
 
     async def start(self) -> None:
         for agent in self._agents:
