@@ -81,11 +81,15 @@ def _make_position(
 
 @pytest.fixture
 def config():
+    # These fixtures exercise the FLAT priority-fee / slippage / dynamic-fee paths,
+    # so pin per-strategy profiles off (they became the default in Phase 1.2).
+    # TestSniperAtomicBundle enables them explicitly where it needs the profile path.
     return BotConfig(
         mode=TradingMode.SIMULATION,
         buy_amount_sol=0.1,
         max_slippage_bps=500,
         priority_fee_lamports=100_000,
+        tx_profiles_enabled=False,
     )
 
 
@@ -97,6 +101,7 @@ def live_config():
         max_slippage_bps=500,
         priority_fee_lamports=100_000,
         use_jito=False,
+        tx_profiles_enabled=False,
     )
 
 
@@ -1205,3 +1210,73 @@ class TestCloseTokenAccount:
 
         assert ok is False
         mocks["solana_client"].send_transaction.assert_not_awaited()
+
+
+# ===================================================================
+#  Phase 1.2 — atomic Jito bundle default for the sniper strategy
+# ===================================================================
+
+
+class TestSniperAtomicBundle:
+    """With per-strategy profiles on (the default), the sniper resolves to an
+    atomic Jito bundle so a detected launch is a block-0 entry, not a mempool race.
+    """
+
+    def _engine(self, mocks, *, profiles: bool, jito) -> TradingEngine:
+        cfg = BotConfig(
+            mode=TradingMode.AGGRESSIVE,
+            buy_amount_sol=0.1,
+            use_jito=False,  # flat flag off — the profile must drive it
+            tx_profiles_enabled=profiles,
+        )
+        return TradingEngine(
+            config=cfg,
+            wallet=mocks["wallet"],
+            solana_client=mocks["solana_client"],
+            jupiter=mocks["jupiter"],
+            positions=mocks["positions"],
+            logger=mocks["logger"],
+            jito=jito,
+        )
+
+    def test_sniper_resolves_to_jito_bundle_by_default(self, mocks):
+        eng = self._engine(mocks, profiles=True, jito=MagicMock())
+        assert eng._resolve_use_jito("sniper") is True
+        # UltraEarlySnipe profile: 0.002 SOL tip.
+        assert eng._resolve_jito_tip_lamports("sniper") == 2_000_000
+
+    def test_profiles_off_falls_back_to_flat_flag(self, mocks):
+        """TX_PROFILES_ENABLED=false restores flat behavior (use_jito flag)."""
+        eng = self._engine(mocks, profiles=False, jito=MagicMock())
+        assert eng._resolve_use_jito("sniper") is False  # flat use_jito=False
+
+    def test_no_jito_instance_disables_bundling(self, mocks):
+        """Even with the profile enabled, absent a Jito client we don't claim to bundle."""
+        eng = self._engine(mocks, profiles=True, jito=None)
+        assert eng._resolve_use_jito("sniper") is False
+
+    @pytest.mark.asyncio
+    async def test_send_transaction_with_tip_is_a_2tx_atomic_bundle(self):
+        """The acceptance criterion: submission is one atomic bundle (buy + tip)."""
+        from unittest.mock import patch
+
+        from fenrir.protocol.jito import JitoMEVProtection
+
+        jito = JitoMEVProtection(region="mainnet", tip_lamports=2_000_000)
+        buy_tx = MagicMock(name="buy_tx")
+        tip_tx = MagicMock(name="tip_tx")
+        captured = {}
+
+        async def fake_send_bundle(txs):
+            captured["txs"] = txs
+            return MagicMock(landed=True)
+
+        with (
+            patch.object(jito, "build_tip_transaction", return_value=tip_tx),
+            patch.object(jito, "send_bundle", side_effect=fake_send_bundle),
+        ):
+            result = await jito.send_transaction_with_tip(buy_tx, MagicMock(), MagicMock())
+
+        assert result.landed is True
+        # Atomic = exactly the buy and the tip, submitted together (all-or-nothing).
+        assert captured["txs"] == [buy_tx, tip_tx]

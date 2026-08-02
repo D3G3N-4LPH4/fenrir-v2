@@ -112,7 +112,9 @@ class TestDefaults:
         cfg = BotConfig()
         assert cfg.security_filter_enabled is False
         assert cfg.market_filter_enabled is False
-        assert cfg.tx_profiles_enabled is False
+        # Per-strategy execution profiles are ON by default (Phase 1.2): the sniper
+        # defaults to an atomic Jito bundle. TX_PROFILES_ENABLED=false reverts.
+        assert cfg.tx_profiles_enabled is True
 
     def test_security_threshold_defaults(self) -> None:
         cfg = BotConfig()

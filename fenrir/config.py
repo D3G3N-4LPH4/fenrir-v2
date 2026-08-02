@@ -185,10 +185,15 @@ class BotConfig:
     min_priority_fee_lamports: int = 50_000
     use_jito: bool = False  # MEV protection via Jito bundles
     jito_tip_lamports: int = 10000  # Tip for Jito validators
-    # Use per-strategy transaction profiles (fenrir.trading.tx_config) instead
-    # of the flat priority_fee/slippage/jito settings above. Off by default;
-    # consumed by the engine once the pipeline-wiring PR lands.
-    tx_profiles_enabled: bool = False
+    # Use per-strategy transaction profiles (fenrir.trading.tx_config) instead of
+    # the flat priority_fee/slippage/jito settings above. ON by default: each
+    # strategy executes with its own profile — the sniper defaults to an atomic
+    # Jito bundle (block-0 entry, so a detected launch isn't a mempool race), while
+    # e.g. graduation uses fast-momentum params. The engine already resolves fee/
+    # slippage/jito per strategy from these profiles (the priority-fee cap from
+    # #73 still applies on top). Reversible: TX_PROFILES_ENABLED=false restores the
+    # flat settings above.
+    tx_profiles_enabled: bool = True
 
     # Monitoring
     websocket_enabled: bool = True  # Real-time vs polling

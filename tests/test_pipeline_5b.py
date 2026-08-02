@@ -31,6 +31,9 @@ def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _engine(jito: Any = None, **cfg_over: Any) -> TradingEngine:
+    # Profiles became the default in Phase 1.2; the flat-config tests here pin them
+    # off unless a case explicitly enables them.
+    cfg_over.setdefault("tx_profiles_enabled", False)
     cfg = BotConfig(mode=TradingMode.SIMULATION, ai_analysis_enabled=False, **cfg_over)
     return TradingEngine(cfg, Mock(), Mock(), Mock(), Mock(), Mock(), jito=jito)
 
