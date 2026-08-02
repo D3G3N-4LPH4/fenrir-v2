@@ -1280,3 +1280,78 @@ class TestSniperAtomicBundle:
         assert result.landed is True
         # Atomic = exactly the buy and the tip, submitted together (all-or-nothing).
         assert captured["txs"] == [buy_tx, tip_tx]
+
+
+# ===================================================================
+#  Wallet-pool integration (1.3 engine wiring)
+# ===================================================================
+
+
+class TestWalletPoolIntegration:
+    """A buy reserves + binds a pool wallet; the matching sell signs with THAT
+    wallet (it holds the tokens), not just the primary."""
+
+    def _pool_engine(self, mocks, pool):
+        cfg = BotConfig(mode=TradingMode.SIMULATION, buy_amount_sol=0.1, tx_profiles_enabled=False)
+        return TradingEngine(
+            config=cfg,
+            wallet=pool.primary,
+            solana_client=mocks["solana_client"],
+            jupiter=mocks["jupiter"],
+            positions=mocks["positions"],
+            logger=mocks["logger"],
+            wallet_pool=pool,
+        )
+
+    def _pool(self, size=3, base=0.5):
+        from fenrir.core.wallet import WalletPool
+
+        return WalletPool([], simulation_mode=True, pool_size=size, base_funding_sol=base)
+
+    @pytest.mark.asyncio
+    async def test_buy_binds_a_pool_wallet_and_releases_it(self, mocks):
+        pool = self._pool()
+        eng = self._pool_engine(mocks, pool)
+        assert await eng.execute_buy(_make_token_data(curve=FRESH_CURVE)) is True
+        kw = mocks["positions"].open_position.call_args.kwargs
+        assert kw["wallet_address"] in {w.address for w in pool.wallets}
+        # Reserved only for the buy — freed afterwards for concurrent buys.
+        assert all(not w.in_flight for w in pool.wallets)
+
+    @pytest.mark.asyncio
+    async def test_sell_uses_the_bound_wallet_not_primary(self, mocks):
+        pool = self._pool(size=3)
+        eng = self._pool_engine(mocks, pool)
+        bound = pool.wallets[2]  # deliberately not the primary (index 0)
+        pos = _make_position()
+        pos.wallet_address = bound.address
+        eng.positions = MagicMock()
+        eng.positions.positions = {FAKE_TOKEN: pos}
+
+        resolved = eng._resolve_sell_wallet(FAKE_TOKEN)
+
+        assert resolved is bound.manager
+        assert resolved is not pool.primary
+
+    def test_sell_falls_back_to_primary_without_binding(self, mocks):
+        pool = self._pool()
+        eng = self._pool_engine(mocks, pool)
+        eng.positions = MagicMock()
+        eng.positions.positions = {}  # no position -> no binding
+        assert eng._resolve_sell_wallet(FAKE_TOKEN) is eng.wallet
+
+    @pytest.mark.asyncio
+    async def test_buy_skipped_when_pool_exhausted(self, mocks):
+        pool = self._pool(size=1)
+        eng = self._pool_engine(mocks, pool)
+        await pool.acquire(0.1)  # reserve the only wallet
+        assert await eng.execute_buy(_make_token_data(curve=FRESH_CURVE)) is False
+        mocks["positions"].open_position.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_pool_is_single_wallet_behavior(self, sim_engine, mocks):
+        """Without a pool the position carries no binding and sells use self.wallet."""
+        assert sim_engine.wallet_pool is None
+        await sim_engine.execute_buy(_make_token_data(curve=FRESH_CURVE))
+        kw = mocks["positions"].open_position.call_args.kwargs
+        assert kw["wallet_address"] == sim_engine.wallet.get_address()

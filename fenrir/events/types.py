@@ -190,6 +190,7 @@ def buy_executed_event(
     signature: str | None = None,
     simulation: bool = False,
     strategy_id: str | None = None,
+    wallet: str | None = None,
 ) -> TradeEvent:
     mode = "SIM " if simulation else ""
     return TradeEvent(
@@ -204,6 +205,8 @@ def buy_executed_event(
             "entry_price": entry_price,
             "signature": signature,
             "simulation": simulation,
+            # Which pool wallet executed this trade — audited via the event bus.
+            "wallet": wallet,
         },
         message=f"{mode}BUY: {amount_sol:.4f} SOL -> ${symbol} @ {entry_price:.10f}",
     )
