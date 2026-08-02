@@ -23,6 +23,7 @@ from typing import Any, Protocol, cast
 from fenrir.ai.brain import ClaudeBrain
 from fenrir.ai.market_geometry import MarketGeometryAnalyzer
 from fenrir.config import BotConfig, TradingMode
+from fenrir.core.agents import AgentPipeline
 from fenrir.core.circuit_breaker import ServiceBreakers
 from fenrir.core.client import SolanaClient
 from fenrir.core.dump_recovery import (
@@ -211,6 +212,22 @@ class FenrirBot:
         self.strategies: list[TradingStrategy] = []
         self._init_strategies(strategies)
 
+        # ── Multi-agent decision pipeline (Phase 3, strangler) ──────
+        # When enabled, detections are handed to queue-backed Scanner/Sizing/Execution
+        # agents instead of the inline loop, decoupling ingestion from slow AI evals and
+        # trades. Off by default; the callables delegate to the same scan/size/execute
+        # helpers the inline path uses, so decisions are identical. Started in start().
+        self.agent_pipeline: AgentPipeline | None = None
+        if config.multi_agent_pipeline_enabled:
+            self.agent_pipeline = AgentPipeline(
+                self.event_bus,
+                claims=self._pipeline_claims,
+                size=self._pipeline_size,
+                execute=self._pipeline_execute,
+                logger=self.logger,
+                scanner_from_bus=False,  # fed full token_data via submit(), not the lossy bus event
+            )
+
         # ── Pre-trade filters (off by default; see BotConfig flags) ──
         # Security hard-gate: instantiated only when enabled.
         self.security_filter: SecurityFilter | None = None
@@ -376,6 +393,12 @@ class FenrirBot:
                 f"{self.wallet_pool.total_balance_sol():.3f} SOL total"
             )
 
+        # Spin up the multi-agent pipeline workers before ingestion starts, so the
+        # first detection has somewhere to go (no-op when disabled).
+        if self.agent_pipeline is not None:
+            await self.agent_pipeline.start()
+            self.logger.info("Multi-agent decision pipeline: ON (Scanner/Sizing/Execution)")
+
         # Start monitoring and position management
         tasks = [
             asyncio.create_task(self.monitor.start_monitoring(self._on_token_launch)),
@@ -436,13 +459,52 @@ class FenrirBot:
             )
         )
 
+        # Enrich + route. When the multi-agent pipeline is enabled, hand the fully
+        # populated token_data to the ScannerAgent (queue-backed) and return
+        # immediately — a slow AI eval or trade never stalls ingestion of the next
+        # launch. Otherwise run the classic inline loop. Both call the same
+        # _scan_and_route / _size_for_strategy / _execute_sized helpers, so the two
+        # paths make identical decisions.
+        if self.agent_pipeline is not None:
+            await self.agent_pipeline.submit(token_data)
+            return
+
+        for strategy, signal_context in await self._scan_and_route(token_data):
+            try:
+                if signal_context is None:
+                    await self._evaluate_and_execute(strategy, token_data)
+                else:
+                    await self._evaluate_and_execute(
+                        strategy, token_data, signal_context=signal_context
+                    )
+            except Exception as e:
+                await self.event_bus.emit(
+                    error_event(
+                        context=f"Strategy {strategy.strategy_id} evaluation",
+                        error=str(e),
+                        token_address=token_addr,
+                        strategy_id=strategy.strategy_id,
+                    )
+                )
+
+    async def _scan_and_route(self, token_data: dict) -> list[tuple[TradingStrategy, str | None]]:
+        """Security/market pre-gates + enrichment + strategy routing.
+
+        Returns the ``(strategy, signal_context)`` pairs that claim this launch — empty
+        when a hard-gate rejects it or nothing claims it. Enriches ``token_data`` in
+        place (RugCheck score, DexScreener momentum) for the AI context. Shared verbatim
+        by the inline loop and the pipeline's ScannerAgent so both route identically.
+        """
+        token_addr = token_data["token_address"]
+        symbol = token_data.get("symbol", "???")
+
         # ── Pre-trade security hard-gate (only when enabled) ──────────
         if self.security_filter is not None:
             lp_mint = token_data.get("lp_mint") or token_data.get("lp_mint_address")
             sec = await self.security_filter.check(token_addr, lp_mint)
             if not sec.passed:
                 self.logger.info(f"Security filter rejected {symbol}: {sec}")
-                return
+                return []
             # Surface RugCheck signals to the AI decision context.
             if "rugcheck_score" in sec.details:
                 token_data["rugcheck_score"] = sec.details.get("rugcheck_score")
@@ -456,7 +518,7 @@ class FenrirBot:
             # Enforce the tier gate only when the operator turned it on.
             if self.config.market_filter_enabled and not mkt.passed:
                 self.logger.info(f"Market filter rejected {symbol}: {mkt}")
-                return
+                return []
             # Surface DexScreener momentum to the AI decision context.
             if market_data is not None:
                 token_data["dex_volume_5m_usd"] = market_data.volume_5m_usd
@@ -466,9 +528,9 @@ class FenrirBot:
                 token_data["dex_price_change_1h_pct"] = market_data.price_change_1h_pct
                 token_data["dex_liquidity_usd"] = market_data.liquidity_usd
 
-        # Route through each active strategy
+        # Route through each active strategy.
+        routed: list[tuple[TradingStrategy, str | None]] = []
         active_ids: list[str] = []
-        evaluated_by_any = False
         for strategy in self.strategies:
             if not strategy.state.active or strategy.state.paused:
                 continue
@@ -481,17 +543,12 @@ class FenrirBot:
                     signal = sig_strat.evaluate_token(token_data, market_data)
                     if signal is None:
                         continue
-                    signal_context = sig_strat.build_ai_context(signal)
-                    await self._evaluate_and_execute(
-                        strategy, token_data, signal_context=signal_context
-                    )
-                    evaluated_by_any = True
+                    routed.append((strategy, sig_strat.build_ai_context(signal)))
                 else:
                     # Classic path: cheap token_data pre-filter, then AI.
                     if not await strategy.should_evaluate(token_data):
                         continue
-                    await self._evaluate_and_execute(strategy, token_data)
-                    evaluated_by_any = True
+                    routed.append((strategy, None))
 
             except Exception as e:
                 await self.event_bus.emit(
@@ -507,16 +564,53 @@ class FenrirBot:
         # always-on multi-lens AI Scout so the brain still evaluates it (fixes the
         # case where only a market-data strategy is active and fresh launches —
         # which have no market data yet — would otherwise never reach the AI).
-        if not evaluated_by_any:
+        if not routed:
             if self.config.ai_evaluate_all_launches and await self._ai_scout.should_evaluate(
                 token_data
             ):
-                await self._evaluate_and_execute(self._ai_scout, token_data)
+                routed.append((self._ai_scout, None))
             else:
                 self.logger.debug(
                     f"No active strategy evaluated ${symbol} "
                     f"(active: {', '.join(active_ids) or 'none'})"
                 )
+        return routed
+
+    def _find_any_strategy(self, strategy_id: str) -> TradingStrategy | None:
+        """Strategy lookup that also resolves the always-on AI Scout (which lives
+        outside ``self.strategies`` but can claim launches via the fallback)."""
+        if strategy_id == self._ai_scout.strategy_id:
+            return self._ai_scout
+        return self._find_strategy(strategy_id)
+
+    async def _pipeline_claims(self, token_address: str, token_data: dict) -> list[str]:
+        """ScannerAgent hook: route the launch, stash each strategy's signal_context on
+        token_data so it reaches the sizing stage (token_data travels the events)."""
+        routed = await self._scan_and_route(token_data)
+        contexts: dict[str, str | None] = {}
+        ids: list[str] = []
+        for strategy, ctx in routed:
+            ids.append(strategy.strategy_id)
+            contexts[strategy.strategy_id] = ctx
+        token_data["_signal_contexts"] = contexts
+        return ids
+
+    async def _pipeline_size(self, strategy_id: str, token_data: dict) -> float | None:
+        """SizingAgent hook: run the shared sizing/risk gates for one claimed strategy."""
+        strategy = self._find_any_strategy(strategy_id)
+        if strategy is None:
+            return None
+        ctx = token_data.get("_signal_contexts", {}).get(strategy_id)
+        return await self._size_for_strategy(strategy, token_data, signal_context=ctx)
+
+    async def _pipeline_execute(
+        self, token_data: dict, amount_sol: float, strategy_id: str
+    ) -> bool:
+        """ExecutionAgent hook: execute a sized buy via the shared executor."""
+        strategy = self._find_any_strategy(strategy_id)
+        if strategy is None:
+            return False
+        return await self._execute_sized(strategy, token_data, amount_sol)
 
     async def _evaluate_and_execute(
         self,
@@ -531,6 +625,31 @@ class FenrirBot:
         per-signal context block (from a market-data-aware strategy's
         ``build_ai_context(signal)``); when None, the classic static context is
         used.
+
+        Thin composition of the two shared phase-helpers ``_size_for_strategy`` (AI
+        eval + geometry + budget + portfolio-risk gates) and ``_execute_sized``
+        (execute + record). The multi-agent pipeline calls the exact same helpers, so
+        the two paths make identical decisions — only their concurrency differs.
+        """
+        effective_amount = await self._size_for_strategy(
+            strategy, token_data, signal_context=signal_context
+        )
+        if effective_amount is None:
+            return
+        await self._execute_sized(strategy, token_data, effective_amount)
+
+    async def _size_for_strategy(
+        self,
+        strategy: TradingStrategy,
+        token_data: dict,
+        *,
+        signal_context: str | None = None,
+    ) -> float | None:
+        """Run AI evaluation + geometry + budget + portfolio-risk gates for a strategy.
+
+        Returns the effective buy amount in SOL when the trade clears every gate, or
+        ``None`` when the AI declines or any gate blocks it (emitting the same decision
+        / budget-exhausted events as before). Pure of execution side effects.
         """
         token_addr = token_data["token_address"]
         symbol = token_data.get("symbol", "???")
@@ -578,7 +697,7 @@ class FenrirBot:
             )
 
         if not should_buy:
-            return
+            return None
 
         # Use geometry-derived params if available, else fall back to strategy defaults
         params = (
@@ -612,7 +731,7 @@ class FenrirBot:
                     )["sol_spent"],
                 )
             )
-            return
+            return None
 
         # Portfolio-level risk gate — across ALL strategies (exposure cap,
         # creator/launch-window correlation, drawdown breaker).
@@ -620,7 +739,24 @@ class FenrirBot:
         risk = self.portfolio_risk.check(strategy.strategy_id, effective_amount, creator=creator)
         if not risk.allowed:
             self.logger.info(f"Portfolio risk blocked {symbol}: {risk.reason}")
-            return
+            return None
+
+        return effective_amount
+
+    async def _execute_sized(
+        self,
+        strategy: TradingStrategy,
+        token_data: dict,
+        effective_amount: float,
+    ) -> bool:
+        """Execute a sized buy and record it. Returns whether the buy succeeded.
+
+        Runs only after ``_size_for_strategy`` has cleared every gate; shared by the
+        inline loop and the ExecutionAgent so both record identically.
+        """
+        token_addr = token_data["token_address"]
+        symbol = token_data.get("symbol", "???")
+        creator = token_data.get("creator")
 
         # Execute the buy
         success = await self.trading_engine.execute_buy(
@@ -657,6 +793,8 @@ class FenrirBot:
                     strategy_id=strategy.strategy_id,
                 )
             )
+
+        return success
 
     async def apply_config_update(self, updates: dict) -> list[str]:
         """Apply a live config patch and perform the side-effects that a bare
@@ -1089,6 +1227,8 @@ class FenrirBot:
         await self.event_bus.emit(bot_lifecycle_event("stopped"))
 
         # Shutdown all components
+        if self.agent_pipeline is not None:
+            await self.agent_pipeline.stop()
         await self.monitor.stop()
         await self.scanner.stop()
         if self._scanner_task is not None:
