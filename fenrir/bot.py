@@ -130,6 +130,7 @@ class FenrirBot:
             self.logger,
             jito=self.jito,
             price_feed=self.price_feed,
+            wallet_pool=self.wallet_pool,
         )
 
         # Monitor
@@ -358,6 +359,16 @@ class FenrirBot:
         await self.claude_brain.initialize()
         if self.jito:
             await self.jito.initialize()
+
+        # Load real wallet balances so the pool can gate selection on funding
+        # (no-op in simulation, where balances are seeded). Refreshed again each
+        # scan cycle would keep them current; a live buy also re-checks on-chain.
+        await self.wallet_pool.refresh_balances(self.solana_client)
+        if self.wallet_pool.size > 1:
+            self.logger.info(
+                f"Wallet pool: {self.wallet_pool.size} wallets, "
+                f"{self.wallet_pool.total_balance_sol():.3f} SOL total"
+            )
 
         # Start monitoring and position management
         tasks = [
@@ -614,6 +625,7 @@ class FenrirBot:
                     entry_price=self._opened_entry_price(token_addr),
                     simulation=(self.config.mode == TradingMode.SIMULATION),
                     strategy_id=strategy.strategy_id,
+                    wallet=self._opened_wallet(token_addr),
                 )
             )
         else:
@@ -681,6 +693,11 @@ class FenrirBot:
         """
         position = self.positions.positions.get(token_address)
         return float(getattr(position, "entry_price", 0.0) or 0.0)
+
+    def _opened_wallet(self, token_address: str) -> str | None:
+        """Address of the pool wallet that executed this buy (for the audit chain)."""
+        position = self.positions.positions.get(token_address)
+        return (getattr(position, "wallet_address", "") or None) if position else None
 
     def _tier_context(self, token_data: dict) -> str:
         """Reframe the AI prompt for a scanned mid/large-cap so it isn't judged by
@@ -806,6 +823,7 @@ class FenrirBot:
                     entry_price=self._opened_entry_price(token_addr),
                     simulation=(self.config.mode == TradingMode.SIMULATION),
                     strategy_id=strat_id,
+                    wallet=self._opened_wallet(token_addr),
                 )
             )
 

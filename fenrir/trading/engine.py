@@ -21,7 +21,7 @@ from fenrir.config import BotConfig, TradingMode
 from fenrir.core.client import SolanaClient
 from fenrir.core.jupiter import JupiterSwapEngine
 from fenrir.core.positions import PositionManager
-from fenrir.core.wallet import WalletManager
+from fenrir.core.wallet import WalletManager, WalletPool
 from fenrir.logger import FenrirLogger
 from fenrir.protocol.pumpfun import (
     BUY_DISCRIMINATOR,
@@ -76,9 +76,14 @@ class TradingEngine:
         logger: FenrirLogger,
         jito=None,
         price_feed=None,
+        wallet_pool: WalletPool | None = None,
     ):
         self.config = config
         self.wallet = wallet
+        # Rotation pool (optional). When present, a buy acquires a wallet from it,
+        # binds that wallet to the opened position, and the matching sell signs with
+        # that same wallet (it holds the tokens). Absent -> single-wallet behavior.
+        self.wallet_pool = wallet_pool
         self.client = solana_client
         self.jupiter = jupiter
         self.positions = positions
@@ -163,6 +168,19 @@ class TradingEngine:
         priority fee is a large share of a 0.01 SOL trade). Mirrors the live sites.
         """
         return self._tx_fee_sol(await self._resolve_priority_fee(strategy_id, amount_sol))
+
+    def _resolve_sell_wallet(self, token_address: str) -> WalletManager:
+        """The wallet that bought this position — it holds the tokens, so the sell
+        must sign with it, not just any pool wallet. Falls back to the primary/single
+        wallet when there's no binding (backward compatible)."""
+        if self.wallet_pool is not None:
+            pos = self.positions.positions.get(token_address)
+            addr = getattr(pos, "wallet_address", "") if pos is not None else ""
+            if addr:
+                for w in self.wallet_pool.wallets:
+                    if w.address == addr:
+                        return w.manager
+        return self.wallet
 
     async def _dynamic_priority_fee(self) -> int:
         """Size the priority fee from recent pump-program prioritization fees.
@@ -264,7 +282,9 @@ class TradingEngine:
             self.logger.debug(f"fee-extras resolve failed for {key[:8]}...: {e}")
         return None
 
-    async def _resolve_sell_tail(self, token_mint: Pubkey) -> list[AccountMeta] | None:
+    async def _resolve_sell_tail(
+        self, token_mint: Pubkey, wallet: WalletManager | None = None
+    ) -> list[AccountMeta] | None:
         """Resolve the sell's appended remaining-accounts tail (indices 14+).
 
         The Feb-2026 cashback upgrade made the deployed sell take extra Anchor
@@ -274,13 +294,18 @@ class TradingEngine:
         the token's cashback vs non-cashback shape and mirrors an accepted tx, so
         it's correct by construction. Returns None when no sell can be shadowed
         (the builder then uses the legacy two-account tail).
+
+        The cache key includes the wallet, since the per-seller user_volume_
+        accumulator is wallet-specific (a pooled sell must not reuse another
+        wallet's tail).
         """
-        key = str(token_mint)
+        w = wallet or self.wallet
+        key = f"{token_mint}:{w.pubkey}"
         cached = self._sell_tail_cache.get(key)
         if cached is not None:
             return cached
-        our = str(self.wallet.pubkey)
-        our_uva = self.pumpfun.derive_user_volume_accumulator(self.wallet.pubkey)
+        our = str(w.pubkey)
+        our_uva = self.pumpfun.derive_user_volume_accumulator(w.pubkey)
         try:
             sigs = await self.client.get_recent_signatures(token_mint, limit=40)
             for s in sigs:
@@ -462,25 +487,45 @@ class TradingEngine:
         amount_sol: float | None = None,
         strategy_id: str = "default",
     ) -> bool:
-        """
-        Snipe a new token launch via direct pump.fun bonding curve buy.
+        """Reserve a pool wallet, then buy on it (binding it to the position).
 
-        Args:
-            token_data: Token metadata from monitor
-            amount_sol: SOL to spend. Defaults to config.buy_amount_sol.
-                        Passed explicitly to avoid mutating shared config
-                        during concurrent calls.
-            strategy_id: Which strategy opened this position (for position tracking).
+        The reservation is held only for the duration of the buy (release in the
+        finally), so the wallet is free for other concurrent buys immediately after;
+        the position records which wallet holds its tokens so the sell reuses it.
+        With no pool configured, the single wallet is used unchanged.
         """
-        token_address = token_data["token_address"]
         amount_sol = amount_sol if amount_sol is not None else self.config.buy_amount_sol
+        pooled = None
+        if self.wallet_pool is not None:
+            pooled = await self.wallet_pool.acquire(amount_sol, strategy_id)
+            if pooled is None:
+                addr = str(token_data.get("token_address", "?"))[:8]
+                self.logger.info(f"No pool wallet available for {addr}... - skipping buy")
+                return False
+        wallet = pooled.manager if pooled is not None else self.wallet
+        try:
+            return await self._execute_buy_inner(token_data, amount_sol, strategy_id, wallet)
+        finally:
+            if self.wallet_pool is not None and pooled is not None:
+                self.wallet_pool.release(pooled)
+
+    async def _execute_buy_inner(
+        self,
+        token_data: dict,
+        amount_sol: float,
+        strategy_id: str,
+        wallet: WalletManager,
+    ) -> bool:
+        """Snipe a new token launch via direct pump.fun bonding curve buy, signing
+        with ``wallet`` (the pool-reserved or single wallet)."""
+        token_address = token_data["token_address"]
 
         self.logger.info(f"Executing buy: {token_address[:8]}... for {amount_sol} SOL")
 
         # Migrated mid-caps and established large-caps trade on AMMs, not the
         # pump bonding curve — route them through Jupiter instead of the curve buy.
         if self._is_non_curve_token(token_data):
-            return await self._execute_buy_non_curve(token_data, amount_sol, strategy_id)
+            return await self._execute_buy_non_curve(token_data, amount_sol, strategy_id, wallet)
 
         if self.config.mode == TradingMode.SIMULATION:
             self.logger.info("SIMULATION MODE - No real transaction sent")
@@ -517,6 +562,7 @@ class TradingEngine:
                 strategy_id=strategy_id,
                 token_symbol=token_data.get("symbol", "???"),
                 entry_fees_sol=await self._sim_tx_fee_sol(strategy_id, amount_sol),
+                wallet_address=wallet.get_address(),
             )
             return True
 
@@ -532,7 +578,7 @@ class TradingEngine:
             jito_tip = self._resolve_jito_tip_lamports(strategy_id)
 
             # 0. Pre-check wallet balance
-            balance = await self.client.get_balance(self.wallet.pubkey)
+            balance = await self.client.get_balance(wallet.pubkey)
             total_cost = amount_sol + (priority_fee / LAMPORTS_PER_SOL)
             if balance < total_cost:
                 self.logger.warning(
@@ -612,10 +658,10 @@ class TradingEngine:
             buy_amount_tokens = max(1, int(tokens_out * (1 - slippage)))
             max_sol_cost = int(amount_lamports * (1 + slippage))
             create_ata_ix = self.pumpfun.build_create_ata_instruction(
-                self.wallet.pubkey, self.wallet.pubkey, token_mint, token_program
+                wallet.pubkey, wallet.pubkey, token_mint, token_program
             )
             buy_ix = self.pumpfun.build_buy_instruction(
-                buyer=self.wallet.pubkey,
+                buyer=wallet.pubkey,
                 token_mint=token_mint,
                 bonding_curve=bonding_curve,
                 creator=creator,
@@ -642,11 +688,11 @@ class TradingEngine:
             instructions = [compute_limit_ix, compute_price_ix, create_ata_ix, buy_ix]
             message = Message.new_with_blockhash(
                 instructions,
-                self.wallet.pubkey,
+                wallet.pubkey,
                 blockhash,
             )
             transaction = Transaction.new_unsigned(message)
-            transaction.sign([self.wallet.keypair], blockhash)
+            transaction.sign([wallet.keypair], blockhash)
 
             # 10. Simulate first
             sim_ok = await self.client.simulate_transaction(transaction)
@@ -659,7 +705,7 @@ class TradingEngine:
             if use_jito and self.jito:
                 self.logger.info("Sending via Jito bundle for MEV protection")
                 result = await self.jito.send_transaction_with_tip(
-                    transaction, self.wallet.keypair, blockhash, tip_lamports=jito_tip
+                    transaction, wallet.keypair, blockhash, tip_lamports=jito_tip
                 )
                 if result.landed:
                     signature = result.bundle_id
@@ -700,6 +746,7 @@ class TradingEngine:
                 strategy_id=strategy_id,
                 token_symbol=token_data.get("symbol", "???"),
                 entry_fees_sol=self._tx_fee_sol(priority_fee),
+                wallet_address=wallet.get_address(),
             )
 
             self.logger.info(f"TX Signature: {signature}")
@@ -751,6 +798,8 @@ class TradingEngine:
         # -- Live execution via direct pump.fun program --
         try:
             token_mint = Pubkey.from_string(token_address)
+            # Sign with the wallet that BOUGHT this position — it holds the tokens.
+            wallet = self._resolve_sell_wallet(token_address)
 
             # Resolve per-strategy execution params from the owning position. The exit
             # fee is capped against the position's own size, like the entry.
@@ -772,7 +821,7 @@ class TradingEngine:
             if not account_data:
                 self.logger.info("No pump curve for token - selling via Jupiter DEX")
                 return await self._execute_sell_via_jupiter(
-                    token_address, token_mint, position, reason
+                    token_address, token_mint, position, reason, wallet
                 )
 
             curve_state = self.pumpfun.decode_bonding_curve(account_data)
@@ -783,7 +832,7 @@ class TradingEngine:
             if curve_state.complete:
                 self.logger.info("Token migrated to Raydium - attempting Jupiter DEX fallback")
                 return await self._execute_sell_via_jupiter(
-                    token_address, token_mint, position, reason
+                    token_address, token_mint, position, reason, wallet
                 )
 
             # 3. Get seller's token account. Retry briefly: right after a buy the
@@ -792,7 +841,7 @@ class TradingEngine:
             seller_token_info = None
             for attempt in range(4):
                 seller_token_info = await self.client.get_token_accounts_by_owner(
-                    self.wallet.pubkey, token_mint
+                    wallet.pubkey, token_mint
                 )
                 if seller_token_info and seller_token_info["amount"] > 0:
                     break
@@ -827,10 +876,10 @@ class TradingEngine:
             # Prefer the exact cashback-aware tail shadowed from the token's own
             # recent sell; fall back to the legacy two-account tail only when none
             # can be shadowed (older non-cashback tokens).
-            sell_tail = await self._resolve_sell_tail(token_mint)
+            sell_tail = await self._resolve_sell_tail(token_mint, wallet=wallet)
             extras = None if sell_tail else await self._resolve_fee_extras(token_mint)
             sell_ix = self.pumpfun.build_sell_instruction(
-                seller=self.wallet.pubkey,
+                seller=wallet.pubkey,
                 token_mint=token_mint,
                 bonding_curve=bonding_curve,
                 creator=creator,
@@ -857,11 +906,11 @@ class TradingEngine:
             instructions = [compute_limit_ix, compute_price_ix, sell_ix]
             message = Message.new_with_blockhash(
                 instructions,
-                self.wallet.pubkey,
+                wallet.pubkey,
                 blockhash,
             )
             transaction = Transaction.new_unsigned(message)
-            transaction.sign([self.wallet.keypair], blockhash)
+            transaction.sign([wallet.keypair], blockhash)
 
             # 10. Simulate first
             sim_ok = await self.client.simulate_transaction(transaction)
@@ -874,7 +923,7 @@ class TradingEngine:
             if use_jito and self.jito:
                 self.logger.info("Sending sell via Jito bundle")
                 result = await self.jito.send_transaction_with_tip(
-                    transaction, self.wallet.keypair, blockhash, tip_lamports=jito_tip
+                    transaction, wallet.keypair, blockhash, tip_lamports=jito_tip
                 )
                 if result.landed:
                     signature = result.bundle_id
@@ -901,7 +950,7 @@ class TradingEngine:
                 exit_fees_sol=self._tx_fee_sol(priority_fee),
             )
             self.logger.info(f"Sell TX: {signature}")
-            await self._close_token_account(token_mint)
+            await self._close_token_account(token_mint, wallet=wallet)
             return True
 
         except Exception as e:
@@ -933,15 +982,15 @@ class TradingEngine:
         return int(token_data.get("decimals", 6))
 
     async def _execute_buy_non_curve(
-        self, token_data: dict, amount_sol: float, strategy_id: str
+        self, token_data: dict, amount_sol: float, strategy_id: str, wallet: WalletManager
     ) -> bool:
         """Buy a non-curve token: Jupiter swap live, quote-priced position in sim."""
         if self.config.mode == TradingMode.SIMULATION:
-            return await self._sim_buy_non_curve(token_data, amount_sol, strategy_id)
-        return await self.execute_buy_via_jupiter(token_data, amount_sol, strategy_id)
+            return await self._sim_buy_non_curve(token_data, amount_sol, strategy_id, wallet)
+        return await self.execute_buy_via_jupiter(token_data, amount_sol, strategy_id, wallet)
 
     async def _sim_buy_non_curve(
-        self, token_data: dict, amount_sol: float, strategy_id: str
+        self, token_data: dict, amount_sol: float, strategy_id: str, wallet: WalletManager
     ) -> bool:
         """Open a simulated position for a non-curve token.
 
@@ -984,6 +1033,7 @@ class TradingEngine:
             strategy_id=strategy_id,
             token_symbol=token_data.get("symbol", "???"),
             entry_fees_sol=await self._sim_tx_fee_sol(strategy_id, amount_sol),
+            wallet_address=wallet.get_address(),
         )
         return True
 
@@ -1002,20 +1052,25 @@ class TradingEngine:
         return float(price) if isinstance(price, int | float) and price > 0 else None
 
     async def execute_buy_via_jupiter(
-        self, token_data: dict, amount_sol: float, strategy_id: str = "default"
+        self,
+        token_data: dict,
+        amount_sol: float,
+        strategy_id: str = "default",
+        wallet: WalletManager | None = None,
     ) -> bool:
         """Buy a non-curve token via a Jupiter SOL->token swap and open a position.
 
         Entry price is SOL per whole token (amount_sol / tokens received), matching
         the DexScreener priceNative scale the management loop marks against.
         """
+        w = wallet or self.wallet
         token_address = token_data["token_address"]
         try:
             Pubkey.from_string(token_address)  # validate the mint
             amount_lamports = int(amount_sol * LAMPORTS_PER_SOL)
 
             priority_fee = await self._resolve_priority_fee(strategy_id, amount_sol)
-            balance = await self.client.get_balance(self.wallet.pubkey)
+            balance = await self.client.get_balance(w.pubkey)
             if balance < amount_sol + priority_fee / LAMPORTS_PER_SOL:
                 self.logger.warning(
                     f"Insufficient SOL for Jupiter buy: {balance:.4f} < {amount_sol:.4f}"
@@ -1030,12 +1085,12 @@ class TradingEngine:
                 self.logger.warning(f"Jupiter quote failed for {token_address[:8]}... buy")
                 return False
             swap_tx_b64 = await self.jupiter.get_swap_transaction(
-                quote, str(self.wallet.pubkey), priority_fee_lamports=priority_fee
+                quote, str(w.pubkey), priority_fee_lamports=priority_fee
             )
             if not swap_tx_b64:
                 self.logger.warning("Jupiter buy swap build failed")
                 return False
-            signature = await self._sign_send_jupiter_swap(swap_tx_b64)
+            signature = await self._sign_send_jupiter_swap(swap_tx_b64, wallet=w)
             if not signature:
                 self.logger.warning("Jupiter buy send returned no signature")
                 return False
@@ -1066,6 +1121,7 @@ class TradingEngine:
                 strategy_id=strategy_id,
                 token_symbol=token_data.get("symbol", "???"),
                 entry_fees_sol=self._tx_fee_sol(priority_fee),
+                wallet_address=w.get_address(),
             )
             self.logger.info(f"Jupiter buy TX: {signature}")
             return True
@@ -1079,15 +1135,17 @@ class TradingEngine:
         token_mint: Pubkey,
         position,
         reason: str,
+        wallet: WalletManager | None = None,
     ) -> bool:
         """Fallback: sell via Jupiter DEX after token has migrated to Raydium."""
+        w = wallet or self.wallet
         try:
             # Get token balance. Retry briefly — right after a buy the ATA may
             # not be indexed yet, and a single empty read would strand the token.
             seller_token_info = None
             for attempt in range(4):
                 seller_token_info = await self.client.get_token_accounts_by_owner(
-                    self.wallet.pubkey, token_mint
+                    w.pubkey, token_mint
                 )
                 if seller_token_info and seller_token_info["amount"] > 0:
                     break
@@ -1117,7 +1175,7 @@ class TradingEngine:
                 getattr(position, "amount_sol_invested", 0.0),
             )
             swap_tx_b64 = await self.jupiter.get_swap_transaction(
-                quote, str(self.wallet.pubkey), priority_fee_lamports=exit_priority_fee
+                quote, str(w.pubkey), priority_fee_lamports=exit_priority_fee
             )
             if not swap_tx_b64:
                 self.logger.warning("Jupiter swap transaction build failed")
@@ -1127,7 +1185,7 @@ class TradingEngine:
             # the fee-payer/blockhash already set; we re-sign the message with our
             # keypair and broadcast. (Previously this was built and then dropped,
             # so the position was marked closed while the tokens were never sold.)
-            signature = await self._sign_send_jupiter_swap(swap_tx_b64)
+            signature = await self._sign_send_jupiter_swap(swap_tx_b64, wallet=w)
             if not signature:
                 self.logger.warning("Jupiter swap send returned no signature")
                 return False
@@ -1145,14 +1203,16 @@ class TradingEngine:
                 reason,
                 exit_fees_sol=self._tx_fee_sol(exit_priority_fee),
             )
-            await self._close_token_account(token_mint)
+            await self._close_token_account(token_mint, wallet=w)
             return True
 
         except Exception as e:
             self.logger.error(f"Jupiter sell fallback failed for {token_address}", e)
             return False
 
-    async def _close_token_account(self, token_mint: Pubkey) -> bool:
+    async def _close_token_account(
+        self, token_mint: Pubkey, wallet: WalletManager | None = None
+    ) -> bool:
         """Reclaim the ~0.002 SOL rent locked in an emptied token account.
 
         A token account is rent-exempt, not free: opening one on first buy deposits
@@ -1162,9 +1222,10 @@ class TradingEngine:
 
         Best-effort: never fails the sell, which has already settled.
         """
+        w = wallet or self.wallet
         try:
             token_program = await self.client.get_account_owner(token_mint) or TOKEN_PROGRAM
-            ata = self.pumpfun.derive_ata(self.wallet.pubkey, token_mint, token_program)
+            ata = self.pumpfun.derive_ata(w.pubkey, token_mint, token_program)
 
             # A swap's effect is not visible to the RPC immediately: right after
             # selling, the account still reads its PRE-sell balance. A single read
@@ -1173,7 +1234,7 @@ class TradingEngine:
             # SOL left behind after a complete sell). Poll until it drains.
             drained = False
             for attempt in range(5):
-                info = await self.client.get_token_accounts_by_owner(self.wallet.pubkey, token_mint)
+                info = await self.client.get_token_accounts_by_owner(w.pubkey, token_mint)
                 if not info:
                     return False  # no account to close
                 if int(info.get("amount", 0) or 0) == 0:
@@ -1189,16 +1250,16 @@ class TradingEngine:
                 CloseAccountParams(
                     program_id=token_program,
                     account=ata,
-                    dest=self.wallet.pubkey,
-                    owner=self.wallet.pubkey,
+                    dest=w.pubkey,
+                    owner=w.pubkey,
                 )
             )
             blockhash = await self.client.get_latest_blockhash()
             if not blockhash:
                 return False
-            message = Message.new_with_blockhash([close_ix], self.wallet.pubkey, blockhash)
+            message = Message.new_with_blockhash([close_ix], w.pubkey, blockhash)
             transaction = Transaction.new_unsigned(message)
-            transaction.sign([self.wallet.keypair], blockhash)
+            transaction.sign([w.keypair], blockhash)
             signature = await self.client.send_transaction(transaction)
             if signature:
                 self.logger.info(f"   Reclaimed token-account rent (close ATA): {signature}")
@@ -1208,10 +1269,13 @@ class TradingEngine:
             self.logger.warning(f"Could not close token account (rent not reclaimed): {e}")
             return False
 
-    async def _sign_send_jupiter_swap(self, swap_tx_b64: str) -> str | None:
+    async def _sign_send_jupiter_swap(
+        self, swap_tx_b64: str, wallet: WalletManager | None = None
+    ) -> str | None:
         """Sign a Jupiter base64 VersionedTransaction with our keypair and send it."""
+        w = wallet or self.wallet
         unsigned = VersionedTransaction.from_bytes(base64.b64decode(swap_tx_b64))
-        signed = VersionedTransaction(unsigned.message, [self.wallet.keypair])
+        signed = VersionedTransaction(unsigned.message, [w.keypair])
         return await self.client.send_raw_transaction(bytes(signed))
 
     async def _confirm_transaction(

@@ -33,6 +33,10 @@ class Position:
     entry_fees_sol: float = 0.0
     exit_fees_sol: float = 0.0
     strategy_id: str = "default"  # Which strategy opened this position
+    # Which wallet in the pool bought (and therefore holds) this position. The sell
+    # MUST use this same wallet — it holds the tokens — not just any pool wallet.
+    # Empty means the single/primary wallet (backward compatible).
+    wallet_address: str = ""
     token_symbol: str = "???"  # noqa: S105
     # Dynamic trailing stop override (set by Ouroboros detector or AI)
     # When set, overrides the strategy's trailing_stop_pct for this position only
@@ -125,6 +129,7 @@ class PositionManager:
         strategy_id: str = "default",
         token_symbol: str = "???",  # noqa: S107
         entry_fees_sol: float = 0.0,
+        wallet_address: str = "",
     ):
         """Open a new position with ceremony."""
         position = Position(
@@ -138,6 +143,7 @@ class PositionManager:
             strategy_id=strategy_id,
             token_symbol=token_symbol,
             entry_fees_sol=entry_fees_sol,
+            wallet_address=wallet_address,
         )
         self.positions[token_address] = position
         self.logger.info(f"Position opened: {token_address[:8]}... | {amount_tokens:.2f} tokens")
