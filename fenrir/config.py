@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from dotenv import load_dotenv
 
 if TYPE_CHECKING:
+    from fenrir.core.budget import BudgetTracker
     from fenrir.core.portfolio_risk import PortfolioRiskManager
     from fenrir.core.wallet import WalletPool
     from fenrir.discovery.config import DiscoveryConfig
@@ -187,6 +188,16 @@ class BotConfig:
     portfolio_max_positions_per_window: int = 3
     portfolio_max_drawdown_sol: float = 0.0
     portfolio_drawdown_min_trades: int = 5
+
+    # Dynamic capital allocation: scale each strategy's budget by its trailing
+    # win rate (winners up to ceiling, losers down to floor). Off by default. Env:
+    # ALLOCATION_ENABLED / ALLOCATION_WINDOW / ALLOCATION_MIN_TRADES /
+    # ALLOCATION_FLOOR_MULT / ALLOCATION_CEILING_MULT.
+    allocation_enabled: bool = False
+    allocation_window: int = 20
+    allocation_min_trades: int = 5
+    allocation_floor_mult: float = 0.5
+    allocation_ceiling_mult: float = 2.0
 
     # Pump.fun Program
     pumpfun_program: str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
@@ -424,6 +435,13 @@ class BotConfig:
         )
         self.portfolio_max_drawdown_sol = _env_float(
             "PORTFOLIO_MAX_DRAWDOWN_SOL", self.portfolio_max_drawdown_sol
+        )
+        self.allocation_enabled = _env_bool("ALLOCATION_ENABLED", self.allocation_enabled)
+        self.allocation_window = _env_int("ALLOCATION_WINDOW", self.allocation_window)
+        self.allocation_min_trades = _env_int("ALLOCATION_MIN_TRADES", self.allocation_min_trades)
+        self.allocation_floor_mult = _env_float("ALLOCATION_FLOOR_MULT", self.allocation_floor_mult)
+        self.allocation_ceiling_mult = _env_float(
+            "ALLOCATION_CEILING_MULT", self.allocation_ceiling_mult
         )
         self.wallet_pool_size = _env_int("WALLET_POOL_SIZE", self.wallet_pool_size)
         self.wallet_base_funding_sol = _env_float(
@@ -684,6 +702,20 @@ class BotConfig:
         from fenrir.trading.tx_config import TxConfigManager
 
         return TxConfigManager(rpc_url=self.rpc_url)
+
+    def build_budget_tracker(self) -> BudgetTracker:
+        """Build the budget tracker with dynamic-allocation config applied."""
+        from fenrir.core.budget import AllocationConfig, BudgetTracker
+
+        return BudgetTracker(
+            AllocationConfig(
+                enabled=self.allocation_enabled,
+                window=self.allocation_window,
+                min_trades=self.allocation_min_trades,
+                floor_mult=self.allocation_floor_mult,
+                ceiling_mult=self.allocation_ceiling_mult,
+            )
+        )
 
     def build_portfolio_risk(self) -> PortfolioRiskManager:
         """Build the portfolio-level risk manager from this config."""

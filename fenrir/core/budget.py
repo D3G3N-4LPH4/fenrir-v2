@@ -29,10 +29,27 @@ Usage:
 """
 
 import logging
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AllocationConfig:
+    """Dynamic capital allocation on trailing performance.
+
+    Off by default. When enabled, a strategy's effective budget scales with its
+    rolling win rate: winners get more (up to ceiling), losers less (down to floor),
+    with hard multiplier bounds so no strategy can run away with the book.
+    """
+
+    enabled: bool = False
+    window: int = 20  # rolling N trades used for the win rate
+    min_trades: int = 5  # below this, use the base budget (not enough signal)
+    floor_mult: float = 0.5  # min effective budget = base * floor_mult
+    ceiling_mult: float = 2.0  # max effective budget = base * ceiling_mult
 
 
 @dataclass
@@ -46,6 +63,9 @@ class StrategyBudgetState:
     wins: int = 0
     losses: int = 0
     last_trade_time: datetime | None = None
+    # Recent closed-trade outcomes (True = win), newest last, for the rolling
+    # win rate that drives dynamic allocation. Bounded so it can't grow forever.
+    recent_results: deque[bool] = field(default_factory=lambda: deque(maxlen=200))
 
     @property
     def net_spent(self) -> float:
@@ -55,6 +75,12 @@ class StrategyBudgetState:
     def win_rate(self) -> float:
         total = self.wins + self.losses
         return self.wins / total if total > 0 else 0.0
+
+    def rolling_win_rate(self, window: int) -> tuple[float, int]:
+        """(win rate, sample size) over the last ``window`` closed trades."""
+        recent = list(self.recent_results)[-window:]
+        n = len(recent)
+        return (sum(recent) / n if n else 0.0, n)
 
 
 @dataclass
@@ -76,11 +102,32 @@ class BudgetTracker:
     the strategy says GO, the budget tracker can say NO.
     """
 
-    def __init__(self):
+    def __init__(self, allocation: AllocationConfig | None = None):
         self._states: dict[str, StrategyBudgetState] = {}
         self._global_sol_limit: float | None = None  # Optional global cap
         self._global_sol_spent: float = 0.0
         self._reset_time: datetime = datetime.now()
+        self.allocation = allocation or AllocationConfig()
+
+    def allocation_multiplier(self, strategy_id: str) -> float:
+        """Budget multiplier from trailing performance, clamped to [floor, ceiling].
+
+        Linear in the rolling win rate: win_rate 0 -> floor, 1 -> ceiling. Returns
+        1.0 (base budget) when allocation is off or the sample is too small — a new
+        or rarely-traded strategy is never starved on noise.
+        """
+        cfg = self.allocation
+        if not cfg.enabled:
+            return 1.0
+        win_rate, n = self._get_state(strategy_id).rolling_win_rate(cfg.window)
+        if n < cfg.min_trades:
+            return 1.0
+        return cfg.floor_mult + win_rate * (cfg.ceiling_mult - cfg.floor_mult)
+
+    def effective_budget(self, strategy_id: str, base_budget_sol: float) -> float:
+        """Base budget scaled by the trailing-performance multiplier (floor/ceiling
+        enforced). With allocation off this is exactly ``base_budget_sol``."""
+        return base_budget_sol * self.allocation_multiplier(strategy_id)
 
     def set_global_limit(self, max_sol: float) -> None:
         """Set an absolute global SOL limit across all strategies. <=0 disables it."""
@@ -205,8 +252,10 @@ class BudgetTracker:
 
         if pnl_pct > 0:
             state.wins += 1
+            state.recent_results.append(True)
         else:
             state.losses += 1
+            state.recent_results.append(False)
 
     def reset_strategy(self, strategy_id: str) -> None:
         """Reset daily counters for a single strategy."""

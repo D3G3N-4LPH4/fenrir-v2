@@ -23,7 +23,6 @@ from typing import Any, Protocol, cast
 from fenrir.ai.brain import ClaudeBrain
 from fenrir.ai.market_geometry import MarketGeometryAnalyzer
 from fenrir.config import BotConfig, TradingMode
-from fenrir.core.budget import BudgetTracker
 from fenrir.core.circuit_breaker import ServiceBreakers
 from fenrir.core.client import SolanaClient
 from fenrir.core.dump_recovery import (
@@ -180,7 +179,9 @@ class FenrirBot:
         self.historical_memory = HistoricalMemory(db_path=db_path)
 
         # ── NEW: Budget Tracker ─────────────────────────────────
-        self.budget_tracker = BudgetTracker()
+        # Dynamic allocation (config-driven) scales each strategy's budget by its
+        # trailing win rate, within floor/ceiling multipliers.
+        self.budget_tracker = config.build_budget_tracker()
         # Master safety valve: cap net live SOL exposure across ALL strategies.
         if config.global_daily_sol_limit > 0:
             self.budget_tracker.set_global_limit(config.global_daily_sol_limit)
@@ -593,7 +594,9 @@ class FenrirBot:
         auth = self.budget_tracker.authorize_trade(
             strategy_id=strategy.strategy_id,
             amount_sol=effective_amount,
-            budget_sol=strategy.budget_sol,
+            budget_sol=self.budget_tracker.effective_budget(
+                strategy.strategy_id, strategy.budget_sol
+            ),
             max_positions=strategy.max_concurrent_positions,
             is_active=strategy.state.active,
             is_paused=strategy.state.paused,
@@ -819,7 +822,7 @@ class FenrirBot:
         auth = self.budget_tracker.authorize_trade(
             strategy_id=strat_id,
             amount_sol=amount,
-            budget_sol=budget,
+            budget_sol=self.budget_tracker.effective_budget(strat_id, budget),
             max_positions=max_positions,
         )
         if not auth.allowed:
