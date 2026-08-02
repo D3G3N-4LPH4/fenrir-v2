@@ -33,7 +33,6 @@ from fenrir.core.dump_recovery import (
 )
 from fenrir.core.jupiter import JupiterSwapEngine
 from fenrir.core.positions import Position, PositionManager
-from fenrir.core.wallet import WalletManager
 from fenrir.data.audit import AuditChain, AuditEventType
 from fenrir.data.historical_memory import HistoricalMemory
 from fenrir.data.price_feed import PriceFeedManager
@@ -97,9 +96,13 @@ class FenrirBot:
         self.breakers = ServiceBreakers()
 
         # ── Core infrastructure ─────────────────────────────────
-        self.wallet = WalletManager(
-            config.private_key, simulation_mode=(config.mode == TradingMode.SIMULATION)
-        )
+        # Multi-wallet rotation pool so concurrent positions aren't capped by a
+        # single wallet's balance/limits. `self.wallet` stays the primary wallet for
+        # backward compatibility (the engine signs with it); the pool is available
+        # for per-trade rotation + balance monitoring, and attributes trades to the
+        # executing wallet in the audit chain.
+        self.wallet_pool = config.build_wallet_pool(self.logger)
+        self.wallet = self.wallet_pool.primary
         self.solana_client = SolanaClient(config, self.logger, breaker=self.breakers.solana_rpc)
         self.jupiter = JupiterSwapEngine(config, self.logger, breaker=self.breakers.jupiter)
         self.positions = PositionManager(config, self.logger)

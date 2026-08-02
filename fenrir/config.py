@@ -11,11 +11,12 @@ import importlib  # FIX 1: was used below but never imported
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
 
 if TYPE_CHECKING:
+    from fenrir.core.wallet import WalletPool
     from fenrir.discovery.config import DiscoveryConfig
     from fenrir.filters import MarketFilterConfig, SecurityFilterConfig
     from fenrir.trading.tx_config import TxConfigManager
@@ -36,6 +37,17 @@ def _env_float(name: str, default: float) -> float:
         return default
     try:
         return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    """Parse an int env var; return ``default`` when unset or malformed."""
+    raw = os.getenv(name, "")
+    if raw == "":
+        return default
+    try:
+        return int(raw)
     except ValueError:
         return default
 
@@ -153,7 +165,16 @@ class BotConfig:
     ws_url: str = ""
 
     # Wallet Configuration
-    private_key: str = ""  # Base58 encoded
+    private_key: str = ""  # Base58 encoded (single-wallet, backward compat)
+    # Multi-wallet rotation pool. private_keys (env WALLET_PRIVATE_KEYS, comma-
+    # separated) funds the pool; if empty it falls back to [private_key]. In
+    # simulation the pool fills to wallet_pool_size with throwaway keypairs.
+    # Funding is per-strategy: base wallet_base_funding_sol, with variations in
+    # wallet_strategy_funding (env WALLET_STRATEGY_FUNDING="sniper:0.75,swing:0.5").
+    private_keys: list[str] = field(default_factory=list)
+    wallet_pool_size: int = 5
+    wallet_base_funding_sol: float = 0.5
+    wallet_strategy_funding: dict[str, float] = field(default_factory=dict)
 
     # Pump.fun Program
     pumpfun_program: str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
@@ -371,6 +392,25 @@ class BotConfig:
         self.geyser_commitment = os.getenv("GEYSER_COMMITMENT", self.geyser_commitment)
         if not self.private_key:
             self.private_key = os.getenv("WALLET_PRIVATE_KEY", "")
+        if not self.private_keys:
+            env_keys = os.getenv("WALLET_PRIVATE_KEYS", "")
+            self.private_keys = [k.strip() for k in env_keys.split(",") if k.strip()]
+        # Pool falls back to the single key when no explicit list is given.
+        if not self.private_keys and self.private_key:
+            self.private_keys = [self.private_key]
+        self.wallet_pool_size = _env_int("WALLET_POOL_SIZE", self.wallet_pool_size)
+        self.wallet_base_funding_sol = _env_float(
+            "WALLET_BASE_FUNDING_SOL", self.wallet_base_funding_sol
+        )
+        if not self.wallet_strategy_funding:
+            env_sf = os.getenv("WALLET_STRATEGY_FUNDING", "")
+            for pair in env_sf.split(","):
+                if ":" in pair:
+                    sid, _, amt = pair.partition(":")
+                    try:
+                        self.wallet_strategy_funding[sid.strip()] = float(amt)
+                    except ValueError:
+                        continue
 
         # FIX 2: ai_analysis_enabled controllable from .env
         env_ai_enabled = os.getenv("AI_ANALYSIS_ENABLED", "")
@@ -617,6 +657,19 @@ class BotConfig:
         from fenrir.trading.tx_config import TxConfigManager
 
         return TxConfigManager(rpc_url=self.rpc_url)
+
+    def build_wallet_pool(self, logger: Any = None) -> WalletPool:
+        """Build the multi-wallet rotation pool from this config."""
+        from fenrir.core.wallet import WalletPool
+
+        return WalletPool(
+            private_keys=self.private_keys,
+            simulation_mode=(self.mode == TradingMode.SIMULATION),
+            pool_size=self.wallet_pool_size,
+            base_funding_sol=self.wallet_base_funding_sol,
+            strategy_funding=self.wallet_strategy_funding,
+            logger=logger,
+        )
 
     def __repr__(self) -> str:
         """Redact sensitive fields to prevent accidental secret leakage in logs."""
