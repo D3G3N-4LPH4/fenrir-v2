@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from dotenv import load_dotenv
 
 if TYPE_CHECKING:
+    from fenrir.core.portfolio_risk import PortfolioRiskManager
     from fenrir.core.wallet import WalletPool
     from fenrir.discovery.config import DiscoveryConfig
     from fenrir.filters import MarketFilterConfig, SecurityFilterConfig
@@ -175,6 +176,17 @@ class BotConfig:
     wallet_pool_size: int = 5
     wallet_base_funding_sol: float = 0.5
     wallet_strategy_funding: dict[str, float] = field(default_factory=dict)
+
+    # Portfolio-level risk (above per-strategy budgets). 0 disables a gate.
+    # Env: PORTFOLIO_MAX_EXPOSURE_SOL / PORTFOLIO_MAX_PER_CREATOR /
+    # PORTFOLIO_LAUNCH_WINDOW_SECONDS / PORTFOLIO_MAX_PER_WINDOW /
+    # PORTFOLIO_MAX_DRAWDOWN_SOL.
+    portfolio_max_exposure_sol: float = 0.0
+    portfolio_max_positions_per_creator: int = 2
+    portfolio_launch_window_seconds: float = 60.0
+    portfolio_max_positions_per_window: int = 3
+    portfolio_max_drawdown_sol: float = 0.0
+    portfolio_drawdown_min_trades: int = 5
 
     # Pump.fun Program
     pumpfun_program: str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
@@ -398,6 +410,21 @@ class BotConfig:
         # Pool falls back to the single key when no explicit list is given.
         if not self.private_keys and self.private_key:
             self.private_keys = [self.private_key]
+        self.portfolio_max_exposure_sol = _env_float(
+            "PORTFOLIO_MAX_EXPOSURE_SOL", self.portfolio_max_exposure_sol
+        )
+        self.portfolio_max_positions_per_creator = _env_int(
+            "PORTFOLIO_MAX_PER_CREATOR", self.portfolio_max_positions_per_creator
+        )
+        self.portfolio_launch_window_seconds = _env_float(
+            "PORTFOLIO_LAUNCH_WINDOW_SECONDS", self.portfolio_launch_window_seconds
+        )
+        self.portfolio_max_positions_per_window = _env_int(
+            "PORTFOLIO_MAX_PER_WINDOW", self.portfolio_max_positions_per_window
+        )
+        self.portfolio_max_drawdown_sol = _env_float(
+            "PORTFOLIO_MAX_DRAWDOWN_SOL", self.portfolio_max_drawdown_sol
+        )
         self.wallet_pool_size = _env_int("WALLET_POOL_SIZE", self.wallet_pool_size)
         self.wallet_base_funding_sol = _env_float(
             "WALLET_BASE_FUNDING_SOL", self.wallet_base_funding_sol
@@ -657,6 +684,21 @@ class BotConfig:
         from fenrir.trading.tx_config import TxConfigManager
 
         return TxConfigManager(rpc_url=self.rpc_url)
+
+    def build_portfolio_risk(self) -> PortfolioRiskManager:
+        """Build the portfolio-level risk manager from this config."""
+        from fenrir.core.portfolio_risk import PortfolioRiskConfig, PortfolioRiskManager
+
+        return PortfolioRiskManager(
+            PortfolioRiskConfig(
+                max_total_exposure_sol=self.portfolio_max_exposure_sol,
+                max_positions_per_creator=self.portfolio_max_positions_per_creator,
+                launch_window_seconds=self.portfolio_launch_window_seconds,
+                max_positions_per_window=self.portfolio_max_positions_per_window,
+                max_drawdown_sol=self.portfolio_max_drawdown_sol,
+                drawdown_min_trades=self.portfolio_drawdown_min_trades,
+            )
+        )
 
     def build_wallet_pool(self, logger: Any = None) -> WalletPool:
         """Build the multi-wallet rotation pool from this config."""

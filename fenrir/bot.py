@@ -188,6 +188,11 @@ class FenrirBot:
                 f"Global daily SOL limit: {config.global_daily_sol_limit} SOL (all strategies)"
             )
 
+        # ── Portfolio-level risk (above per-strategy budgets) ───
+        # Aggregate exposure cap, creator/launch-window correlation limits, and a
+        # portfolio drawdown circuit breaker that halts ALL buys.
+        self.portfolio_risk = config.build_portfolio_risk()
+
         # Ouroboros / dump recovery detector
         self.dump_detector = PostDumpRecoveryDetector(
             config=OuroborosConfig(
@@ -606,6 +611,14 @@ class FenrirBot:
             )
             return
 
+        # Portfolio-level risk gate — across ALL strategies (exposure cap,
+        # creator/launch-window correlation, drawdown breaker).
+        creator = token_data.get("creator")
+        risk = self.portfolio_risk.check(strategy.strategy_id, effective_amount, creator=creator)
+        if not risk.allowed:
+            self.logger.info(f"Portfolio risk blocked {symbol}: {risk.reason}")
+            return
+
         # Execute the buy
         success = await self.trading_engine.execute_buy(
             token_data,
@@ -615,6 +628,9 @@ class FenrirBot:
 
         if success:
             self.budget_tracker.record_buy(strategy.strategy_id, effective_amount)
+            self.portfolio_risk.record_open(
+                token_addr, strategy.strategy_id, effective_amount, creator=creator
+            )
             strategy.record_spend(effective_amount)
 
             await self.event_bus.emit(
@@ -810,11 +826,18 @@ class FenrirBot:
             self.logger.info(f"{strat_id} trade blocked for {symbol}: {auth.reason}")
             return
 
+        creator = token_data.get("creator")
+        risk = self.portfolio_risk.check(strat_id, amount, creator=creator)
+        if not risk.allowed:
+            self.logger.info(f"Portfolio risk blocked {symbol}: {risk.reason}")
+            return
+
         success = await self.trading_engine.execute_buy(
             token_data, amount_sol=amount, strategy_id=strat_id
         )
         if success:
             self.budget_tracker.record_buy(strat_id, amount)
+            self.portfolio_risk.record_open(token_addr, strat_id, amount, creator=creator)
             await self.event_bus.emit(
                 buy_executed_event(
                     token_address=token_addr,
@@ -1018,6 +1041,15 @@ class FenrirBot:
             max(0, returned_sol),
             pnl_pct,
         )
+        # Portfolio-level: free the exposure + fold realized PnL into the drawdown
+        # breaker. Net-of-fees PnL, so the breaker tracks the wallet, not raw price.
+        net_pnl_sol = position.get_net_pnl_sol()
+        self.portfolio_risk.record_close(token_address, net_pnl_sol)
+        if self.portfolio_risk.breaker_tripped:
+            self.logger.warning(
+                f"Portfolio drawdown breaker TRIPPED "
+                f"(drawdown {self.portfolio_risk.drawdown_sol:.3f} SOL) — new buys halted"
+            )
 
         # Update strategy state
         for strategy in self.strategies:
