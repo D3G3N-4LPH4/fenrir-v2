@@ -104,6 +104,45 @@ def token_detected_event(
     )
 
 
+def candidate_flagged_event(
+    token_address: str,
+    symbol: str,
+    strategy_id: str,
+    token_data: dict,
+) -> TradeEvent:
+    """A strategy flagged a detected token as a tradeable candidate (ScannerAgent)."""
+    return TradeEvent(
+        event_type="CANDIDATE_FLAGGED",
+        category=EventCategory.DETECTION,
+        severity=EventSeverity.INFO,
+        token_address=token_address,
+        token_symbol=symbol,
+        strategy_id=strategy_id,
+        data={"token_data": token_data},
+        message=f"Candidate: ${symbol} for {strategy_id}",
+    )
+
+
+def position_sized_event(
+    token_address: str,
+    symbol: str,
+    strategy_id: str,
+    amount_sol: float,
+    token_data: dict,
+) -> TradeEvent:
+    """A candidate passed sizing + risk and is ready to execute (SizingAgent)."""
+    return TradeEvent(
+        event_type="POSITION_SIZED",
+        category=EventCategory.TRADING,
+        severity=EventSeverity.INFO,
+        token_address=token_address,
+        token_symbol=symbol,
+        strategy_id=strategy_id,
+        data={"amount_sol": amount_sol, "token_data": token_data},
+        message=f"Sized ${symbol}: {amount_sol:.4f} SOL for {strategy_id}",
+    )
+
+
 def discovery_event(
     token_address: str,
     symbol: str,
