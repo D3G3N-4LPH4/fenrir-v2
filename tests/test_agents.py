@@ -158,6 +158,49 @@ class TestConcurrencyAcceptance:
         assert agent.failed == 1  # the boom item
         assert sized == ["goodstrat"]  # the next item still processed
 
+    @pytest.mark.asyncio
+    async def test_item_error_logging_never_crashes_worker(self):
+        """The error path logs the failure. FenrirLogger.error(context, exc) takes two
+        args (unlike stdlib Logger.error(msg)); the worker's single-arg call must not
+        raise and kill the worker. Regression for the Phase 3.3 _log fix."""
+
+        class _FenrirStyleLogger:
+            def __init__(self) -> None:
+                self.warned: list[str] = []
+
+            def error(self, context, error):  # two-arg signature, like FenrirLogger
+                raise AssertionError("must not be called with a single arg")
+
+            def warning(self, msg):
+                self.warned.append(msg)
+
+            def info(self, msg):
+                pass
+
+        bus = EventBus()
+        logger = _FenrirStyleLogger()
+        processed_after: list[str] = []
+
+        async def size(sid, td):
+            if td.get("boom"):
+                raise RuntimeError("kaboom")
+            processed_after.append(sid)
+            return None
+
+        agent = SizingAgent(bus, size, logger)
+        await agent.start()
+
+        from fenrir.events.types import candidate_flagged_event
+
+        await agent.on_event(candidate_flagged_event("A", "A", "boom", {"boom": True}))
+        await agent.on_event(candidate_flagged_event("B", "B", "ok", {}))
+        await asyncio.sleep(0.05)
+        await agent.stop()
+
+        assert agent.failed == 1
+        assert processed_after == ["ok"]  # worker survived the logging call
+        assert any("kaboom" in w for w in logger.warned)  # fell back to warning
+
 
 class TestStats:
     @pytest.mark.asyncio
