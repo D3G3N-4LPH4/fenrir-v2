@@ -133,8 +133,12 @@ class TestRoundTrip:
 
 class TestJsonlLoader:
     def test_skips_blank_and_bad_lines(self, tmp_path: Path) -> None:
+        import json as _json
+
         path = tmp_path / "s.jsonl"
-        good = '{"token_address": "%s", "forward_prices": [1.0, 1.1], "market_data": {}}' % TOKEN
+        good = _json.dumps(
+            {"token_address": TOKEN, "forward_prices": [1.0, 1.1], "market_data": {}}
+        )
         path.write_text(f"{good}\n\nnot json\n", encoding="utf-8")
         samples = load_jsonl(path)
         assert len(samples) == 1
