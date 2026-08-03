@@ -143,6 +143,37 @@ def position_sized_event(
     )
 
 
+def arbitrage_opportunity_event(
+    token_address: str,
+    buy_venue: str,
+    sell_venue: str,
+    net_edge_bps: float,
+    est_profit_sol: float,
+    size_sol: float,
+    gross_edge_bps: float = 0.0,
+) -> TradeEvent:
+    """An actionable cross-venue arbitrage divergence (surfaced/alerted, read-only —
+    the detector never executes)."""
+    return TradeEvent(
+        event_type="ARBITRAGE_OPPORTUNITY",
+        category=EventCategory.TRADING,
+        severity=EventSeverity.INFO,
+        token_address=token_address,
+        data={
+            "buy_venue": buy_venue,
+            "sell_venue": sell_venue,
+            "gross_edge_bps": round(gross_edge_bps, 1),
+            "net_edge_bps": round(net_edge_bps, 1),
+            "est_profit_sol": est_profit_sol,
+            "size_sol": size_sol,
+        },
+        message=(
+            f"ARB ${token_address[:8]}… buy {buy_venue} → sell {sell_venue} | "
+            f"net {net_edge_bps:.0f}bps (~{est_profit_sol:.4f} SOL on {size_sol:.3f})"
+        ),
+    )
+
+
 def discovery_event(
     token_address: str,
     symbol: str,
