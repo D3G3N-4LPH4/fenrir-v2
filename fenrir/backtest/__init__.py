@@ -16,11 +16,13 @@ from fenrir.backtest.models import (
     BacktestTrade,
 )
 from fenrir.backtest.portfolio import PortfolioBacktester, PortfolioResult
+from fenrir.backtest.report import format_report
 
 __all__ = [
     "SignalBacktester",
     "PortfolioBacktester",
     "PortfolioResult",
+    "format_report",
     "BacktestSample",
     "BacktestTrade",
     "BacktestMetrics",
