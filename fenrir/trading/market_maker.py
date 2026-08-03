@@ -144,6 +144,13 @@ class MarketMaker:
             )
         self.simulation = True
         self.inventory = InventoryState()
+        # Online paper-trading state (see reset/step). fair is the slow EMA the maker
+        # quotes around; None until the first tick seeds it.
+        self.fair: float | None = None
+        self._fills: list[Fill] = []
+        self._max_inv_value_sol = 0.0
+        self._last_price = 0.0
+        self._step_index = 0
 
     # ── Quoting ────────────────────────────────────────────────────────
 
@@ -239,23 +246,8 @@ class MarketMaker:
 
     # ── Paper trading ──────────────────────────────────────────────────
 
-    def simulate(
-        self, prices: list[float], starting_cash_sol: float | None = None
-    ) -> MarketMakerSimResult:
-        """Run a deterministic fill model over a trade-print series.
-
-        The maker quotes around a SLOW fair value (an EMA of prints), not around each
-        jumpy print — that is what lets it capture spread on mean-reverting noise
-        rather than getting adversely selected. At each print: quote from the current
-        fair value, then a print that trades through our bid fills a buy (at the bid),
-        or through our ask fills a sell (at the ask); at most one fill per print. Buys
-        respect the inventory cap and cash, sells respect tokens held. The fair value
-        updates *after* quoting.
-
-        Properties this proves (see tests): oscillation around a stable level captures
-        spread (realized PnL > 0); a sustained trend accumulates inventory only up to
-        the cap and then stops (bounded inventory, honest adverse-selection loss).
-        """
+    def reset(self, starting_cash_sol: float | None = None) -> None:
+        """Reset all paper-trading state for a fresh run/session."""
         self.inventory = InventoryState(
             cash_sol=(
                 starting_cash_sol
@@ -263,38 +255,78 @@ class MarketMaker:
                 else self.config.max_inventory_sol
             )
         )
-        result = MarketMakerSimResult()
-        if not prices:
-            return result
+        self.fair = None
+        self._fills = []
+        self._max_inv_value_sol = 0.0
+        self._last_price = 0.0
+        self._step_index = 0
 
+    def step(self, print_price: float) -> Fill | None:
+        """Advance the paper maker by one trade print (online / streaming).
+
+        The maker quotes around a SLOW fair value (an EMA of prints), not around each
+        jumpy print — that is what lets it capture spread on mean-reverting noise
+        rather than getting adversely selected. A print through the bid fills a buy (at
+        the bid); through the ask fills a sell (at the ask); at most one fill per print.
+        Buys respect the inventory cap and cash, sells respect tokens held. The fair
+        value updates *after* quoting. Returns the Fill for this tick, or None.
+
+        Identical semantics to the batch ``simulate``; this is the unit used both by
+        ``simulate`` and by the live paper session (sim-against-real-data), which never
+        places an order.
+        """
+        if print_price <= 0:
+            return None
+        if self.fair is None:
+            self.fair = print_price  # seed the fair value on the first tick
+        if self.fair <= 0:
+            return None
+
+        q = self.quote(self.fair)
+        fill: Fill | None = None
+        if print_price <= q.bid_price and self.can_buy(self.fair):
+            fill = self.record_fill("buy", q.bid_price, self.config.order_size_sol)
+        elif print_price >= q.ask_price and self.inventory.base_tokens > 0:
+            fill = self.record_fill("sell", q.ask_price, self.config.order_size_sol)
+
+        if fill is not None:
+            fill.step = self._step_index
+            self._fills.append(fill)
+
+        self._max_inv_value_sol = max(self._max_inv_value_sol, self.inventory.value_sol(self.fair))
+        # Update the fair value AFTER quoting on this print.
         alpha = self.config.fair_value_ema_alpha
-        fair = prices[0]
+        self.fair = (1.0 - alpha) * self.fair + alpha * print_price
+        self._last_price = print_price
+        self._step_index += 1
+        return fill
 
-        for step, print_price in enumerate(prices):
-            if print_price <= 0 or fair <= 0:
-                continue
-            q = self.quote(fair)
+    def result(self, mark_price: float | None = None) -> MarketMakerSimResult:
+        """Snapshot the paper-trading outcome, marking open inventory at ``mark_price``
+        (defaults to the last print seen)."""
+        mark = mark_price if mark_price is not None else self._last_price
+        return MarketMakerSimResult(
+            fills=list(self._fills),
+            realized_pnl_sol=self.inventory.realized_pnl_sol,
+            unrealized_pnl_sol=self.inventory.unrealized_pnl_sol(mark),
+            ending_inventory_tokens=self.inventory.base_tokens,
+            ending_inventory_value_sol=self.inventory.value_sol(mark),
+            ending_cash_sol=self.inventory.cash_sol,
+            max_inventory_value_sol=self._max_inv_value_sol,
+        )
 
-            fill: Fill | None = None
-            if print_price <= q.bid_price and self.can_buy(fair):
-                fill = self.record_fill("buy", q.bid_price, self.config.order_size_sol)
-            elif print_price >= q.ask_price and self.inventory.base_tokens > 0:
-                fill = self.record_fill("sell", q.ask_price, self.config.order_size_sol)
+    def simulate(
+        self, prices: list[float], starting_cash_sol: float | None = None
+    ) -> MarketMakerSimResult:
+        """Batch paper-trading over a print series — a thin wrapper over reset/step.
 
-            if fill is not None:
-                fill.step = step
-                result.fills.append(fill)
-
-            result.max_inventory_value_sol = max(
-                result.max_inventory_value_sol, self.inventory.value_sol(fair)
-            )
-            # Update the fair value AFTER quoting on this print.
-            fair = (1.0 - alpha) * fair + alpha * print_price
-
-        final_mid = prices[-1]
-        result.realized_pnl_sol = self.inventory.realized_pnl_sol
-        result.unrealized_pnl_sol = self.inventory.unrealized_pnl_sol(final_mid)
-        result.ending_inventory_tokens = self.inventory.base_tokens
-        result.ending_inventory_value_sol = self.inventory.value_sol(final_mid)
-        result.ending_cash_sol = self.inventory.cash_sol
-        return result
+        Properties this proves (see tests): oscillation around a stable level captures
+        spread (realized PnL > 0); a sustained trend accumulates inventory only up to
+        the cap and then stops (bounded inventory, honest adverse-selection loss).
+        """
+        self.reset(starting_cash_sol)
+        if not prices:
+            return self.result(mark_price=0.0)
+        for print_price in prices:
+            self.step(print_price)
+        return self.result(mark_price=prices[-1])
