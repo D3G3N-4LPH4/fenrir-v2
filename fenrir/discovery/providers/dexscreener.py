@@ -119,6 +119,11 @@ class DexScreenerProvider:
                 out.append(addr)
         return out
 
+    async def fetch_pairs(self, token_address: str) -> list[dict[str, Any]]:
+        """Public accessor for a token's raw DexScreener pairs (used by the arbitrage
+        monitor, which needs per-pool priceNative/quoteToken/liquidity). Fail-open."""
+        return await self._fetch_pairs(token_address)
+
     async def _fetch_pairs(self, token_address: str) -> list[dict[str, Any]]:
         try:
             session = await self._get_session()

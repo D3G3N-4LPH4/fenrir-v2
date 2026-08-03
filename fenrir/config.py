@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from fenrir.core.wallet import WalletPool
     from fenrir.discovery.config import DiscoveryConfig
     from fenrir.filters import MarketFilterConfig, SecurityFilterConfig
+    from fenrir.trading.arbitrage_monitor import ArbitrageMonitor
     from fenrir.trading.tx_config import TxConfigManager
 
 
@@ -338,6 +339,15 @@ class BotConfig:
     market_filter_enabled: bool = False
     market_fail_open_on_fetch_error: bool = True
 
+    # Arbitrage monitor (Phase 4.4c-evidence). Read-only: periodically checks tokens
+    # for cost-cleared cross-pool price divergence on DexScreener and surfaces
+    # actionable gaps as events. Never executes. Off by default; opt-in for evidence
+    # gathering before any atomic executor is built.
+    arbitrage_monitor_enabled: bool = False
+    arbitrage_size_sol: float = 0.1  # notional the net-edge is estimated for
+    arbitrage_min_net_edge_bps: float = 50.0  # threshold to flag as actionable
+    arbitrage_interval_seconds: float = 30.0
+
     # Multi-chain discovery scanner (Solana/ETH/BNB/Base). Discovery-only —
     # surfaces + scores + alerts across chains; execution stays Solana-only. All
     # opt-in and off by default. Env: DISCOVERY_ENABLED / DISCOVERY_CHAINS /
@@ -582,6 +592,16 @@ class BotConfig:
         self.multi_agent_pipeline_enabled = _env_bool(
             "MULTI_AGENT_PIPELINE_ENABLED", self.multi_agent_pipeline_enabled
         )
+        self.arbitrage_monitor_enabled = _env_bool(
+            "ARBITRAGE_MONITOR_ENABLED", self.arbitrage_monitor_enabled
+        )
+        self.arbitrage_size_sol = _env_float("ARBITRAGE_SIZE_SOL", self.arbitrage_size_sol)
+        self.arbitrage_min_net_edge_bps = _env_float(
+            "ARBITRAGE_MIN_NET_EDGE_BPS", self.arbitrage_min_net_edge_bps
+        )
+        self.arbitrage_interval_seconds = _env_float(
+            "ARBITRAGE_INTERVAL_SECONDS", self.arbitrage_interval_seconds
+        )
         env_disc_cats = os.getenv("DISCOVERY_SOLANA_CATEGORIES", "")
         if env_disc_cats:
             self.discovery_solana_categories = [
@@ -713,6 +733,21 @@ class BotConfig:
         from fenrir.trading.tx_config import TxConfigManager
 
         return TxConfigManager(rpc_url=self.rpc_url)
+
+    def build_arbitrage_monitor(
+        self, event_bus: object = None, logger: object = None
+    ) -> ArbitrageMonitor:
+        """Build the read-only arbitrage monitor from config (detector threshold + size)."""
+        from fenrir.trading.arbitrage import ArbConfig, ArbitrageDetector
+        from fenrir.trading.arbitrage_monitor import ArbitrageMonitor
+
+        detector = ArbitrageDetector(ArbConfig(min_net_edge_bps=self.arbitrage_min_net_edge_bps))
+        return ArbitrageMonitor(
+            detector=detector,
+            size_sol=self.arbitrage_size_sol,
+            event_bus=event_bus,
+            logger=logger,
+        )
 
     def build_budget_tracker(self) -> BudgetTracker:
         """Build the budget tracker with dynamic-allocation config applied."""
