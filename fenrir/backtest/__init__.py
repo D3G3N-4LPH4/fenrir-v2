@@ -6,8 +6,18 @@ Replays historical candidates through the same strategy ``evaluate_token`` + uni
 what will trade. See ``SignalBacktester``.
 """
 
+from fenrir.backtest.collector import (
+    ForwardPriceCollector,
+    build_record,
+    market_data_to_dict,
+)
 from fenrir.backtest.engine import SignalBacktester
-from fenrir.backtest.loader import load_samples, sample_from_dict, samples_from_dicts
+from fenrir.backtest.loader import (
+    load_jsonl,
+    load_samples,
+    sample_from_dict,
+    samples_from_dicts,
+)
 from fenrir.backtest.metrics import compute_metrics, max_drawdown_pct
 from fenrir.backtest.models import (
     BacktestMetrics,
@@ -30,6 +40,10 @@ __all__ = [
     "compute_metrics",
     "max_drawdown_pct",
     "load_samples",
+    "load_jsonl",
     "sample_from_dict",
     "samples_from_dicts",
+    "ForwardPriceCollector",
+    "build_record",
+    "market_data_to_dict",
 ]

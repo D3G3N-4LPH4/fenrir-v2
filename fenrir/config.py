@@ -240,6 +240,15 @@ class BotConfig:
     # flat settings above.
     tx_profiles_enabled: bool = True
 
+    # Forward-price sample collection (empirical phase). Read-only: while running, record
+    # each flagged token's entry snapshot + a forward price path to a JSONL file, to feed
+    # the backtester for calibration. Never trades. Off by default.
+    sample_collection_enabled: bool = False
+    sample_collection_frames: int = 30
+    sample_collection_frame_seconds: float = 60.0
+    sample_collection_path: str = "backtest_samples.jsonl"
+    sample_collection_max_concurrent: int = 20
+
     # Signal confluence surfacing (Phase 5.3). Read-only: when multiple independent
     # strategies flag the same token the same way within the window, emit a
     # SIGNAL_CONFLUENCE event. Does NOT change sizing/execution. Off by default.
@@ -602,6 +611,18 @@ class BotConfig:
         self.signal_confluence_enabled = _env_bool(
             "SIGNAL_CONFLUENCE_ENABLED", self.signal_confluence_enabled
         )
+        self.sample_collection_enabled = _env_bool(
+            "SAMPLE_COLLECTION_ENABLED", self.sample_collection_enabled
+        )
+        self.sample_collection_frames = _env_int(
+            "SAMPLE_COLLECTION_FRAMES", self.sample_collection_frames
+        )
+        self.sample_collection_frame_seconds = _env_float(
+            "SAMPLE_COLLECTION_FRAME_SECONDS", self.sample_collection_frame_seconds
+        )
+        env_sample_path = os.getenv("SAMPLE_COLLECTION_PATH", "")
+        if env_sample_path:
+            self.sample_collection_path = env_sample_path
         self.signal_confluence_min_sources = _env_int(
             "SIGNAL_CONFLUENCE_MIN_SOURCES", self.signal_confluence_min_sources
         )
