@@ -31,6 +31,64 @@ from fenrir.trading.arbitrage import ArbitrageDetector, ArbOpportunity, VenueQuo
 QuoteSource = Callable[[], Awaitable[VenueQuote | None]]
 
 _LAMPORTS_PER_SOL = 1_000_000_000
+_WSOL_MINT = "So11111111111111111111111111111111111111112"
+
+# Per-DEX swap fees (bps). Falls back to a conservative default for unknown DEXes.
+_FEE_BY_DEX = {
+    "raydium": 25,
+    "pumpswap": 25,
+    "orca": 30,
+    "meteora": 20,
+    "fluxbeam": 30,
+}
+_DEFAULT_DEX_FEE_BPS = 30
+
+
+def _to_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def venue_quotes_from_pairs(
+    pairs: list[dict], default_fee_bps: int = _DEFAULT_DEX_FEE_BPS
+) -> list[VenueQuote]:
+    """Build one VenueQuote per SOL-quoted DexScreener pool for a token.
+
+    Only pairs quoted in WSOL are used, because ``priceNative`` is denominated in the
+    pair's quote token — mixing a USDC-quoted pool with a SOL-quoted one would compare
+    apples to oranges. The SOL depth is the quote-side reserve (``liquidity.quote``,
+    the WSOL in the pool). Each distinct pool is a venue keyed by ``dexId:pairAddr``.
+    """
+    quotes: list[VenueQuote] = []
+    for pair in pairs:
+        quote_token = (pair.get("quoteToken") or {}).get("address")
+        if quote_token != _WSOL_MINT:
+            continue
+        price_sol = _to_float(pair.get("priceNative"))
+        if price_sol <= 0:
+            continue
+        liquidity = pair.get("liquidity") or {}
+        liquidity_sol = _to_float(liquidity.get("quote"))  # WSOL-side reserves
+        dex_id = pair.get("dexId") or "?"
+        pair_addr = pair.get("pairAddress") or ""
+        venue = f"{dex_id}:{pair_addr[:6]}" if pair_addr else dex_id
+        fee_bps = _FEE_BY_DEX.get(dex_id, default_fee_bps)
+        quotes.append(
+            VenueQuote(venue=venue, price=price_sol, liquidity_sol=liquidity_sol, fee_bps=fee_bps)
+        )
+    return quotes
+
+
+async def dexscreener_venue_quotes(
+    fetch_pairs: Callable[[str], Awaitable[list[dict]]], token_address: str
+) -> list[VenueQuote]:
+    """Fetch a token's DexScreener pools and build SOL-quoted VenueQuotes. ``fetch_pairs``
+    is injected (``DexScreenerProvider.fetch_pairs`` in production) so this is testable
+    with no network."""
+    pairs = await fetch_pairs(token_address)
+    return venue_quotes_from_pairs(pairs)
 
 
 def venue_quote_from_curve(
@@ -103,10 +161,17 @@ class ArbitrageMonitor:
         return quotes
 
     async def scan(self, token_address: str, sources: list[QuoteSource]) -> ArbOpportunity | None:
-        """Collect quotes from the sources and return an ACTIONABLE opportunity (net
-        edge clears the threshold), emitting an event for it. Read-only."""
-        self.scans += 1
+        """Collect quotes from the sources, then evaluate. Read-only."""
         quotes = await self._collect(sources)
+        return await self.evaluate_quotes(token_address, quotes)
+
+    async def evaluate_quotes(
+        self, token_address: str, quotes: list[VenueQuote]
+    ) -> ArbOpportunity | None:
+        """Run the detector over already-collected quotes and return an ACTIONABLE
+        opportunity (net edge clears the threshold), emitting an event for it. Used by
+        the scanner, which supplies real per-pool quotes directly. Read-only."""
+        self.scans += 1
         opp = self.detector.detect(token_address, quotes, self.size_sol)
         if opp is None:
             return None

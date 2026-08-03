@@ -15,6 +15,7 @@ v2 additions (inspired by OpenFang patterns):
 import asyncio
 import json
 import os
+from collections import deque
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -147,6 +148,15 @@ class FenrirBot:
         self.discovery_scanner: Any = None
         self._discovery_task: asyncio.Task | None = None
         self._discovery_dex: Any = None  # shared DexScreener provider (closed on stop)
+
+        # Read-only arbitrage monitor (built in start() when arbitrage_monitor_enabled).
+        # Checks recently-seen + held tokens for cross-pool divergence; never executes.
+        self.arbitrage_monitor: Any = None
+        self.arbitrage_scanner: Any = None
+        self._arbitrage_task: asyncio.Task | None = None
+        self._arb_dex: Any = None  # DexScreener provider for the arb monitor (closed on stop)
+        # Bounded ring of recently-detected tokens the arb monitor can sample.
+        self._recent_tokens: deque[str] = deque(maxlen=100)
 
         # Smart-money / whale wallet tracker (follow curated wallets; opt-in).
         self.smart_money = SmartMoneyTracker(
@@ -430,7 +440,33 @@ class FenrirBot:
             self._discovery_task = asyncio.create_task(self.discovery_scanner.start_scanning())
             tasks.append(self._discovery_task)
 
+        # Read-only arbitrage monitor — opt-in, surfaces cross-pool divergence, no execution.
+        if self.config.arbitrage_monitor_enabled:
+            from fenrir.discovery.providers.dexscreener import DexScreenerProvider
+            from fenrir.trading.arbitrage_scanner import ArbitrageScanner
+
+            self._arb_dex = DexScreenerProvider()
+            self.arbitrage_monitor = self.config.build_arbitrage_monitor(
+                event_bus=self.event_bus, logger=self.logger
+            )
+            self.arbitrage_scanner = ArbitrageScanner(
+                monitor=self.arbitrage_monitor,
+                fetch_pairs=self._arb_dex.fetch_pairs,
+                token_source=self._arb_token_source,
+                interval_seconds=self.config.arbitrage_interval_seconds,
+                logger=self.logger,
+            )
+            self._arbitrage_task = asyncio.create_task(self.arbitrage_scanner.start_scanning())
+            tasks.append(self._arbitrage_task)
+
         await asyncio.gather(*tasks)
+
+    async def _arb_token_source(self) -> list[str]:
+        """Tokens for the arbitrage monitor to check: currently-held positions plus
+        recently-detected launches, de-duplicated. Read-only sampling."""
+        held = list(self.positions.positions.keys())
+        recent = list(self._recent_tokens)
+        return list(dict.fromkeys(held + recent))
 
     async def _on_token_launch(self, token_data: dict):
         """
@@ -458,6 +494,8 @@ class FenrirBot:
                 creator=creator,
             )
         )
+        # Feed the read-only arbitrage monitor's sampling ring (no-op when disabled).
+        self._recent_tokens.append(token_addr)
 
         # Enrich + route. When the multi-agent pipeline is enabled, hand the fully
         # populated token_data to the ScannerAgent (queue-backed) and return
@@ -1246,6 +1284,14 @@ class FenrirBot:
         if self._discovery_dex is not None:
             await self._discovery_dex.close()
             self._discovery_dex = None
+        if self.arbitrage_scanner is not None:
+            await self.arbitrage_scanner.stop()
+        if self._arbitrage_task is not None:
+            self._arbitrage_task.cancel()
+            self._arbitrage_task = None
+        if self._arb_dex is not None:
+            await self._arb_dex.close()
+            self._arb_dex = None
         await self.trading_engine.close()
         await self.claude_brain.close()
         await self.solana_client.close()
