@@ -240,6 +240,13 @@ class BotConfig:
     # flat settings above.
     tx_profiles_enabled: bool = True
 
+    # Signal confluence surfacing (Phase 5.3). Read-only: when multiple independent
+    # strategies flag the same token the same way within the window, emit a
+    # SIGNAL_CONFLUENCE event. Does NOT change sizing/execution. Off by default.
+    signal_confluence_enabled: bool = False
+    signal_confluence_min_sources: int = 2
+    signal_confluence_ttl_seconds: float = 300.0
+
     # Multi-agent decision pipeline (Phase 3, strangler). Detections are handed to the
     # ScannerAgent/SizingAgent/ExecutionAgent pipeline (queue-backed workers) so a slow
     # AI eval or trade never stalls ingestion of subsequent launches. ON by default as
@@ -591,6 +598,15 @@ class BotConfig:
         )
         self.multi_agent_pipeline_enabled = _env_bool(
             "MULTI_AGENT_PIPELINE_ENABLED", self.multi_agent_pipeline_enabled
+        )
+        self.signal_confluence_enabled = _env_bool(
+            "SIGNAL_CONFLUENCE_ENABLED", self.signal_confluence_enabled
+        )
+        self.signal_confluence_min_sources = _env_int(
+            "SIGNAL_CONFLUENCE_MIN_SOURCES", self.signal_confluence_min_sources
+        )
+        self.signal_confluence_ttl_seconds = _env_float(
+            "SIGNAL_CONFLUENCE_TTL_SECONDS", self.signal_confluence_ttl_seconds
         )
         self.arbitrage_monitor_enabled = _env_bool(
             "ARBITRAGE_MONITOR_ENABLED", self.arbitrage_monitor_enabled
