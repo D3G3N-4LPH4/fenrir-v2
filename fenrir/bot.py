@@ -170,6 +170,23 @@ class FenrirBot:
                 ttl_seconds=config.signal_confluence_ttl_seconds
             )
 
+        # Read-only forward-price sample collector (empirical phase). When enabled, each
+        # flagged token's snapshot + forward price path is recorded to JSONL for the
+        # backtester. Never trades. Collection runs as bounded background tasks.
+        self.sample_collector: Any = None
+        self._collect_tasks: set[asyncio.Task] = set()
+        self._collecting: set[str] = set()
+        if config.sample_collection_enabled:
+            from fenrir.backtest import ForwardPriceCollector
+
+            self.sample_collector = ForwardPriceCollector(
+                get_price=self._feed_price,
+                out_path=config.sample_collection_path,
+                frame_seconds=config.sample_collection_frame_seconds,
+                max_frames=config.sample_collection_frames,
+                logger=self.logger,
+            )
+
         # Smart-money / whale wallet tracker (follow curated wallets; opt-in).
         self.smart_money = SmartMoneyTracker(
             config, self.solana_client, self.trading_engine.pumpfun, self.logger
@@ -631,7 +648,37 @@ class FenrirBot:
         if self.signal_aggregator is not None and claimed_signals:
             await self._surface_confluence(token_addr, symbol, claimed_signals)
 
+        # Read-only: collect a forward-price sample for calibration (signal strategies
+        # only — they carry the MarketData snapshot the replay needs).
+        if self.sample_collector is not None and claimed_signals and market_data is not None:
+            self._spawn_collection(token_addr, market_data, symbol)
+
         return routed
+
+    async def _feed_price(self, token_address: str) -> float | None:
+        """Read-only price bridge for the sample collector (SOL per token)."""
+        quote = await self.price_feed.get_price(token_address)
+        return quote.price if quote is not None else None
+
+    def _spawn_collection(self, token_addr: str, market_data: Any, symbol: str) -> None:
+        """Start a bounded background task collecting this token's forward price path.
+        Deduped per token and capped by sample_collection_max_concurrent."""
+        if self.sample_collector is None or token_addr in self._collecting:
+            return
+        if len(self._collect_tasks) >= self.config.sample_collection_max_concurrent:
+            return
+        self._collecting.add(token_addr)
+        task = asyncio.create_task(self._run_collection(token_addr, market_data, symbol))
+        self._collect_tasks.add(task)
+        task.add_done_callback(self._collect_tasks.discard)
+
+    async def _run_collection(self, token_addr: str, market_data: Any, symbol: str) -> None:
+        try:
+            await self.sample_collector.collect(token_addr, market_data, symbol)
+        except Exception as e:  # noqa: BLE001 - collection is best-effort, never fatal
+            self.logger.debug(f"sample collection failed for {token_addr[:8]}...: {e}")
+        finally:
+            self._collecting.discard(token_addr)
 
     async def _surface_confluence(self, token_addr: str, symbol: str, signals: list[Any]) -> None:
         """Normalize this scan's strategy signals into the aggregator and emit a
@@ -1335,6 +1382,11 @@ class FenrirBot:
         if self._discovery_dex is not None:
             await self._discovery_dex.close()
             self._discovery_dex = None
+        # Cancel any in-flight forward-price collection tasks.
+        for task in list(self._collect_tasks):
+            task.cancel()
+        self._collect_tasks.clear()
+        self._collecting.clear()
         if self.arbitrage_scanner is not None:
             await self.arbitrage_scanner.stop()
         if self._arbitrage_task is not None:

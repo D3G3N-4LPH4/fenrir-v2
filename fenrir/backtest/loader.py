@@ -75,3 +75,20 @@ def load_samples(path: str | Path) -> list[BacktestSample]:
     if not isinstance(records, list):
         return []
     return samples_from_dicts(records)
+
+
+def load_jsonl(path: str | Path) -> list[BacktestSample]:
+    """Load samples from a JSONL file (one record per line) — the format the
+    ForwardPriceCollector appends. Blank and malformed lines are skipped."""
+    records: list[dict[str, Any]] = []
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            obj = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            records.append(obj)
+    return samples_from_dicts(records)
