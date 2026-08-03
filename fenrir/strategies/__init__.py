@@ -15,6 +15,7 @@ config explicitly enables them.
 
 from fenrir.strategies.base import StrategyState, TradeParams, TradingStrategy
 from fenrir.strategies.graduation import GraduationStrategy
+from fenrir.strategies.mean_reversion import MeanReversionStrategy
 from fenrir.strategies.migration_snipe import MigrationSniperStrategy
 from fenrir.strategies.momentum import MomentumStrategy
 from fenrir.strategies.narrative import NarrativeTrackerStrategy
@@ -34,6 +35,7 @@ STRATEGY_REGISTRY: dict[str, type[TradingStrategy]] = {
     "graduation": GraduationStrategy,
     "migration_snipe": MigrationSniperStrategy,
     "momentum": MomentumStrategy,
+    "mean_reversion": MeanReversionStrategy,
     "reversal": ReversalStrategy,
     "volume_anomaly": VolumeAnomalyStrategy,
     "narrative_tracker": NarrativeTrackerStrategy,
@@ -46,6 +48,7 @@ DEFAULT_DISABLED_STRATEGIES: frozenset[str] = frozenset(
     {
         "migration_snipe",
         "momentum",
+        "mean_reversion",
         "reversal",
         "volume_anomaly",
         "narrative_tracker",
@@ -78,6 +81,7 @@ __all__ = [
     "GraduationStrategy",
     "MigrationSniperStrategy",
     "MomentumStrategy",
+    "MeanReversionStrategy",
     "ReversalStrategy",
     "VolumeAnomalyStrategy",
     "NarrativeTrackerStrategy",
