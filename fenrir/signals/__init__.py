@@ -11,6 +11,7 @@ from fenrir.signals.adapters import (
     normalize_signal,
     normalize_strategy_signal,
 )
+from fenrir.signals.aggregator import ConfluenceResult, SignalAggregator
 from fenrir.signals.models import Signal, SignalDirection
 
 __all__ = [
@@ -19,4 +20,6 @@ __all__ = [
     "normalize_signal",
     "normalize_strategy_signal",
     "normalize_arbitrage",
+    "SignalAggregator",
+    "ConfluenceResult",
 ]
