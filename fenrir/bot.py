@@ -50,6 +50,7 @@ from fenrir.events.types import (
     buy_executed_event,
     error_event,
     sell_executed_event,
+    signal_confluence_event,
     token_detected_event,
     trade_failed_event,
 )
@@ -157,6 +158,17 @@ class FenrirBot:
         self._arb_dex: Any = None  # DexScreener provider for the arb monitor (closed on stop)
         # Bounded ring of recently-detected tokens the arb monitor can sample.
         self._recent_tokens: deque[str] = deque(maxlen=100)
+
+        # Read-only signal confluence surfacing (Phase 5.3). Collects normalized signals
+        # over a window and emits SIGNAL_CONFLUENCE when independent strategies agree.
+        # Never changes sizing/execution. Built only when enabled.
+        self.signal_aggregator: Any = None
+        if config.signal_confluence_enabled:
+            from fenrir.signals import SignalAggregator
+
+            self.signal_aggregator = SignalAggregator(
+                ttl_seconds=config.signal_confluence_ttl_seconds
+            )
 
         # Smart-money / whale wallet tracker (follow curated wallets; opt-in).
         self.smart_money = SmartMoneyTracker(
@@ -569,6 +581,7 @@ class FenrirBot:
         # Route through each active strategy.
         routed: list[tuple[TradingStrategy, str | None]] = []
         active_ids: list[str] = []
+        claimed_signals: list[Any] = []  # bespoke signals, for confluence surfacing
         for strategy in self.strategies:
             if not strategy.state.active or strategy.state.paused:
                 continue
@@ -581,6 +594,7 @@ class FenrirBot:
                     signal = sig_strat.evaluate_token(token_data, market_data)
                     if signal is None:
                         continue
+                    claimed_signals.append(signal)
                     routed.append((strategy, sig_strat.build_ai_context(signal)))
                 else:
                     # Classic path: cheap token_data pre-filter, then AI.
@@ -612,7 +626,44 @@ class FenrirBot:
                     f"No active strategy evaluated ${symbol} "
                     f"(active: {', '.join(active_ids) or 'none'})"
                 )
+
+        # Read-only: surface when independent strategies agree on this token.
+        if self.signal_aggregator is not None and claimed_signals:
+            await self._surface_confluence(token_addr, symbol, claimed_signals)
+
         return routed
+
+    async def _surface_confluence(self, token_addr: str, symbol: str, signals: list[Any]) -> None:
+        """Normalize this scan's strategy signals into the aggregator and emit a
+        SIGNAL_CONFLUENCE event when enough distinct strategies agree. Read-only —
+        never changes sizing or execution."""
+        from fenrir.signals import SignalDirection, normalize_strategy_signal
+        from fenrir.signals.models import Signal as _Signal
+
+        for sig in signals:
+            try:
+                self.signal_aggregator.add(normalize_strategy_signal(sig))
+            except Exception as e:  # noqa: BLE001 - surfacing must never break routing
+                self.logger.debug(f"confluence normalize skipped: {e}")
+
+        confluence = self.signal_aggregator.confluence_for(token_addr, SignalDirection.LONG)
+        if confluence is None:
+            return
+        if confluence.source_count >= self.config.signal_confluence_min_sources:
+            top: _Signal | None = confluence.signals[0] if confluence.signals else None
+            self.logger.info(
+                f"Signal confluence ${symbol}: {confluence.source_count} agree "
+                f"({', '.join(confluence.sources)}) conviction={confluence.combined_strength:.2f}"
+            )
+            await self.event_bus.emit(
+                signal_confluence_event(
+                    token_address=token_addr,
+                    symbol=(top.symbol if top and top.symbol else symbol),
+                    sources=confluence.sources,
+                    combined_strength=confluence.combined_strength,
+                    direction=confluence.direction.value,
+                )
+            )
 
     def _find_any_strategy(self, strategy_id: str) -> TradingStrategy | None:
         """Strategy lookup that also resolves the always-on AI Scout (which lives

@@ -174,6 +174,33 @@ def arbitrage_opportunity_event(
     )
 
 
+def signal_confluence_event(
+    token_address: str,
+    symbol: str,
+    sources: list[str],
+    combined_strength: float,
+    direction: str = "long",
+) -> TradeEvent:
+    """Multiple independent strategies agree on a token (Phase 5.3, read-only surfacing —
+    does not itself trigger a trade)."""
+    return TradeEvent(
+        event_type="SIGNAL_CONFLUENCE",
+        category=EventCategory.STRATEGY,
+        severity=EventSeverity.INFO,
+        token_address=token_address,
+        token_symbol=symbol,
+        data={
+            "sources": sources,
+            "combined_strength": round(combined_strength, 3),
+            "direction": direction,
+        },
+        message=(
+            f"CONFLUENCE ${symbol}: {len(sources)} strategies agree "
+            f"({', '.join(sources)}) — conviction {combined_strength:.2f}"
+        ),
+    )
+
+
 def discovery_event(
     token_address: str,
     symbol: str,
