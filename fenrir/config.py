@@ -239,13 +239,13 @@ class BotConfig:
     # flat settings above.
     tx_profiles_enabled: bool = True
 
-    # Multi-agent decision pipeline (Phase 3, strangler). When enabled, detections
-    # are handed to the ScannerAgent/SizingAgent/ExecutionAgent pipeline (queue-backed
-    # workers) instead of the inline per-launch loop, so a slow AI eval or trade never
-    # stalls ingestion of subsequent launches. Off by default: the inline path is
-    # unchanged. Both paths share the same scan/size/execute helpers, so decisions are
-    # identical — only the concurrency differs.
-    multi_agent_pipeline_enabled: bool = False
+    # Multi-agent decision pipeline (Phase 3, strangler). Detections are handed to the
+    # ScannerAgent/SizingAgent/ExecutionAgent pipeline (queue-backed workers) so a slow
+    # AI eval or trade never stalls ingestion of subsequent launches. ON by default as
+    # of Phase 3.3 — stream parity with the old inline loop is proven (both paths share
+    # the same scan/size/execute helpers, so decisions are identical; only concurrency
+    # differs). Set MULTI_AGENT_PIPELINE_ENABLED=false to fall back to the inline loop.
+    multi_agent_pipeline_enabled: bool = True
 
     # Monitoring
     websocket_enabled: bool = True  # Real-time vs polling

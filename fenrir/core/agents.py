@@ -87,8 +87,21 @@ class PipelineAgent(EventListener):
         raise NotImplementedError
 
     def _log(self, level: str, msg: str) -> None:
-        if self._logger is not None:
-            getattr(self._logger, level, self._logger.info)(msg)
+        # Logging must never crash a worker. FenrirLogger.error has a two-arg
+        # (context, exception) signature, unlike stdlib Logger.error(msg); calling it
+        # with a single string raises TypeError, so fall back to warning/info.
+        if self._logger is None:
+            return
+        method = getattr(self._logger, level, None)
+        try:
+            if callable(method):
+                method(msg)
+                return
+        except TypeError:
+            pass
+        fallback = getattr(self._logger, "warning", None) or getattr(self._logger, "info", None)
+        if callable(fallback):
+            fallback(msg)
 
 
 class ScannerAgent(PipelineAgent):

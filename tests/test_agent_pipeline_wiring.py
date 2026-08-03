@@ -37,6 +37,9 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _make_bot(tmp_path: Path, **overrides: Any) -> FenrirBot:
+    # Default the flag OFF here so the disabled-path cases are explicit; the enabled
+    # cases pass multi_agent_pipeline_enabled=True. (The production default is now True.)
+    overrides.setdefault("multi_agent_pipeline_enabled", False)
     cfg = BotConfig(
         mode=TradingMode.SIMULATION,
         ai_analysis_enabled=False,
@@ -56,12 +59,13 @@ def _classic(strategy_id: str, should_eval: bool = True) -> Any:
 
 
 class TestConfigFlag:
-    def test_defaults_off(self) -> None:
-        assert BotConfig(mode=TradingMode.SIMULATION).multi_agent_pipeline_enabled is False
-
-    def test_env_enables(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("MULTI_AGENT_PIPELINE_ENABLED", "true")
+    def test_defaults_on(self) -> None:
+        # Phase 3.3 cutover: the pipeline is the default decision path.
         assert BotConfig(mode=TradingMode.SIMULATION).multi_agent_pipeline_enabled is True
+
+    def test_env_can_disable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MULTI_AGENT_PIPELINE_ENABLED", "false")
+        assert BotConfig(mode=TradingMode.SIMULATION).multi_agent_pipeline_enabled is False
 
 
 class TestConstruction:

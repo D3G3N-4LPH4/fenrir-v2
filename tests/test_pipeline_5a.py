@@ -56,6 +56,10 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _make_bot(tmp_path: Path, **overrides: Any) -> FenrirBot:
+    # These tests exercise the inline _on_token_launch dispatch, which is the fallback
+    # path now that the multi-agent pipeline is the default (Phase 3.3). Pin it off so
+    # they keep testing the inline loop directly.
+    overrides.setdefault("multi_agent_pipeline_enabled", False)
     cfg = BotConfig(
         mode=TradingMode.SIMULATION,
         ai_analysis_enabled=False,
