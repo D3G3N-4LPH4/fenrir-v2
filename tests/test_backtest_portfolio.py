@@ -186,3 +186,16 @@ class TestLoader:
         path = tmp_path / "samples.json"
         path.write_text(json.dumps([self._record()]), encoding="utf-8")
         assert len(load_samples(path)) == 1
+
+    def test_load_samples_reads_jsonl_fallback(self, tmp_path: Path) -> None:
+        # The collector writes JSONL; the documented CLI calls load_samples on it, so
+        # load_samples must fall back to line-by-line parsing (regression: it used to
+        # raise JSONDecodeError on multi-line JSONL).
+        path = tmp_path / "backtest_samples.jsonl"
+        path.write_text(
+            json.dumps(self._record(TOK_UP)) + "\n" + json.dumps(self._record(TOK_DOWN)) + "\n",
+            encoding="utf-8",
+        )
+        samples = load_samples(path)
+        assert len(samples) == 2
+        assert {s.token_address for s in samples} == {TOK_UP, TOK_DOWN}

@@ -68,9 +68,17 @@ def samples_from_dicts(records: list[dict[str, Any]]) -> list[BacktestSample]:
 
 
 def load_samples(path: str | Path) -> list[BacktestSample]:
-    """Load samples from a JSON file — either a top-level list, or an object with a
-    ``"samples"`` list."""
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    """Load samples from a JSON file (top-level list, or an object with a ``"samples"``
+    list) OR a JSONL file (one record per line — the format the collector writes).
+
+    Whole-file JSON is tried first; if that fails to parse (e.g. a ``.jsonl`` with
+    multiple lines), it falls back to line-by-line JSONL. This keeps the documented
+    ``--samples backtest_samples.jsonl`` invocation working regardless of format."""
+    text = Path(path).read_text(encoding="utf-8")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return load_jsonl(path)  # JSONL fallback (collector output)
     records = data.get("samples", []) if isinstance(data, dict) else data
     if not isinstance(records, list):
         return []
