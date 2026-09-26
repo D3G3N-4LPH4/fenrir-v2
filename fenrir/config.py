@@ -377,6 +377,14 @@ class BotConfig:
     # Where flagged EVM tokens' forward-price samples are written (its own file so EVM
     # edge can be backtested in isolation). Active only when sample_collection_enabled.
     evm_sample_collection_path: str = "evm_samples.jsonl"
+    # EVM safety hard-gate (Phase 7.3): reject honeypot / high-tax / blacklist tokens
+    # before they are flagged. On by default (only ever removes unsafe tokens). fail_open
+    # = don't reject on missing provider data.
+    evm_safety_enabled: bool = True
+    evm_safety_max_buy_tax_pct: float = 10.0
+    evm_safety_max_sell_tax_pct: float = 10.0
+    evm_safety_require_lp_locked: bool = False
+    evm_safety_fail_open: bool = True
 
     # Multi-chain discovery scanner (Solana/ETH/BNB/Base). Discovery-only —
     # surfaces + scores + alerts across chains; execution stays Solana-only. All
@@ -670,6 +678,17 @@ class BotConfig:
         env_evm_sample_path = os.getenv("EVM_SAMPLE_COLLECTION_PATH", "")
         if env_evm_sample_path:
             self.evm_sample_collection_path = env_evm_sample_path
+        self.evm_safety_enabled = _env_bool("EVM_SAFETY_ENABLED", self.evm_safety_enabled)
+        self.evm_safety_max_buy_tax_pct = _env_float(
+            "EVM_SAFETY_MAX_BUY_TAX_PCT", self.evm_safety_max_buy_tax_pct
+        )
+        self.evm_safety_max_sell_tax_pct = _env_float(
+            "EVM_SAFETY_MAX_SELL_TAX_PCT", self.evm_safety_max_sell_tax_pct
+        )
+        self.evm_safety_require_lp_locked = _env_bool(
+            "EVM_SAFETY_REQUIRE_LP_LOCKED", self.evm_safety_require_lp_locked
+        )
+        self.evm_safety_fail_open = _env_bool("EVM_SAFETY_FAIL_OPEN", self.evm_safety_fail_open)
         env_disc_cats = os.getenv("DISCOVERY_SOLANA_CATEGORIES", "")
         if env_disc_cats:
             self.discovery_solana_categories = [
@@ -824,14 +843,24 @@ class BotConfig:
 
         ``brain`` is passed only when evm_use_ai_brain is set (calling the AI per token
         costs credits); otherwise EVM evaluation is pure strategy + signal, no AI cost."""
-        from fenrir.evm import EvmTokenEvaluator
+        from fenrir.evm import EvmSafetyConfig, EvmSafetyGate, EvmTokenEvaluator
         from fenrir.signals import SignalAggregator
 
+        safety_gate = EvmSafetyGate(
+            EvmSafetyConfig(
+                enabled=self.evm_safety_enabled,
+                max_buy_tax_pct=self.evm_safety_max_buy_tax_pct,
+                max_sell_tax_pct=self.evm_safety_max_sell_tax_pct,
+                require_lp_locked=self.evm_safety_require_lp_locked,
+                fail_open=self.evm_safety_fail_open,
+            )
+        )
         return EvmTokenEvaluator(
             strategies=strategies,
             fetch_snapshot=fetch_snapshot,
             aggregator=SignalAggregator(),
             brain=brain if self.evm_use_ai_brain else None,
+            safety_gate=safety_gate,
             logger=logger,
         )
 
