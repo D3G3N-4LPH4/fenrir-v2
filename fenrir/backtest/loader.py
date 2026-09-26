@@ -87,9 +87,14 @@ def load_samples(path: str | Path) -> list[BacktestSample]:
 
 def load_jsonl(path: str | Path) -> list[BacktestSample]:
     """Load samples from a JSONL file (one record per line) — the format the
-    ForwardPriceCollector appends. Blank and malformed lines are skipped."""
+    ForwardPriceCollector appends. A missing file yields no samples (the collector only
+    creates it on the first append, so a quiet window leaves nothing). Blank and
+    malformed lines are skipped."""
+    p = Path(path)
+    if not p.exists():
+        return []
     records: list[dict[str, Any]] = []
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
+    for line in p.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped:
             continue

@@ -143,6 +143,10 @@ class TestJsonlLoader:
         samples = load_jsonl(path)
         assert len(samples) == 1
 
+    def test_missing_file_is_empty(self, tmp_path: Path) -> None:
+        # A quiet window never creates the file — load_jsonl must return [] not raise.
+        assert load_jsonl(tmp_path / "never_written.jsonl") == []
+
 
 class TestConfig:
     def test_defaults_off(self) -> None:
