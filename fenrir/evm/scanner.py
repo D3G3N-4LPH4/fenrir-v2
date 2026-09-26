@@ -34,6 +34,8 @@ class EvmEvaluatorScanner:
         interval_seconds: float = 60.0,
         max_tokens_per_cycle: int = 25,
         event_bus: Any = None,
+        collector: Any = None,
+        max_concurrent_collections: int = 20,
         logger: Any = None,
     ) -> None:
         self.evaluator = evaluator
@@ -43,6 +45,12 @@ class EvmEvaluatorScanner:
         self.interval_seconds = interval_seconds
         self.max_tokens_per_cycle = max_tokens_per_cycle
         self._bus = event_bus
+        # Optional read-only forward-price collector: a flagged EVM token's forward path
+        # is recorded to JSONL for the backtester (never trades). See fenrir.backtest.
+        self._collector = collector
+        self._max_collections = max_concurrent_collections
+        self._collect_tasks: set[asyncio.Task] = set()
+        self._collecting: set[str] = set()
         self._logger = logger
         self._running = False
         self.cycles = 0
@@ -75,7 +83,31 @@ class EvmEvaluatorScanner:
             surfaced += 1
             self.signals_surfaced += 1
             await self._emit(result)
+            self._maybe_collect(result)
         return surfaced
+
+    def _maybe_collect(self, result: Any) -> None:
+        """Spawn a bounded, deduped background forward-price collection for a flagged
+        EVM token (read-only — samples for the backtester, no trade)."""
+        if self._collector is None:
+            return
+        token = result.token_address
+        if token in self._collecting or len(self._collect_tasks) >= self._max_collections:
+            return
+        self._collecting.add(token)
+        task = asyncio.create_task(self._run_collect(result))
+        self._collect_tasks.add(task)
+        task.add_done_callback(self._collect_tasks.discard)
+
+    async def _run_collect(self, result: Any) -> None:
+        try:
+            await self._collector.collect(result.token_address, result.market_data, result.symbol)
+        except Exception as e:  # noqa: BLE001 - collection is best-effort, never fatal
+            self._log(
+                "warning", f"EVM sample collection failed for {result.token_address[:10]}: {e}"
+            )
+        finally:
+            self._collecting.discard(result.token_address)
 
     async def _emit(self, result: Any) -> None:
         confluent = result.confluence is not None and result.confluence.is_confluent()
@@ -117,6 +149,10 @@ class EvmEvaluatorScanner:
 
     async def stop(self) -> None:
         self._running = False
+        for task in list(self._collect_tasks):
+            task.cancel()
+        self._collect_tasks.clear()
+        self._collecting.clear()
 
     def _log(self, level: str, msg: str) -> None:
         if self._logger is None:

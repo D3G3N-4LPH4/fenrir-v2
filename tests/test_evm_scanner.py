@@ -152,6 +152,87 @@ class TestScan:
         assert await sc.scan_once() == 1  # emits nothing, returns count
 
 
+class TestCollection:
+    async def test_spawns_collection_on_flag(self) -> None:
+        ev = _FakeEvaluator({ETH_TOKEN: _eval("ethereum", ["momentum"], [0.6])})
+        collector = SimpleNamespace(collect=AsyncMock(return_value=None))
+        sc = EvmEvaluatorScanner(ev, _source_inner([ETH_TOKEN]), collector=collector)
+        await sc.scan_once()
+        import asyncio
+
+        for _ in range(20):
+            await asyncio.sleep(0.005)
+            if collector.collect.await_count:
+                break
+        collector.collect.assert_awaited_once()
+        # collect(token, market_data, symbol)
+        args = collector.collect.await_args.args
+        assert args[0] == ETH_TOKEN
+        assert isinstance(args[1], MarketData)
+        assert args[2] == "PEPE"
+
+    async def test_no_collection_without_collector(self) -> None:
+        ev = _FakeEvaluator({ETH_TOKEN: _eval("ethereum", ["momentum"], [0.6])})
+        sc = EvmEvaluatorScanner(ev, _source_inner([ETH_TOKEN]))  # no collector
+        assert await sc.scan_once() == 1  # surfaced, but nothing to collect
+
+    async def test_round_trip_flag_to_backtestable_sample(self, tmp_path: Path) -> None:
+        # The money path: an EVM flag → collected forward-price sample → backtest enters.
+        import asyncio
+
+        from fenrir.backtest import ForwardPriceCollector, PortfolioBacktester, load_jsonl
+        from fenrir.discovery.models import Chain, TokenSnapshot
+        from fenrir.evm import EvmTokenEvaluator, snapshot_to_market_data
+        from fenrir.strategies.momentum import MomentumStrategy
+
+        snap = TokenSnapshot(
+            chain=Chain.ETHEREUM,
+            token_address=ETH_TOKEN,
+            symbol="PEPE",
+            dex_id="uniswap",
+            price_usd=1.0,
+            market_cap_usd=5_000_000.0,
+            liquidity_usd=500_000.0,
+            volume_5m_usd=60_000.0,
+            volume_1h_usd=400_000.0,
+            txns_5m_buys=70,
+            txns_5m_sells=30,
+            price_change_5m_pct=2.0,
+            price_change_1h_pct=25.0,
+            price_change_24h_pct=150.0,
+            age_minutes=120.0,
+        )
+
+        async def fetch(token: str, chain: Any = None) -> TokenSnapshot:
+            return snap
+
+        evaluator = EvmTokenEvaluator([MomentumStrategy(BotConfig())], fetch)
+
+        # Collector prices climb to a take-profit so the backtest records a real trade.
+        prices = iter([1.0, 1.3, 1.65, 1.7])
+
+        async def get_price(token: str) -> float:
+            return next(prices)
+
+        out = tmp_path / "evm_samples.jsonl"
+        collector = ForwardPriceCollector(get_price, out, frame_seconds=0, max_frames=4)
+
+        sc = EvmEvaluatorScanner(evaluator, _source_inner([ETH_TOKEN]), collector=collector)
+        await sc.scan_once()
+        for _ in range(30):
+            await asyncio.sleep(0.005)
+            if collector.collected:
+                break
+
+        samples = load_jsonl(out)
+        assert len(samples) == 1
+        # The collected snapshot's MarketData round-trips (momentum still fires on it).
+        assert snapshot_to_market_data(snap).price_change_1h_pct == 25.0
+        res = PortfolioBacktester().run([MomentumStrategy(BotConfig())], samples)
+        assert res.per_strategy["momentum"].samples_entered == 1
+        assert res.combined_metrics.trades == 1
+
+
 class TestConfig:
     def test_defaults_off(self) -> None:
         cfg = BotConfig(mode=TradingMode.SIMULATION)

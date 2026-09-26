@@ -374,6 +374,9 @@ class BotConfig:
     evm_interval_seconds: float = 60.0
     evm_max_tokens_per_cycle: int = 25
     evm_use_ai_brain: bool = False  # call the AI brain per EVM token (costs credits)
+    # Where flagged EVM tokens' forward-price samples are written (its own file so EVM
+    # edge can be backtested in isolation). Active only when sample_collection_enabled.
+    evm_sample_collection_path: str = "evm_samples.jsonl"
 
     # Multi-chain discovery scanner (Solana/ETH/BNB/Base). Discovery-only —
     # surfaces + scores + alerts across chains; execution stays Solana-only. All
@@ -664,6 +667,9 @@ class BotConfig:
             "EVM_MAX_TOKENS_PER_CYCLE", self.evm_max_tokens_per_cycle
         )
         self.evm_use_ai_brain = _env_bool("EVM_USE_AI_BRAIN", self.evm_use_ai_brain)
+        env_evm_sample_path = os.getenv("EVM_SAMPLE_COLLECTION_PATH", "")
+        if env_evm_sample_path:
+            self.evm_sample_collection_path = env_evm_sample_path
         env_disc_cats = os.getenv("DISCOVERY_SOLANA_CATEGORIES", "")
         if env_disc_cats:
             self.discovery_solana_categories = [
