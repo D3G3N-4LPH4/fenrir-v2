@@ -147,6 +147,14 @@ class EvmEvaluatorScanner:
                 self._log("warning", f"EVM scan cycle error: {e}")
             await asyncio.sleep(self.interval_seconds)
 
+    async def drain_collections(self, timeout: float | None = None) -> None:  # noqa: ASYNC109
+        """Wait for in-flight forward-price collection tasks to finish (bounded by
+        ``timeout``). Used at the end of a bounded collection run so samples flagged
+        near the end are not lost. Does not cancel — that's what stop() is for."""
+        pending = [t for t in self._collect_tasks if not t.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=timeout)
+
     async def stop(self) -> None:
         self._running = False
         for task in list(self._collect_tasks):
