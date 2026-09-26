@@ -201,6 +201,35 @@ def signal_confluence_event(
     )
 
 
+def evm_signal_event(
+    token_address: str,
+    chain: str,
+    symbol: str,
+    sources: list[str],
+    combined_strength: float,
+    confluent: bool = False,
+) -> TradeEvent:
+    """An EVM token flagged by one or more strategies (Phase 7, read-only surfacing —
+    on-chain EVM execution is not wired, so this never triggers a trade)."""
+    return TradeEvent(
+        event_type="EVM_SIGNAL",
+        category=EventCategory.STRATEGY,
+        severity=EventSeverity.INFO,
+        token_address=token_address,
+        token_symbol=symbol,
+        data={
+            "chain": chain,
+            "sources": sources,
+            "combined_strength": round(combined_strength, 3),
+            "confluent": confluent,
+        },
+        message=(
+            f"EVM[{chain}] ${symbol}: {', '.join(sources)} "
+            f"(conviction {combined_strength:.2f}{', CONFLUENT' if confluent else ''})"
+        ),
+    )
+
+
 def discovery_event(
     token_address: str,
     symbol: str,

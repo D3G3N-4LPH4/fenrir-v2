@@ -72,9 +72,13 @@ class EvmTokenEvaluator:
         self._brain = brain
         self._logger = logger
 
-    async def evaluate(self, token_address: str, chain: Any) -> EvmEvaluation | None:
+    async def evaluate(self, token_address: str, chain: Any = None) -> EvmEvaluation | None:
         """Fetch the token's snapshot and run it through the strategies (+ optional AI
-        brain). Returns None when the token has no usable snapshot. Read-only."""
+        brain). Returns None when the token has no usable snapshot. Read-only.
+
+        ``chain`` filters the fetch to a chain; ``None`` lets the provider pick the
+        token's most-liquid chain. The result's chain always comes from the fetched
+        snapshot (authoritative), not the requested one."""
         try:
             snapshot = await self._fetch(token_address, chain)
         except Exception as e:  # noqa: BLE001 - a provider hiccup must not raise to the caller
@@ -106,7 +110,7 @@ class EvmTokenEvaluator:
 
         ai_decision = await self._run_brain(token_data) if self._brain is not None else None
 
-        chain_value = getattr(chain, "value", str(chain))
+        chain_value = getattr(snapshot.chain, "value", str(snapshot.chain))
         return EvmEvaluation(
             chain=chain_value,
             token_address=token_address,

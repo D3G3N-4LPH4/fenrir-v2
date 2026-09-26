@@ -364,6 +364,17 @@ class BotConfig:
     arbitrage_min_net_edge_bps: float = 50.0  # threshold to flag as actionable
     arbitrage_interval_seconds: float = 30.0
 
+    # EVM evaluator (Phase 7.1). Read-only: periodically runs EVM tokens (a watchlist)
+    # through the full strategy/signal/brain machinery and surfaces EVM_SIGNAL events.
+    # Never executes on-chain. Off by default. Env: EVM_EVALUATION_ENABLED / EVM_CHAINS /
+    # EVM_WATCHLIST / EVM_INTERVAL_SECONDS / EVM_MAX_TOKENS_PER_CYCLE / EVM_USE_AI_BRAIN.
+    evm_evaluation_enabled: bool = False
+    evm_chains: list[str] = field(default_factory=lambda: ["ethereum", "base", "bnb"])
+    evm_watchlist: list[str] = field(default_factory=list)
+    evm_interval_seconds: float = 60.0
+    evm_max_tokens_per_cycle: int = 25
+    evm_use_ai_brain: bool = False  # call the AI brain per EVM token (costs credits)
+
     # Multi-chain discovery scanner (Solana/ETH/BNB/Base). Discovery-only —
     # surfaces + scores + alerts across chains; execution stays Solana-only. All
     # opt-in and off by default. Env: DISCOVERY_ENABLED / DISCOVERY_CHAINS /
@@ -639,6 +650,20 @@ class BotConfig:
         self.arbitrage_interval_seconds = _env_float(
             "ARBITRAGE_INTERVAL_SECONDS", self.arbitrage_interval_seconds
         )
+        self.evm_evaluation_enabled = _env_bool(
+            "EVM_EVALUATION_ENABLED", self.evm_evaluation_enabled
+        )
+        env_evm_chains = os.getenv("EVM_CHAINS", "")
+        if env_evm_chains:
+            self.evm_chains = [c.strip().lower() for c in env_evm_chains.split(",") if c.strip()]
+        env_evm_watch = os.getenv("EVM_WATCHLIST", "")
+        if env_evm_watch:
+            self.evm_watchlist = [w.strip() for w in env_evm_watch.split(",") if w.strip()]
+        self.evm_interval_seconds = _env_float("EVM_INTERVAL_SECONDS", self.evm_interval_seconds)
+        self.evm_max_tokens_per_cycle = _env_int(
+            "EVM_MAX_TOKENS_PER_CYCLE", self.evm_max_tokens_per_cycle
+        )
+        self.evm_use_ai_brain = _env_bool("EVM_USE_AI_BRAIN", self.evm_use_ai_brain)
         env_disc_cats = os.getenv("DISCOVERY_SOLANA_CATEGORIES", "")
         if env_disc_cats:
             self.discovery_solana_categories = [
@@ -783,6 +808,24 @@ class BotConfig:
             detector=detector,
             size_sol=self.arbitrage_size_sol,
             event_bus=event_bus,
+            logger=logger,
+        )
+
+    def build_evm_evaluator(
+        self, strategies: list[Any], fetch_snapshot: Any, brain: Any = None, logger: Any = None
+    ) -> Any:
+        """Build the read-only EVM token evaluator with its own confluence aggregator.
+
+        ``brain`` is passed only when evm_use_ai_brain is set (calling the AI per token
+        costs credits); otherwise EVM evaluation is pure strategy + signal, no AI cost."""
+        from fenrir.evm import EvmTokenEvaluator
+        from fenrir.signals import SignalAggregator
+
+        return EvmTokenEvaluator(
+            strategies=strategies,
+            fetch_snapshot=fetch_snapshot,
+            aggregator=SignalAggregator(),
+            brain=brain if self.evm_use_ai_brain else None,
             logger=logger,
         )
 
