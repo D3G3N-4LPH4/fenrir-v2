@@ -369,7 +369,7 @@ class BotConfig:
     # Never executes on-chain. Off by default. Env: EVM_EVALUATION_ENABLED / EVM_CHAINS /
     # EVM_WATCHLIST / EVM_INTERVAL_SECONDS / EVM_MAX_TOKENS_PER_CYCLE / EVM_USE_AI_BRAIN.
     evm_evaluation_enabled: bool = False
-    evm_chains: list[str] = field(default_factory=lambda: ["ethereum", "base", "bnb"])
+    evm_chains: list[str] = field(default_factory=lambda: ["ethereum", "base", "bnb", "robinhood"])
     evm_watchlist: list[str] = field(default_factory=list)
     evm_interval_seconds: float = 60.0
     evm_max_tokens_per_cycle: int = 25
