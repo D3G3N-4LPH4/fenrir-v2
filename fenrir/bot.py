@@ -159,6 +159,13 @@ class FenrirBot:
         # Bounded ring of recently-detected tokens the arb monitor can sample.
         self._recent_tokens: deque[str] = deque(maxlen=100)
 
+        # Read-only EVM evaluator (Phase 7.1; built in start() when evm_evaluation_enabled).
+        # Runs EVM watchlist tokens through the strategies/signals/brain; never executes.
+        self.evm_evaluator: Any = None
+        self.evm_scanner: Any = None
+        self._evm_task: asyncio.Task | None = None
+        self._evm_dex: Any = None  # DexScreener provider for the EVM evaluator (closed on stop)
+
         # Read-only signal confluence surfacing (Phase 5.3). Collects normalized signals
         # over a window and emits SIGNAL_CONFLUENCE when independent strategies agree.
         # Never changes sizing/execution. Built only when enabled.
@@ -488,7 +495,36 @@ class FenrirBot:
             self._arbitrage_task = asyncio.create_task(self.arbitrage_scanner.start_scanning())
             tasks.append(self._arbitrage_task)
 
+        # Read-only EVM evaluator — opt-in, surfaces EVM_SIGNAL events, no execution.
+        if self.config.evm_evaluation_enabled:
+            from fenrir.discovery.providers.dexscreener import DexScreenerProvider
+            from fenrir.evm import EvmEvaluatorScanner
+
+            self._evm_dex = DexScreenerProvider()
+            self.evm_evaluator = self.config.build_evm_evaluator(
+                strategies=self.strategies,
+                fetch_snapshot=self._evm_dex.fetch_snapshot,
+                brain=self.claude_brain,
+                logger=self.logger,
+            )
+            self.evm_scanner = EvmEvaluatorScanner(
+                evaluator=self.evm_evaluator,
+                token_source=self._evm_token_source,
+                enabled_chains=set(self.config.evm_chains),
+                interval_seconds=self.config.evm_interval_seconds,
+                max_tokens_per_cycle=self.config.evm_max_tokens_per_cycle,
+                event_bus=self.event_bus,
+                logger=self.logger,
+            )
+            self._evm_task = asyncio.create_task(self.evm_scanner.start_scanning())
+            tasks.append(self._evm_task)
+
         await asyncio.gather(*tasks)
+
+    async def _evm_token_source(self) -> list[str]:
+        """EVM tokens for the evaluator to check: the operator watchlist. Read-only.
+        (A discovery-hits source can be added later.)"""
+        return list(self.config.evm_watchlist)
 
     async def _arb_token_source(self) -> list[str]:
         """Tokens for the arbitrage monitor to check: currently-held positions plus
@@ -1395,6 +1431,14 @@ class FenrirBot:
         if self._arb_dex is not None:
             await self._arb_dex.close()
             self._arb_dex = None
+        if self.evm_scanner is not None:
+            await self.evm_scanner.stop()
+        if self._evm_task is not None:
+            self._evm_task.cancel()
+            self._evm_task = None
+        if self._evm_dex is not None:
+            await self._evm_dex.close()
+            self._evm_dex = None
         await self.trading_engine.close()
         await self.claude_brain.close()
         await self.solana_client.close()
