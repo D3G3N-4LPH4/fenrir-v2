@@ -31,11 +31,17 @@ class Chain(str, Enum):
     ETHEREUM = "ethereum"
     BNB = "bnb"
     BASE = "base"
+    ROBINHOOD = "robinhood"  # Robinhood's EVM L2 (DexScreener chainId "robinhood")
 
     @classmethod
     def from_dexscreener(cls, chain_id: str | None) -> Chain | None:
         """Map a DexScreener ``chainId`` to a :class:`Chain` (None if unsupported)."""
         return _DEXSCREENER_CHAIN_IDS.get((chain_id or "").lower())
+
+    @property
+    def is_evm(self) -> bool:
+        """Whether this is an EVM chain (everything except Solana)."""
+        return self is not Chain.SOLANA
 
 
 # DexScreener chainId → Chain. (DexScreener uses "bsc" for BNB Chain.)
@@ -44,6 +50,7 @@ _DEXSCREENER_CHAIN_IDS: dict[str, Chain] = {
     "ethereum": Chain.ETHEREUM,
     "bsc": Chain.BNB,
     "base": Chain.BASE,
+    "robinhood": Chain.ROBINHOOD,
 }
 
 
