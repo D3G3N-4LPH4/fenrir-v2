@@ -38,10 +38,15 @@ class EvmEvaluation:
     signals: list[Signal] = field(default_factory=list)
     ai_decision: dict[str, Any] | None = None  # populated only when a brain is provided
     confluence: Any = None  # ConfluenceResult | None (only with an aggregator)
+    rejected_reason: str | None = None  # set when the safety gate rejected the token
 
     @property
     def strategy_ids(self) -> list[str]:
         return [s.source for s in self.signals]
+
+    @property
+    def rejected(self) -> bool:
+        return self.rejected_reason is not None
 
     def to_dict(self) -> dict:
         return {
@@ -51,6 +56,7 @@ class EvmEvaluation:
             "signals": [s.to_dict() for s in self.signals],
             "ai_decision": self.ai_decision,
             "confluent": self.confluence is not None,
+            "rejected_reason": self.rejected_reason,
         }
 
 
@@ -63,6 +69,7 @@ class EvmTokenEvaluator:
         fetch_snapshot: SnapshotFetcher,
         aggregator: Any = None,
         brain: Any = None,
+        safety_gate: Any = None,
         logger: Any = None,
     ) -> None:
         # Only market-data-aware (signal) strategies apply to a snapshot-based read.
@@ -70,6 +77,7 @@ class EvmTokenEvaluator:
         self._fetch = fetch_snapshot
         self._aggregator = aggregator
         self._brain = brain
+        self._safety_gate = safety_gate
         self._logger = logger
 
     async def evaluate(self, token_address: str, chain: Any = None) -> EvmEvaluation | None:
@@ -88,6 +96,26 @@ class EvmTokenEvaluator:
             return None
 
         market_data = snapshot_to_market_data(snapshot)
+
+        # Safety hard-gate: reject unsafe tokens (honeypot / tax / blacklist) BEFORE any
+        # strategy sees them, so nothing unsafe is ever flagged or collected.
+        if self._safety_gate is not None:
+            verdict = self._safety_gate.check(getattr(snapshot, "safety", None))
+            if not verdict.passed:
+                self._log(
+                    "info",
+                    f"EVM safety rejected {token_address[:10]}... ({snapshot.symbol}): "
+                    f"{verdict.reason}",
+                )
+                return EvmEvaluation(
+                    chain=getattr(snapshot.chain, "value", str(snapshot.chain)),
+                    token_address=token_address,
+                    symbol=snapshot.symbol,
+                    market_data=market_data,
+                    signals=[],
+                    rejected_reason=verdict.reason,
+                )
+
         token_data = snapshot_to_token_data(snapshot)
 
         signals: list[Signal] = []

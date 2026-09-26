@@ -9,6 +9,7 @@ gated PR).
 
 from fenrir.evm.adapters import snapshot_to_market_data, snapshot_to_token_data
 from fenrir.evm.evaluator import EvmEvaluation, EvmTokenEvaluator
+from fenrir.evm.safety import EvmSafetyConfig, EvmSafetyGate, SafetyVerdict
 from fenrir.evm.scanner import EvmEvaluatorScanner
 
 __all__ = [
@@ -17,4 +18,7 @@ __all__ = [
     "EvmTokenEvaluator",
     "EvmEvaluation",
     "EvmEvaluatorScanner",
+    "EvmSafetyGate",
+    "EvmSafetyConfig",
+    "SafetyVerdict",
 ]
