@@ -507,6 +507,19 @@ class FenrirBot:
                 brain=self.claude_brain,
                 logger=self.logger,
             )
+            # Read-only sample collection for EVM (own file → EVM edge backtested alone),
+            # active only when the master sample-collection switch is on.
+            evm_collector = None
+            if self.config.sample_collection_enabled:
+                from fenrir.backtest import ForwardPriceCollector
+
+                evm_collector = ForwardPriceCollector(
+                    get_price=self._evm_price,
+                    out_path=self.config.evm_sample_collection_path,
+                    frame_seconds=self.config.sample_collection_frame_seconds,
+                    max_frames=self.config.sample_collection_frames,
+                    logger=self.logger,
+                )
             self.evm_scanner = EvmEvaluatorScanner(
                 evaluator=self.evm_evaluator,
                 token_source=self._evm_token_source,
@@ -514,6 +527,8 @@ class FenrirBot:
                 interval_seconds=self.config.evm_interval_seconds,
                 max_tokens_per_cycle=self.config.evm_max_tokens_per_cycle,
                 event_bus=self.event_bus,
+                collector=evm_collector,
+                max_concurrent_collections=self.config.sample_collection_max_concurrent,
                 logger=self.logger,
             )
             self._evm_task = asyncio.create_task(self.evm_scanner.start_scanning())
@@ -525,6 +540,15 @@ class FenrirBot:
         """EVM tokens for the evaluator to check: the operator watchlist. Read-only.
         (A discovery-hits source can be added later.)"""
         return list(self.config.evm_watchlist)
+
+    async def _evm_price(self, token_address: str) -> float | None:
+        """Read-only USD price bridge for the EVM sample collector (DexScreener)."""
+        if self._evm_dex is None:
+            return None
+        snapshot = await self._evm_dex.fetch_snapshot(token_address)
+        if snapshot is None or snapshot.price_usd <= 0:
+            return None
+        return float(snapshot.price_usd)
 
     async def _arb_token_source(self) -> list[str]:
         """Tokens for the arbitrage monitor to check: currently-held positions plus
