@@ -59,8 +59,39 @@ class TestBuildEvmStrategies:
         assert mom.params.min_volume_1h_usd == 20_000.0
         rev = strategies["mean_reversion"]
         assert rev.params.max_age_minutes == 20_160.0
-        # Ratio gates are untouched (calibrated later from data, not guessed).
+        # The 1h momentum threshold (the regime definition) is untouched.
         assert mom.params.min_price_change_1h_pct == 12.0
+        # The unreliable 5m-frame gates are relaxed for slow-chain cadence.
+        assert mom.params.min_price_change_5m_pct == -3.0
+        assert mom.params.min_volume_acceleration == 0.0
+
+
+class TestFiveMinuteCadence:
+    def test_strong_1h_uptrend_with_quiet_5m_fires_on_evm(self) -> None:
+        # The $HYDX case: +32% 1h, buy pressure 0.64, deep liq, but a quiet/pullback 5m
+        # (-1.7%, low 5m volume). Solana momentum rejects on the 5m gates; EVM fires.
+        md = MarketData(
+            token_address=TOKEN,
+            pair_address="P",
+            dex_id="uniswap",
+            age_minutes=3591.0,
+            market_cap_usd=1_000_000.0,
+            price_usd=0.001,
+            liquidity_usd=131_980.0,
+            volume_5m_usd=973.0,  # sparse 5m → accel ~0.19
+            volume_1h_usd=59_941.0,
+            txns_5m_buys=64,
+            txns_5m_sells=36,  # buy pressure 0.64
+            price_change_5m_pct=-1.7,  # quiet 5m pullback
+            price_change_1h_pct=32.0,
+            price_change_24h_pct=298.0,
+        )
+        cfg = BotConfig()
+        assert MomentumStrategy(cfg).evaluate_token({"token_address": TOKEN}, md) is None
+        evm_mom = next(s for s in cfg.build_evm_strategies() if s.strategy_id == "momentum")
+        sig = evm_mom.evaluate_token({"token_address": TOKEN}, md)
+        assert sig is not None
+        assert sig.momentum_score > 0
 
     def test_env_override(self, monkeypatch: Any) -> None:
         monkeypatch.setenv("EVM_MOMENTUM_MAX_AGE_MINUTES", "4000")

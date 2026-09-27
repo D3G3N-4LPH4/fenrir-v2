@@ -395,6 +395,13 @@ class BotConfig:
     evm_mean_reversion_max_age_minutes: float = 20_160.0  # 14 days (vs 2880 min)
     evm_min_liquidity_usd: float = 25_000.0  # vs 50k
     evm_min_volume_1h_usd: float = 20_000.0  # vs 50k
+    # 5-minute-frame momentum gates are unreliable on low-frequency chains: a strong 1h
+    # uptrend on a slow L2 trades sparsely in any given 5 min, so "5m still rising" and
+    # "5m volume surging" reject real trends (verified on $HYDX: +32% 1h, buy pressure
+    # 0.64, but 5m -1.7% / accel 0.19). Relaxed for EVM — the 1h trend + buy pressure +
+    # v1h floor carry the signal; the 1h momentum threshold itself is untouched.
+    evm_momentum_min_5m_pct: float = -3.0  # vs +1.0 (tolerate a mild 5m pullback)
+    evm_momentum_min_volume_acceleration: float = 0.0  # vs 1.2 (5m-accel off on slow chains)
 
     # Multi-chain discovery scanner (Solana/ETH/BNB/Base). Discovery-only —
     # surfaces + scores + alerts across chains; execution stays Solana-only. All
@@ -710,6 +717,12 @@ class BotConfig:
         )
         self.evm_min_liquidity_usd = _env_float("EVM_MIN_LIQUIDITY_USD", self.evm_min_liquidity_usd)
         self.evm_min_volume_1h_usd = _env_float("EVM_MIN_VOLUME_1H_USD", self.evm_min_volume_1h_usd)
+        self.evm_momentum_min_5m_pct = _env_float(
+            "EVM_MOMENTUM_MIN_5M_PCT", self.evm_momentum_min_5m_pct
+        )
+        self.evm_momentum_min_volume_acceleration = _env_float(
+            "EVM_MOMENTUM_MIN_VOLUME_ACCELERATION", self.evm_momentum_min_volume_acceleration
+        )
         env_disc_cats = os.getenv("DISCOVERY_SOLANA_CATEGORIES", "")
         if env_disc_cats:
             self.discovery_solana_categories = [
@@ -875,6 +888,8 @@ class BotConfig:
                             max_age_minutes=self.evm_momentum_max_age_minutes,
                             min_liquidity_usd=self.evm_min_liquidity_usd,
                             min_volume_1h_usd=self.evm_min_volume_1h_usd,
+                            min_price_change_5m_pct=self.evm_momentum_min_5m_pct,
+                            min_volume_acceleration=self.evm_momentum_min_volume_acceleration,
                         ),
                     )
                 )
