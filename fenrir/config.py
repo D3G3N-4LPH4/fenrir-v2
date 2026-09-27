@@ -385,6 +385,16 @@ class BotConfig:
     evm_safety_max_sell_tax_pct: float = 10.0
     evm_safety_require_lp_locked: bool = False
     evm_safety_fail_open: bool = True
+    # EVM strategy cadence overrides. EVM/L2 tokens live hours→days (vs Solana pump.fun
+    # launches that live minutes) and small L2s carry less volume/liquidity, so the
+    # structural Solana gates (age windows, absolute $ floors) are widened here. The
+    # RATIO gates (momentum %, oversold %, buy pressure) keep their defaults — those
+    # define the regime and are meant to be calibrated from collected EVM samples.
+    evm_strategies: list[str] = field(default_factory=lambda: ["momentum", "mean_reversion"])
+    evm_momentum_max_age_minutes: float = 10_080.0  # 7 days (vs 720 min on Solana)
+    evm_mean_reversion_max_age_minutes: float = 20_160.0  # 14 days (vs 2880 min)
+    evm_min_liquidity_usd: float = 25_000.0  # vs 50k
+    evm_min_volume_1h_usd: float = 20_000.0  # vs 50k
 
     # Multi-chain discovery scanner (Solana/ETH/BNB/Base). Discovery-only —
     # surfaces + scores + alerts across chains; execution stays Solana-only. All
@@ -689,6 +699,17 @@ class BotConfig:
             "EVM_SAFETY_REQUIRE_LP_LOCKED", self.evm_safety_require_lp_locked
         )
         self.evm_safety_fail_open = _env_bool("EVM_SAFETY_FAIL_OPEN", self.evm_safety_fail_open)
+        env_evm_strats = os.getenv("EVM_STRATEGIES", "")
+        if env_evm_strats:
+            self.evm_strategies = [s.strip() for s in env_evm_strats.split(",") if s.strip()]
+        self.evm_momentum_max_age_minutes = _env_float(
+            "EVM_MOMENTUM_MAX_AGE_MINUTES", self.evm_momentum_max_age_minutes
+        )
+        self.evm_mean_reversion_max_age_minutes = _env_float(
+            "EVM_MEAN_REVERSION_MAX_AGE_MINUTES", self.evm_mean_reversion_max_age_minutes
+        )
+        self.evm_min_liquidity_usd = _env_float("EVM_MIN_LIQUIDITY_USD", self.evm_min_liquidity_usd)
+        self.evm_min_volume_1h_usd = _env_float("EVM_MIN_VOLUME_1H_USD", self.evm_min_volume_1h_usd)
         env_disc_cats = os.getenv("DISCOVERY_SOLANA_CATEGORIES", "")
         if env_disc_cats:
             self.discovery_solana_categories = [
@@ -835,6 +856,44 @@ class BotConfig:
             event_bus=event_bus,
             logger=logger,
         )
+
+    def build_evm_strategies(self) -> list[Any]:
+        """Build the EVM signal strategies with EVM-tuned cadence params (widened age
+        windows + lower $ floors). Ratio gates keep their defaults. Unknown ids in
+        evm_strategies fall back to their registry default construction."""
+        from fenrir.strategies import STRATEGY_REGISTRY
+        from fenrir.strategies.mean_reversion import MeanReversionConfig, MeanReversionStrategy
+        from fenrir.strategies.momentum import MomentumConfig, MomentumStrategy
+
+        out: list[Any] = []
+        for sid in self.evm_strategies:
+            if sid == "momentum":
+                out.append(
+                    MomentumStrategy(
+                        self,
+                        MomentumConfig(
+                            max_age_minutes=self.evm_momentum_max_age_minutes,
+                            min_liquidity_usd=self.evm_min_liquidity_usd,
+                            min_volume_1h_usd=self.evm_min_volume_1h_usd,
+                        ),
+                    )
+                )
+            elif sid == "mean_reversion":
+                out.append(
+                    MeanReversionStrategy(
+                        self,
+                        MeanReversionConfig(
+                            max_age_minutes=self.evm_mean_reversion_max_age_minutes,
+                            min_liquidity_usd=self.evm_min_liquidity_usd,
+                            min_volume_1h_usd=self.evm_min_volume_1h_usd,
+                        ),
+                    )
+                )
+            else:
+                cls: Any = STRATEGY_REGISTRY.get(sid)
+                if cls is not None:
+                    out.append(cls(self))
+        return out
 
     def build_evm_evaluator(
         self, strategies: list[Any], fetch_snapshot: Any, brain: Any = None, logger: Any = None

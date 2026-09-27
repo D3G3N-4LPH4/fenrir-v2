@@ -27,27 +27,16 @@ from typing import Any
 
 from fenrir.backtest import PortfolioBacktester, format_report, load_jsonl
 from fenrir.config import BotConfig
-from fenrir.strategies import STRATEGY_REGISTRY
 
 
-def _build_strategies(ids: list[str], config: BotConfig) -> list[Any]:
-    out: list[Any] = []
-    for sid in ids:
-        cls: Any = STRATEGY_REGISTRY.get(sid)  # concrete ctor takes a BotConfig
-        if cls is None:
-            print(f"unknown strategy '{sid}' (skipped)")
-            continue
-        out.append(cls(config))
-    return out
-
-
-def _report_from_samples(path: str, strategy_ids: list[str], config: BotConfig) -> str:
-    """Backtest whatever samples were collected and render the report. Returns a plain
-    message when nothing was collected (rather than a misleading empty report)."""
+def _report_from_samples(path: str, strategies: list[Any]) -> str:
+    """Backtest whatever samples were collected and render the report, using the SAME
+    (EVM-tuned) strategies that collected them — otherwise the backtest would re-reject
+    the samples on the Solana-tuned defaults. Returns a plain message when nothing was
+    collected (rather than a misleading empty report)."""
     samples = load_jsonl(path)
     if not samples:
         return f"No EVM samples collected in {path} — nothing to report yet."
-    strategies = _build_strategies(strategy_ids, config)
     result = PortfolioBacktester().run(strategies, samples)
     return f"Collected {len(samples)} EVM samples → {path}\n\n" + format_report(result)
 
@@ -96,7 +85,8 @@ async def _main(args: argparse.Namespace) -> int:
 
     config = BotConfig()
     strategy_ids = [s.strip() for s in args.strategies.split(",") if s.strip()]
-    strategies = _build_strategies(strategy_ids, config)
+    config.evm_strategies = strategy_ids  # drive EVM-tuned build for both collect + report
+    strategies = config.build_evm_strategies()
     if not strategies:
         print("no valid strategies")
         return 1
@@ -147,14 +137,14 @@ async def _main(args: argparse.Namespace) -> int:
         except Exception:  # noqa: BLE001,S110
             pass
 
-    print("\n" + _report_from_samples(args.out, strategy_ids, config))
+    print("\n" + _report_from_samples(args.out, strategies))
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="FENRIR EVM collect-and-report (read-only)")
     p.add_argument("--minutes", type=float, default=60.0, help="window length (minutes)")
-    p.add_argument("--chains", default="ethereum,base,bnb")
+    p.add_argument("--chains", default="ethereum,base,bnb,robinhood")
     p.add_argument("--watchlist", default="", help="extra comma-separated token addresses")
     p.add_argument("--strategies", default="momentum,mean_reversion")
     p.add_argument("--interval", type=float, default=60.0, help="seconds between scan cycles")

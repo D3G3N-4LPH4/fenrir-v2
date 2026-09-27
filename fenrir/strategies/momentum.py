@@ -131,10 +131,12 @@ class MomentumStrategy(TradingStrategy):
     max_concurrent_positions = 3
     uses_market_data = True
 
-    def __init__(self, config: BotConfig) -> None:
+    def __init__(self, config: BotConfig, params: MomentumConfig | None = None) -> None:
         super().__init__()
         self.config = config
-        self.params = MomentumConfig()
+        # ``params`` overrides the Solana-tuned defaults (e.g. widened age/floors for a
+        # slower-cadence EVM chain). None keeps the launch-sniper defaults.
+        self.params = params or MomentumConfig()
 
         self._params = TradeParams(
             buy_amount_sol=config.buy_amount_sol,
