@@ -502,7 +502,9 @@ class FenrirBot:
 
             self._evm_dex = DexScreenerProvider()
             self.evm_evaluator = self.config.build_evm_evaluator(
-                strategies=self.strategies,
+                # EVM-tuned strategy instances (widened age/floors for the chain cadence),
+                # not the Solana-tuned self.strategies.
+                strategies=self.config.build_evm_strategies(),
                 fetch_snapshot=self._evm_dex.fetch_snapshot,
                 brain=self.claude_brain,
                 logger=self.logger,

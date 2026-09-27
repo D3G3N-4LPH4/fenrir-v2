@@ -98,7 +98,8 @@ class TestReportHelper:
     def test_report_from_samples(self, tmp_path: Path) -> None:
         path = tmp_path / "evm_samples.jsonl"
         path.write_text(json.dumps(self._record()) + "\n", encoding="utf-8")
-        report = _report_from_samples(str(path), ["momentum"], BotConfig())
+        strategies = BotConfig().build_evm_strategies()
+        report = _report_from_samples(str(path), strategies)
         assert "Collected 1 EVM samples" in report
         assert "FENRIR BACKTEST REPORT" in report
         assert "momentum" in report
@@ -106,5 +107,5 @@ class TestReportHelper:
     def test_report_empty(self, tmp_path: Path) -> None:
         path = tmp_path / "empty.jsonl"
         path.write_text("", encoding="utf-8")
-        report = _report_from_samples(str(path), ["momentum"], BotConfig())
+        report = _report_from_samples(str(path), BotConfig().build_evm_strategies())
         assert "nothing to report" in report
