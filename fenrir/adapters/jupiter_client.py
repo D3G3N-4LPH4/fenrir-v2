@@ -159,7 +159,7 @@ class JupiterClient:
         self._session: aiohttp.ClientSession | None = None
 
     async def __aenter__(self) -> JupiterClient:
-        self._session = aiohttp.ClientSession(
+        self._session = aiohttp.ClientSession(trust_env=True, 
             headers={"x-api-key": self._api_key, "Content-Type": "application/json"},
         )
         return self

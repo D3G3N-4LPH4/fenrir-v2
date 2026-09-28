@@ -262,7 +262,7 @@ class TxConfigManager:
         if self._session is None or self._session.closed:
             import aiohttp
 
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(trust_env=True)
         return self._session
 
     async def close(self) -> None:

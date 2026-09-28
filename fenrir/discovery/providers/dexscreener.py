@@ -56,7 +56,7 @@ class DexScreenerProvider:
         if self._session is None or self._session.closed:
             import aiohttp
 
-            self._session = aiohttp.ClientSession(headers={"User-Agent": "FENRIR/2.0 discovery"})
+            self._session = aiohttp.ClientSession(trust_env=True, headers={"User-Agent": "FENRIR/2.0 discovery"})
         return self._session
 
     async def close(self) -> None:
