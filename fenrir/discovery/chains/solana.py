@@ -167,7 +167,7 @@ class SolanaAdapter:
             if self._session is None or self._session.closed:
                 import aiohttp
 
-                self._session = aiohttp.ClientSession()
+                self._session = aiohttp.ClientSession(trust_env=True)
             url = RUGCHECK_SUMMARY.format(mint=mint)
             async with self._session.get(url, timeout=self.rugcheck_timeout) as resp:
                 if resp.status != 200:

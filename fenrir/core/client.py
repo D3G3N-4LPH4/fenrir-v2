@@ -192,7 +192,7 @@ class SolanaClient:
         }
         try:
             timeout = aiohttp.ClientTimeout(total=RPC_TIMEOUT_SECONDS)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with aiohttp.ClientSession(trust_env=True, timeout=timeout) as session:
                 async with session.post(self.config.rpc_url, json=body) as resp:
                     if resp.status != 200:
                         return []

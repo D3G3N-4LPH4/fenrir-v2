@@ -171,7 +171,7 @@ class MultiAgentPanel:
 
     async def initialize(self) -> None:
         if not self._session:
-            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout))
+            self._session = aiohttp.ClientSession(trust_env=True, timeout=aiohttp.ClientTimeout(total=self.timeout))
 
     async def close(self) -> None:
         if self._session:

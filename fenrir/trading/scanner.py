@@ -118,7 +118,7 @@ class MarketScanner:
         if self._dex_session is None or self._dex_session.closed:
             import aiohttp
 
-            self._dex_session = aiohttp.ClientSession()
+            self._dex_session = aiohttp.ClientSession(trust_env=True)
         return self._dex_session
 
     async def _scan_dex_boosts(

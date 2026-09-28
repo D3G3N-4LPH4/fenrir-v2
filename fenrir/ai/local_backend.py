@@ -171,7 +171,7 @@ class LocalAITradingAnalyst(AITradingAnalyst):
 
         for url in health_urls:
             try:
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession(trust_env=True) as session:
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
                         if resp.status == 200:
                             return (True, f"Local model healthy at {self._base_url}")

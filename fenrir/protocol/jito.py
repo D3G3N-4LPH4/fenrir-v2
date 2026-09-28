@@ -94,7 +94,7 @@ class JitoMEVProtection:
     async def initialize(self):
         """Initialize HTTP session."""
         if not self.session:
-            self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout))
+            self.session = aiohttp.ClientSession(trust_env=True, timeout=aiohttp.ClientTimeout(total=self.timeout))
 
     async def close(self):
         """Close HTTP session."""
