@@ -268,7 +268,18 @@ class ProviderResilientCaller:
                     deadline_s,
                 )
                 if idx != self._preferred_idx:
-                    logger.warning("Model fallback active: now using '%s' (index %d)", model, idx)
+                    if ":free" in model:
+                        logger.warning(
+                            "Free-tier fallback active: now using '%s' (index %d) — "
+                            "paid models are out of credits. Top up OpenRouter credits "
+                            "to restore the primary model.",
+                            model,
+                            idx,
+                        )
+                    else:
+                        logger.warning(
+                            "Model fallback active: now using '%s' (index %d)", model, idx
+                        )
                 self._preferred_idx = idx
                 return result
             except ModelUnavailableError as exc:
