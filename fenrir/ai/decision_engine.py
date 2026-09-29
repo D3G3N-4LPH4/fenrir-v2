@@ -230,7 +230,9 @@ class AITradingAnalyst:
     async def initialize(self):
         """Initialize HTTP session and provider-resilient caller."""
         if not self.session:
-            self.session = aiohttp.ClientSession(trust_env=True, timeout=aiohttp.ClientTimeout(total=self.timeout))
+            self.session = aiohttp.ClientSession(
+                trust_env=True, timeout=aiohttp.ClientTimeout(total=self.timeout)
+            )
         if not self._caller:
             self._caller = ProviderResilientCaller(
                 api_key=self.api_key,

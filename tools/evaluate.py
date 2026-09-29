@@ -10,6 +10,7 @@ Reuses the bot's own discovery stack instead of hand-rolled checks:
 Usage:
   python tools/evaluate.py <token_address> [--chain solana|ethereum|bnb|base|robinhood] [--json]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -91,7 +92,10 @@ def verdict(score_overall: float, results: dict, snap) -> tuple[str, str]:
     if score_overall >= 65:
         return "WORTH A LOOK", f"scores {score_overall:.0f}/100 but fits no FENRIR entry profile"
     if score_overall >= 40:
-        return "NEUTRAL", f"scores {score_overall:.0f}/100 — nothing disqualifying, nothing compelling"
+        return (
+            "NEUTRAL",
+            f"scores {score_overall:.0f}/100 — nothing disqualifying, nothing compelling",
+        )
     return "WEAK", f"scores {score_overall:.0f}/100 — below FENRIR's bar"
 
 
@@ -132,8 +136,10 @@ def report_text(sym, snap, results, breakdown, notes, tags=None) -> str:
         "SAFETY",
     ]
     s = snap.safety
+
     def yn(v):
         return "?" if v is None else ("yes" if v else "no")
+
     lines += [
         f"  honeypot: {yn(s.honeypot)} | buy tax: {s.buy_tax_pct if s.buy_tax_pct is not None else '?'}% | "
         f"sell tax: {s.sell_tax_pct if s.sell_tax_pct is not None else '?'}%",
@@ -153,8 +159,10 @@ def report_text(sym, snap, results, breakdown, notes, tags=None) -> str:
             pb = ", ".join(f"{m.display_name} ({m.strength:.2f})" for m in tags.matches)
             lines += ["", f"PLAYBOOKS: {pb}"]
             if tags.confluent:
-                lines.append(f"  ⚡ confluent ({len(tags.sources)} strategies, "
-                             f"combined {tags.combined_strength:.2f})")
+                lines.append(
+                    f"  ⚡ confluent ({len(tags.sources)} strategies, "
+                    f"combined {tags.combined_strength:.2f})"
+                )
         else:
             lines += ["", "PLAYBOOKS: none of the 6 strategy playbooks fit"]
     return "\n".join(lines)
@@ -187,18 +195,29 @@ async def amain() -> int:
     tags = PlaybookTagger().tag(snap)
 
     if args.json:
-        print(json.dumps({
-            "symbol": snap.symbol, "name": snap.name, "chain": snap.chain.value,
-            "address": snap.token_address,
-            "price_usd": snap.price_usd, "market_cap_usd": snap.market_cap_usd,
-            "liquidity_usd": snap.liquidity_usd, "volume_24h_usd": snap.volume_24h_usd,
-            "filters": {k: {"passed": r.passed, "failures": r.failures, "warnings": r.warnings}
-                        for k, r in results.items()},
-            "playbooks": tags.as_dict(),
-            "score": breakdown.as_dict(),
-            "verdict": verdict(breakdown.overall, results, snap),
-            "notes": notes,
-        }, indent=1))
+        print(
+            json.dumps(
+                {
+                    "symbol": snap.symbol,
+                    "name": snap.name,
+                    "chain": snap.chain.value,
+                    "address": snap.token_address,
+                    "price_usd": snap.price_usd,
+                    "market_cap_usd": snap.market_cap_usd,
+                    "liquidity_usd": snap.liquidity_usd,
+                    "volume_24h_usd": snap.volume_24h_usd,
+                    "filters": {
+                        k: {"passed": r.passed, "failures": r.failures, "warnings": r.warnings}
+                        for k, r in results.items()
+                    },
+                    "playbooks": tags.as_dict(),
+                    "score": breakdown.as_dict(),
+                    "verdict": verdict(breakdown.overall, results, snap),
+                    "notes": notes,
+                },
+                indent=1,
+            )
+        )
     else:
         print(report_text(args.address, snap, results, breakdown, notes, tags))
     return 0

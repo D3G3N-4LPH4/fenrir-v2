@@ -46,6 +46,7 @@ from fenrir.core.positions import Position
 
 class BacktestMode(Enum):
     """Backtesting modes."""
+
     REALISTIC = "realistic"  # Simulates realistic execution
     OPTIMISTIC = "optimistic"  # Assumes perfect fills
     PESSIMISTIC = "pessimistic"  # Adds slippage and delays
@@ -54,6 +55,7 @@ class BacktestMode(Enum):
 @dataclass
 class BacktestConfig:
     """Configuration for backtest run."""
+
     bot_config: BotConfig
     mode: BacktestMode = BacktestMode.REALISTIC
     execution_delay_seconds: float = 2.0
@@ -67,6 +69,7 @@ class BacktestConfig:
 @dataclass
 class BacktestTrade:
     """A simulated trade in backtest."""
+
     timestamp: datetime
     trade_type: str  # "BUY" or "SELL"
     token_mint: str
@@ -80,6 +83,7 @@ class BacktestTrade:
 @dataclass
 class BacktestPosition:
     """A simulated position in backtest."""
+
     token_mint: str
     token_symbol: str
     entry_time: datetime
@@ -107,6 +111,7 @@ class BacktestPosition:
 @dataclass
 class BacktestResults:
     """Results from a backtest run."""
+
     config: BacktestConfig
     start_date: datetime
     end_date: datetime
@@ -134,7 +139,7 @@ class BacktestResults:
             **asdict(self),
             "config": asdict(self.config),
             "positions": [asdict(p) for p in self.positions],
-            "trades": [asdict(t) for t in self.trades]
+            "trades": [asdict(t) for t in self.trades],
         }
 
 
@@ -148,7 +153,7 @@ class BacktestEngine:
         self.historical_data = sorted(data, key=lambda x: x["timestamp"])
 
     def load_from_file(self, filepath: str):
-        with open(filepath, 'r') as f:
+        with open(filepath, "r") as f:
             data = json.load(f)
         self.load_historical_data(data)
 
@@ -156,7 +161,7 @@ class BacktestEngine:
         self,
         config: BacktestConfig,
         start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None
+        end_date: Optional[datetime] = None,
     ) -> BacktestResults:
         data = self._filter_by_date(start_date, end_date)
 
@@ -178,16 +183,18 @@ class BacktestEngine:
                     positions.append(position)
                     capital -= position.entry_amount_sol
 
-                    trades.append(BacktestTrade(
-                        timestamp=position.entry_time,
-                        trade_type="BUY",
-                        token_mint=position.token_mint,
-                        token_symbol=position.token_symbol,
-                        price=position.entry_price,
-                        amount_sol=position.entry_amount_sol,
-                        amount_tokens=position.entry_amount_tokens,
-                        reason="Entry signal"
-                    ))
+                    trades.append(
+                        BacktestTrade(
+                            timestamp=position.entry_time,
+                            trade_type="BUY",
+                            token_mint=position.token_mint,
+                            token_symbol=position.token_symbol,
+                            price=position.entry_price,
+                            amount_sol=position.entry_amount_sol,
+                            amount_tokens=position.entry_amount_tokens,
+                            reason="Entry signal",
+                        )
+                    )
 
             for position in positions[:]:
                 should_exit, reason = self._should_exit_position(
@@ -204,21 +211,26 @@ class BacktestEngine:
                     positions.remove(position)
                     closed_positions.append(position)
 
-                    trades.append(BacktestTrade(
-                        timestamp=exit_time,
-                        trade_type="SELL",
-                        token_mint=position.token_mint,
-                        token_symbol=position.token_symbol,
-                        price=exit_price,
-                        amount_sol=exit_amount_sol,
-                        amount_tokens=position.entry_amount_tokens,
-                        reason=reason
-                    ))
+                    trades.append(
+                        BacktestTrade(
+                            timestamp=exit_time,
+                            trade_type="SELL",
+                            token_mint=position.token_mint,
+                            token_symbol=position.token_symbol,
+                            price=exit_price,
+                            amount_sol=exit_amount_sol,
+                            amount_tokens=position.entry_amount_tokens,
+                            reason=reason,
+                        )
+                    )
 
         results = self._calculate_results(
-            config, closed_positions, trades, capital,
+            config,
+            closed_positions,
+            trades,
+            capital,
             data[0]["timestamp"] if data else datetime.now(),
-            data[-1]["timestamp"] if data else datetime.now()
+            data[-1]["timestamp"] if data else datetime.now(),
         )
 
         return results
@@ -245,8 +257,7 @@ class BacktestEngine:
             position.peak_price = current_price
 
         current_value = position.entry_amount_tokens * current_price
-        pnl_pct = ((current_value - position.entry_amount_sol) /
-                   position.entry_amount_sol * 100)
+        pnl_pct = (current_value - position.entry_amount_sol) / position.entry_amount_sol * 100
 
         if pnl_pct >= config.take_profit_pct:
             return True, f"Take profit at {pnl_pct:.1f}%"
@@ -254,8 +265,7 @@ class BacktestEngine:
         if pnl_pct <= -config.stop_loss_pct:
             return True, f"Stop loss at {pnl_pct:.1f}%"
 
-        drawdown_from_peak = ((position.peak_price - current_price) /
-                             position.peak_price * 100)
+        drawdown_from_peak = (position.peak_price - current_price) / position.peak_price * 100
         if drawdown_from_peak >= config.trailing_stop_pct:
             return True, f"Trailing stop ({drawdown_from_peak:.1f}% from peak)"
 
@@ -283,9 +293,9 @@ class BacktestEngine:
             return None
 
         if config.mode == BacktestMode.REALISTIC:
-            entry_price *= (1 + config.slippage_pct / 100)
+            entry_price *= 1 + config.slippage_pct / 100
         elif config.mode == BacktestMode.PESSIMISTIC:
-            entry_price *= (1 + config.slippage_pct * 2 / 100)
+            entry_price *= 1 + config.slippage_pct * 2 / 100
 
         tokens_received = buy_amount / entry_price
 
@@ -296,12 +306,11 @@ class BacktestEngine:
             entry_price=entry_price,
             entry_amount_sol=buy_amount,
             entry_amount_tokens=tokens_received,
-            peak_price=entry_price
+            peak_price=entry_price,
         )
 
     def _simulate_sell(
-        self, position: BacktestPosition, launch: Dict,
-        config: BacktestConfig, reason: str
+        self, position: BacktestPosition, launch: Dict, config: BacktestConfig, reason: str
     ):
         exit_time = datetime.fromisoformat(launch["timestamp"])
         exit_time += timedelta(seconds=config.execution_delay_seconds)
@@ -312,9 +321,9 @@ class BacktestEngine:
             exit_price = position.entry_price * 0.9
 
         if config.mode == BacktestMode.REALISTIC:
-            exit_price *= (1 - config.slippage_pct / 100)
+            exit_price *= 1 - config.slippage_pct / 100
         elif config.mode == BacktestMode.PESSIMISTIC:
-            exit_price *= (1 - config.slippage_pct * 2 / 100)
+            exit_price *= 1 - config.slippage_pct * 2 / 100
 
         exit_value = position.entry_amount_tokens * exit_price
 
@@ -355,31 +364,47 @@ class BacktestEngine:
         filtered = self.historical_data
 
         if start_date:
-            filtered = [d for d in filtered
-                       if datetime.fromisoformat(d["timestamp"]) >= start_date]
+            filtered = [d for d in filtered if datetime.fromisoformat(d["timestamp"]) >= start_date]
 
         if end_date:
-            filtered = [d for d in filtered
-                       if datetime.fromisoformat(d["timestamp"]) <= end_date]
+            filtered = [d for d in filtered if datetime.fromisoformat(d["timestamp"]) <= end_date]
 
         return filtered
 
     def _calculate_results(
-        self, config: BacktestConfig, positions: List[BacktestPosition],
-        trades: List[BacktestTrade], ending_capital: float,
-        start_date: datetime, end_date: datetime
+        self,
+        config: BacktestConfig,
+        positions: List[BacktestPosition],
+        trades: List[BacktestTrade],
+        ending_capital: float,
+        start_date: datetime,
+        end_date: datetime,
     ) -> BacktestResults:
         starting_capital = config.starting_capital_sol
 
         if not positions:
             return BacktestResults(
-                config=config, start_date=start_date, end_date=end_date,
-                starting_capital_sol=starting_capital, ending_capital_sol=ending_capital,
-                total_pnl_sol=0, total_return_pct=0, total_trades=0,
-                winning_trades=0, losing_trades=0, win_rate=0,
-                avg_win_pct=0, avg_loss_pct=0, largest_win_pct=0,
-                largest_loss_pct=0, max_drawdown_pct=0, sharpe_ratio=0,
-                profit_factor=0, positions=[], trades=[], avg_hold_time_minutes=0
+                config=config,
+                start_date=start_date,
+                end_date=end_date,
+                starting_capital_sol=starting_capital,
+                ending_capital_sol=ending_capital,
+                total_pnl_sol=0,
+                total_return_pct=0,
+                total_trades=0,
+                winning_trades=0,
+                losing_trades=0,
+                win_rate=0,
+                avg_win_pct=0,
+                avg_loss_pct=0,
+                largest_win_pct=0,
+                largest_loss_pct=0,
+                max_drawdown_pct=0,
+                sharpe_ratio=0,
+                profit_factor=0,
+                positions=[],
+                trades=[],
+                avg_hold_time_minutes=0,
             )
 
         total_pnl = ending_capital - starting_capital
@@ -407,16 +432,27 @@ class BacktestEngine:
         avg_hold_time = statistics.mean([cast(int, p.hold_time_minutes) for p in positions])
 
         return BacktestResults(
-            config=config, start_date=start_date, end_date=end_date,
-            starting_capital_sol=starting_capital, ending_capital_sol=ending_capital,
-            total_pnl_sol=total_pnl, total_return_pct=total_return,
-            total_trades=len(positions), winning_trades=len(winners),
-            losing_trades=len(losers), win_rate=win_rate,
-            avg_win_pct=avg_win, avg_loss_pct=avg_loss,
-            largest_win_pct=largest_win, largest_loss_pct=largest_loss,
-            max_drawdown_pct=max_dd, sharpe_ratio=sharpe,
-            profit_factor=profit_factor, positions=positions,
-            trades=trades, avg_hold_time_minutes=avg_hold_time
+            config=config,
+            start_date=start_date,
+            end_date=end_date,
+            starting_capital_sol=starting_capital,
+            ending_capital_sol=ending_capital,
+            total_pnl_sol=total_pnl,
+            total_return_pct=total_return,
+            total_trades=len(positions),
+            winning_trades=len(winners),
+            losing_trades=len(losers),
+            win_rate=win_rate,
+            avg_win_pct=avg_win,
+            avg_loss_pct=avg_loss,
+            largest_win_pct=largest_win,
+            largest_loss_pct=largest_loss,
+            max_drawdown_pct=max_dd,
+            sharpe_ratio=sharpe,
+            profit_factor=profit_factor,
+            positions=positions,
+            trades=trades,
+            avg_hold_time_minutes=avg_hold_time,
         )
 
     def _calculate_sharpe(self, returns: List[float]) -> float:
@@ -426,7 +462,7 @@ class BacktestEngine:
         std_dev = statistics.stdev(returns)
         if std_dev == 0:
             return 0
-        return float((avg_return * 252) / (std_dev * (252 ** 0.5)))
+        return float((avg_return * 252) / (std_dev * (252**0.5)))
 
     def _calculate_max_drawdown(
         self, positions: List[BacktestPosition], starting_capital: float

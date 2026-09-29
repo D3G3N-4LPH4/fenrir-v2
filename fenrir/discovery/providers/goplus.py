@@ -156,12 +156,14 @@ def parse_goplus(res: dict[str, Any]) -> GoPlusSecurity:
         if addr and pct is not None:
             is_contract = h.get("is_contract")
             is_locked = h.get("is_locked")
-            pairs.append((
-                addr,
-                pct,
-                int(is_contract) if isinstance(is_contract, (int, bool)) else None,
-                int(is_locked) if isinstance(is_locked, (int, bool)) else None,
-            ))
+            pairs.append(
+                (
+                    addr,
+                    pct,
+                    int(is_contract) if isinstance(is_contract, int | bool) else None,
+                    int(is_locked) if isinstance(is_locked, int | bool) else None,
+                )
+            )
     if pairs:
         top_pct = max(p for _, p, _, _ in pairs)
 
@@ -204,7 +206,9 @@ class GoPlusProvider:
         if self._session is None or self._session.closed:
             import aiohttp
 
-            self._session = aiohttp.ClientSession(trust_env=True, headers={"User-Agent": "FENRIR/2.0 discovery"})
+            self._session = aiohttp.ClientSession(
+                trust_env=True, headers={"User-Agent": "FENRIR/2.0 discovery"}
+            )
         return self._session
 
     async def close(self) -> None:

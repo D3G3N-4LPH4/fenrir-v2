@@ -155,7 +155,9 @@ class TokenSnapshot:
     # ── Holders / distribution ────────────────────────────────────────
     holder_count: int | None = None
     top_holder_pct: float | None = None  # single largest holder % (pool excluded when known)
-    top10_holder_pct: float | None = None  # top-10 holders % (pool excluded) — concentration / bundle proxy
+    top10_holder_pct: float | None = (
+        None  # top-10 holders % (pool excluded) — concentration / bundle proxy
+    )
     dev_wallet_pct: float | None = None  # creator/deployer holdings %
 
     # ── Solana-specific launch extras (None off Solana) ───────────────

@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 
 from fenrir.config import BotConfig
 from fenrir.signals.adapters import normalize_strategy_signal
 from fenrir.signals.aggregator import SignalAggregator
 from fenrir.signals.models import SignalDirection
 from fenrir.strategies import get_strategy_class
+from fenrir.strategies.base import TradingStrategy
 
 logger = logging.getLogger("FENRIR.Playbooks")
 
@@ -86,9 +88,9 @@ class PlaybookTagger:
 
     def __init__(self, strategy_ids: tuple[str, ...] = PLAYBOOK_STRATEGY_IDS) -> None:
         config = BotConfig()
-        self._strategies: list[tuple[str, object]] = []
+        self._strategies: list[tuple[str, TradingStrategy]] = []
         for sid in strategy_ids:
-            cls = get_strategy_class(sid)
+            cls: Any = get_strategy_class(sid)  # concrete ctor takes a BotConfig
             if cls is None:
                 logger.warning("playbook strategy %s not in registry — skipping", sid)
                 continue
@@ -122,8 +124,7 @@ class PlaybookTagger:
                 sig = strat.evaluate_token(token_data, snapshot)
             except Exception as exc:
                 # One misbehaving strategy never kills the tagging run.
-                logger.debug("playbook %s raised on %s: %s",
-                             sid, snapshot.token_address[:12], exc)
+                logger.debug("playbook %s raised on %s: %s", sid, snapshot.token_address[:12], exc)
                 continue
             if sig is None:
                 continue
@@ -134,15 +135,15 @@ class PlaybookTagger:
                 continue
             self._aggregator.add(norm)
             display = getattr(strat, "display_name", sid)
-            tags.matches.append(PlaybookMatch(
-                strategy_id=sid,
-                display_name=display,
-                strength=norm.strength,
-                rationale=norm.rationale,
-            ))
-        conf = self._aggregator.confluence_for(
-            snapshot.token_address, SignalDirection.LONG
-        )
+            tags.matches.append(
+                PlaybookMatch(
+                    strategy_id=sid,
+                    display_name=display,
+                    strength=norm.strength,
+                    rationale=norm.rationale,
+                )
+            )
+        conf = self._aggregator.confluence_for(snapshot.token_address, SignalDirection.LONG)
         if conf is not None:
             tags.sources = conf.sources
             tags.combined_strength = conf.combined_strength

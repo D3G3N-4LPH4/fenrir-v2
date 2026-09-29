@@ -6,6 +6,7 @@ Usage:
   python tools/telegram_notify.py "message text"
   echo "message text" | python tools/telegram_notify.py
 """
+
 from __future__ import annotations
 
 import os
@@ -30,13 +31,15 @@ def load_env(path: str) -> dict:
 
 def send_message(token: str, chat_id: str, text: str) -> dict:
     import json
+
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     data = urllib.parse.urlencode(
         {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
     ).encode()
     req = urllib.request.Request(url, data=data, method="POST")
     with urllib.request.urlopen(req, timeout=20) as resp:
-        return json.loads(resp.read().decode())
+        result: dict = json.loads(resp.read().decode())
+        return result
 
 
 def main() -> int:

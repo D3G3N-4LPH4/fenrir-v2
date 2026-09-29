@@ -20,6 +20,7 @@ tools/scout.py, each candidate carrying "source": "tg:<title>" or
 Usage:
   python tools/channel_poll.py --state <path> [--web-channels rhutilmate ...] [--min-score 60]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -82,7 +83,9 @@ def clean_html(raw: str) -> str:
 async def fetch_web_posts(session: aiohttp.ClientSession, channel: str) -> list[tuple[int, str]]:
     """Return [(post_id, text)] newest-last from the channel's public preview."""
     url = f"https://t.me/s/{channel}"
-    async with session.get(url, headers={"User-Agent": UA}, timeout=30) as resp:
+    async with session.get(
+        url, headers={"User-Agent": UA}, timeout=aiohttp.ClientTimeout(total=30)
+    ) as resp:
         if resp.status != 200:
             raise RuntimeError(f"t.me/s/{channel} -> HTTP {resp.status}")
         page = await resp.text()
@@ -94,8 +97,8 @@ async def fetch_web_posts(session: aiohttp.ClientSession, channel: str) -> list[
         pid = int(parts[i])
         chunk = parts[i + 1]
         # stop at the next post's marker (already split) — chunk is post-scoped
-        texts = re.findall(r'tgme_widget_message_text[^>]*>(.*?)</div>', chunk, re.S)
-        texts += re.findall(r'tgme_widget_message_caption[^>]*>(.*?)</div>', chunk, re.S)
+        texts = re.findall(r"tgme_widget_message_text[^>]*>(.*?)</div>", chunk, re.S)
+        texts += re.findall(r"tgme_widget_message_caption[^>]*>(.*?)</div>", chunk, re.S)
         text = "\n".join(clean_html(t) for t in texts).strip()
         if "open Telegram to view this post" in text:
             text = ""  # restricted preview: no usable content
@@ -108,11 +111,16 @@ async def poll_tg_api(session: aiohttp.ClientSession, token: str, offset: int):
     # Request every update type we might see and advance the offset past ALL
     # of them. (If we filtered to channel_post only, the offset would creep
     # past join/message updates and orphan them — the chat ID would be lost.)
-    params = {"offset": offset, "timeout": 0,
-              "allowed_updates": json.dumps(["message", "channel_post",
-                                             "my_chat_member"])}
-    async with session.post(f"https://api.telegram.org/bot{token}/getUpdates",
-                            data=params, timeout=35) as resp:
+    params = {
+        "offset": offset,
+        "timeout": 0,
+        "allowed_updates": json.dumps(["message", "channel_post", "my_chat_member"]),
+    }
+    async with session.post(
+        f"https://api.telegram.org/bot{token}/getUpdates",
+        data=params,
+        timeout=aiohttp.ClientTimeout(total=35),
+    ) as resp:
         data = await resp.json()
     if not data.get("ok"):
         raise RuntimeError(f"getUpdates API error: {data}")
@@ -148,8 +156,10 @@ async def evaluate(addr: str, ds, gp, engine, scorer, tagger, min_score):
         "liquidity_usd": round(snap.liquidity_usd, 2),
         "volume_24h_usd": round(snap.volume_24h_usd, 2),
         "age_minutes": round(snap.age_minutes or 0),
-        "buys_1h": snap.txns_1h_buys, "sells_1h": snap.txns_1h_sells,
-        "buys_24h": snap.txns_24h_buys, "sells_24h": snap.txns_24h_sells,
+        "buys_1h": snap.txns_1h_buys,
+        "sells_1h": snap.txns_1h_sells,
+        "buys_24h": snap.txns_24h_buys,
+        "sells_24h": snap.txns_24h_sells,
         "holder_count": snap.holder_count,
         "passed_filters": passed,
         "playbooks": tagger.tag(snap).as_dict(),
@@ -188,7 +198,9 @@ async def amain() -> int:
     errors: list[str] = []
     found: list[tuple[str, str]] = []  # (source, address)
 
-    async with aiohttp.ClientSession(trust_env=True, timeout=aiohttp.ClientTimeout(total=40)) as session:
+    async with aiohttp.ClientSession(
+        trust_env=True, timeout=aiohttp.ClientTimeout(total=40)
+    ) as session:
         # --- Bot API source ---
         if token:
             try:

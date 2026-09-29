@@ -167,7 +167,9 @@ class TelegramAdapter(EventListener):
     async def _send_message(self, text: str) -> None:
         """Send a message via Telegram Bot API."""
         if not self._session:
-            self._session = aiohttp.ClientSession(trust_env=True, timeout=aiohttp.ClientTimeout(total=10))
+            self._session = aiohttp.ClientSession(
+                trust_env=True, timeout=aiohttp.ClientTimeout(total=10)
+            )
 
         if self._breaker:
             try:
@@ -302,7 +304,8 @@ class TelegramAdapterV2:
             logger.warning("[Telegram v2] Not configured — bot_token or chat_id missing")
             return
 
-        self._session = aiohttp.ClientSession(trust_env=True, 
+        self._session = aiohttp.ClientSession(
+            trust_env=True,
             timeout=aiohttp.ClientTimeout(total=15),
         )
         self._running = True
