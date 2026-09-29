@@ -33,6 +33,7 @@ from fenrir.discovery.providers.goplus import GoPlusProvider, distribution_metri
 from fenrir.discovery.providers.perceptor import (
     ROBINHOOD_CHAIN_ID,
     PerceptorProvider,
+    snapshot_context,
 )
 from fenrir.discovery.scoring import ScoringEngine
 
@@ -245,7 +246,10 @@ async def amain() -> int:
                     flush=True,
                 )
             report = await pp.investigate(
-                ROBINHOOD_CHAIN_ID, snap.token_address, timeout_seconds=args.perceptor_timeout
+                ROBINHOOD_CHAIN_ID,
+                snap.token_address,
+                timeout_seconds=args.perceptor_timeout,
+                context=snapshot_context(snap),
             )
         finally:
             await pp.close()

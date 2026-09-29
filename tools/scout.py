@@ -43,6 +43,7 @@ from fenrir.discovery.providers.perceptor import (  # noqa: E402
     ROBINHOOD_CHAIN_ID,
     PerceptorProvider,
     enrich_robinhood_safety,
+    snapshot_context,
 )
 from fenrir.discovery.scoring import ScoringEngine  # noqa: E402
 
@@ -242,7 +243,9 @@ async def evaluate_address(
                 "investigation_id": report.investigation_id,
             }
         else:
-            inv_id = await perceptor.ensure_investigation(ROBINHOOD_CHAIN_ID, snap.token_address)
+            inv_id = await perceptor.ensure_investigation(
+                ROBINHOOD_CHAIN_ID, snap.token_address, snapshot_context(snap)
+            )
             if inv_id:
                 perceptor_info = {"status": "pending", "investigation_id": inv_id}
     if fail or not passed or score.overall < min_score:

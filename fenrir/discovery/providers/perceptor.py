@@ -63,6 +63,17 @@ def _f(value: Any) -> float | None:
         return None
 
 
+def snapshot_context(snap: TokenSnapshot) -> dict[str, Any]:
+    """Small token dict stored with an investigation for later follow-ups."""
+    chain = snap.chain.value if isinstance(snap.chain, Chain) else None
+    return {
+        "symbol": snap.symbol,
+        "name": snap.name,
+        "chain": chain,
+        "dexscreener": (f"https://dexscreener.com/{chain}/{snap.token_address}" if chain else None),
+    }
+
+
 def parse_perceptor(data: Any) -> PerceptorReport | None:
     """Map a full Perceptor investigation result to safety signals (pure).
 
@@ -199,17 +210,25 @@ class PerceptorProvider:
         return None
 
     # -- API --------------------------------------------------------------
-    async def ensure_investigation(self, chain_id: int, address: str) -> str | None:
+    async def ensure_investigation(
+        self, chain_id: int, address: str, context: dict[str, Any] | None = None
+    ) -> str | None:
         """POST an investigation once per address; return its id (fail-open).
 
         Cache hit => no network. Only call for tokens worth the server-side
-        cost (i.e. candidates that cleared FENRIR's filters).
+        cost (i.e. candidates that cleared FENRIR's filters). ``context``
+        (symbol/name/chain/dexscreener) is stored with the entry so a later
+        verdict follow-up can name the token.
         """
         addr = address.lower()
         entry = self._load_cache().get(addr)
         if entry and entry.get("investigation_id"):
-            cached_id: str = entry["investigation_id"]
-            return cached_id
+            if context:
+                entry.setdefault("context", {}).update(
+                    {k: v for k, v in context.items() if v is not None}
+                )
+                self._save_cache()
+            return str(entry["investigation_id"])
         try:
             session = await self._get_session()
             async with session.post(
@@ -231,6 +250,8 @@ class PerceptorProvider:
                 "status": "pending",
                 "report": None,
                 "checked_at": time.time(),
+                "followup_sent": False,
+                "context": {k: v for k, v in (context or {}).items() if v is not None},
             }
             self._save_cache()
             return inv_id
@@ -273,9 +294,10 @@ class PerceptorProvider:
         address: str,
         timeout_seconds: float = 300.0,
         poll_interval: float = 8.0,
+        context: dict[str, Any] | None = None,
     ) -> PerceptorReport | None:
         """Start (or reuse) an investigation and block until it completes."""
-        inv_id = await self.ensure_investigation(chain_id, address)
+        inv_id = await self.ensure_investigation(chain_id, address, context)
         if not inv_id:
             return None
         deadline = time.time() + timeout_seconds
@@ -303,8 +325,9 @@ async def enrich_robinhood_safety(
         return None
     if not snap.safety.is_empty:
         return provider.cached_report(snap.token_address)
+    ctx = snapshot_context(snap)
     try:
-        await provider.ensure_investigation(ROBINHOOD_CHAIN_ID, snap.token_address)
+        await provider.ensure_investigation(ROBINHOOD_CHAIN_ID, snap.token_address, ctx)
         report = await provider.refresh_report(snap.token_address)
     except Exception as e:  # noqa: BLE001 - fail-open
         logger.debug("Perceptor enrich failed for %s…: %s", snap.token_address[:10], e)
