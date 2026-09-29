@@ -29,6 +29,54 @@ RUGCHECK_SUMMARY = "https://api.rugcheck.xyz/v1/tokens/{mint}/report/summary"
 LP_LOCKED_MIN_PCT = 90.0
 
 
+# Keyless Jupiter token search — fills holder_count / top-holder % for snapshots
+# built from DexScreener (which carries no holder data).
+JUPITER_SEARCH = "https://lite-api.jup.ag/tokens/v2/search"
+
+
+async def enrich_jupiter_holders(snap: TokenSnapshot, timeout_seconds: float = 8.0) -> bool:
+    """Attach holder_count + top_holder_pct from Jupiter's token search.
+
+    Used by the scout path, whose Solana snapshots come from DexScreener and
+    otherwise have no holder data (so the holder/distribution filter checks
+    would warn-and-pass forever). Fail-open: never raises, returns False when
+    nothing was attached.
+    """
+    try:
+        import aiohttp
+
+        async with aiohttp.ClientSession(trust_env=True) as session:
+            async with session.get(
+                JUPITER_SEARCH,
+                params={"query": snap.token_address},
+                timeout=aiohttp.ClientTimeout(total=timeout_seconds),
+            ) as resp:
+                if resp.status != 200:
+                    return False
+                data = await resp.json()
+    except Exception:  # noqa: BLE001 - fail-open
+        return False
+    toks = data if isinstance(data, list) else (data.get("tokens") or [])
+    if not toks or not isinstance(toks[0], dict):
+        return False
+    tok = toks[0]
+    attached = False
+    if tok.get("holderCount") is not None:
+        try:
+            snap.holder_count = int(tok["holderCount"])
+            attached = True
+        except (TypeError, ValueError):
+            pass
+    audit = tok.get("audit") or {}
+    if audit.get("topHoldersPercentage") is not None:
+        try:
+            snap.top_holder_pct = float(audit["topHoldersPercentage"])
+            attached = True
+        except (TypeError, ValueError):
+            pass
+    return attached
+
+
 def _f(value: Any) -> float | None:
     try:
         return float(value) if value is not None else None
