@@ -93,7 +93,21 @@ def format_scout_alert(cand: dict) -> str:
         lines.append(pb_line)
     cc = cand.get("caller_confluence")
     if cc:
-        lines.append("\U0001f465 caller confluence: " + " + ".join(escape_md(str(x)) for x in cc))
+        lines.append(
+            "\U0001f465 caller confluence: "
+            + " + ".join(escape_md(str(x)) for x in cc)
+        )
+    wb = cand.get("wallet_buys")
+    if wb:
+        labels = [str(w.get("label") or "?") for w in wb]
+        wline = "\U0001f45b wallet buy: " + " + ".join(escape_md(x) for x in labels)
+        spent = [w.get("sol_spent") for w in wb if w.get("sol_spent")]
+        if spent:
+            try:
+                wline += f" (~{sum(float(s) for s in spent):.2f} SOL)"
+            except (TypeError, ValueError):
+                pass
+        lines.append(wline)
     lines.append("")
 
     lines.append(
