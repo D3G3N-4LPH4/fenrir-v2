@@ -37,6 +37,7 @@ class FilterName(str, Enum):
     HIGH_CAP = "high_cap"
     DEGEN_LAUNCH = "degen_launch"
     VOLATILITY_BREAKOUT = "volatility_breakout"
+    VOLUME_SURGE = "volume_surge"
     GRADUATION_WATCH = "graduation_watch"
 
 
@@ -215,6 +216,44 @@ VOLATILITY_BREAKOUT = FilterThresholds(
     require_buys_exceed_sells=True,
 )
 
+VOLUME_SURGE = FilterThresholds(
+    # The higher-cap volume trade: established tokens ($2M–$25M) with violent
+    # volume turnover — the gap between volatility_breakout's $2M ceiling and
+    # high_cap's refusal to touch anything printing +30%/1h. Thesis: when half
+    # the market cap changes hands in a day on buy-leaning flow with deep
+    # liquidity, the tape can absorb real size and the move has room to run.
+    # Volume is the signal here, not the price move — the token may be breaking
+    # out or basing into the flow, so there is no minimum 1h change, only a
+    # terminal-wick guard on the top end.
+    min_market_cap_usd=2_000_000.0,
+    max_market_cap_usd=25_000_000.0,
+    min_age_minutes=12 * 60.0,  # established, not a fresh launch
+    min_liquidity_usd=150_000.0,
+    min_liquidity_to_mcap_pct=5.0,
+    min_volume_24h_usd=2_000_000.0,  # real money moving
+    min_volume_1h_share=0.05,  # tape alive right now
+    min_turnover_24h=0.5,  # the core metric: >=50% of mcap traded today
+    max_turnover_24h=20.0,  # volume coins churn; cap only the absurd
+    min_holder_count=2_000,
+    min_buys_24h=500,
+    # Flow must not be sell-dominated; the 24h buy edge below is the real
+    # accumulation signal (per-pair 1h flow splits across venues, so this stays
+    # at parity rather than demanding a strong edge).
+    min_buy_sell_ratio_1h=1.0,
+    require_buys_exceed_sells=True,
+    # Relaxed vs mid_cap's 8%: at $2M+ the #1 holder is often an exchange
+    # omnibus or LP-adjacent wallet, not a single actor. Concentration risk is
+    # carried by the top-10 cap instead. (Gate-tracker data will validate.)
+    max_top_holder_pct=15.0,
+    max_top10_holder_pct=50.0,
+    max_dev_wallet_pct=5.0,
+    max_price_change_1h_pct=80.0,  # heat is fine; the terminal wick is not
+    # Same reasoning as HIGH_CAP: migrated Raydium LPs report ~0 locked and the
+    # verified list is curated/narrow — universal safety still gates real risk.
+    require_verified=False,
+    require_lp_locked=False,
+)
+
 GRADUATION_WATCH = FilterThresholds(
     # The pre-graduation window: token sits at 50-85% of the pump.fun bonding
     # curve with fresh SOL flowing in. The graduation pump hasn't happened yet
@@ -250,6 +289,7 @@ DEFAULT_THRESHOLDS: dict[FilterName, FilterThresholds] = {
     FilterName.HIGH_CAP: HIGH_CAP,
     FilterName.DEGEN_LAUNCH: DEGEN_LAUNCH,
     FilterName.VOLATILITY_BREAKOUT: VOLATILITY_BREAKOUT,
+    FilterName.VOLUME_SURGE: VOLUME_SURGE,
     FilterName.GRADUATION_WATCH: GRADUATION_WATCH,
 }
 

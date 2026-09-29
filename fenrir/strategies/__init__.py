@@ -28,6 +28,7 @@ from fenrir.strategies.sniper import (
 )
 from fenrir.strategies.volatility_breakout import VolatilityBreakoutStrategy
 from fenrir.strategies.volume_anomaly import VolumeAnomalyStrategy
+from fenrir.strategies.volume_surge import VolumeSurgeStrategy
 
 # Strategy registry: strategy_id -> class
 STRATEGY_REGISTRY: dict[str, type[TradingStrategy]] = {
@@ -43,6 +44,7 @@ STRATEGY_REGISTRY: dict[str, type[TradingStrategy]] = {
     "narrative_tracker": NarrativeTrackerStrategy,
     "degen_ignition": DegenIgnitionStrategy,
     "volatility_breakout": VolatilityBreakoutStrategy,
+    "volume_surge": VolumeSurgeStrategy,
 }
 
 # Strategies enabled unless the operator opts in. The signal-oriented
@@ -58,6 +60,7 @@ DEFAULT_DISABLED_STRATEGIES: frozenset[str] = frozenset(
         "narrative_tracker",
         "degen_ignition",
         "volatility_breakout",
+        "volume_surge",
     }
 )
 
