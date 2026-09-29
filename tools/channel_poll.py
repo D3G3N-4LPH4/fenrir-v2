@@ -40,6 +40,27 @@ from tools.evaluate import enrich_safety  # noqa: E402
 from tools.scout import hard_fail, safety_unknown  # noqa: E402
 from fenrir.discovery.acceleration import AccelTracker  # noqa: E402
 
+
+def _save_confluence(new: dict[str, dict]) -> None:
+    """Merge fresh caller-confluence hits into the shared state file."""
+    path = os.path.expanduser("~/workspace/goals/token-scout-watch/hidden_files/confluence.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data.update(new)
+    # Keep it small: drop anything older than 2h.
+    cutoff = time.time() - 7200
+    data = {a: i for a, i in data.items() if isinstance(i, dict) and float(i.get("ts", 0)) > cutoff}
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
 from fenrir.discovery.playbooks import PlaybookTagger  # noqa: E402
 
 from fenrir.discovery.filters import FilterEngine, FilterName  # noqa: E402
@@ -298,10 +319,13 @@ async def amain() -> int:
     with open(args.state, "w") as f:
         json.dump(state, f)
 
-    # de-dupe addresses, keep first source
+    # de-dupe addresses, keep first source — but remember every source so
+    # caller confluence (2+ independent channels, same contract) is visible.
     uniq: dict[str, str] = {}
+    all_sources: dict[str, list[str]] = {}
     for src, a in found:
         uniq.setdefault(a, src)
+        all_sources.setdefault(a, []).append(src)
 
     ds = DexScreenerProvider(timeout_seconds=15)
     gp = GoPlusProvider(timeout_seconds=10)
@@ -313,6 +337,7 @@ async def amain() -> int:
     candidates: list[dict] = []
     scanned = 0
     try:
+        confluence: dict[str, dict] = {}
         for addr, src in uniq.items():
             cand = await evaluate(
                 addr, ds, gp, engine, scorer, tagger, args.min_score, perceptor, accel
@@ -320,8 +345,14 @@ async def amain() -> int:
             scanned += 1
             if cand:
                 cand["source"] = src
+                srcs = sorted(set(all_sources.get(addr, [src])))
+                if len(srcs) >= 2:
+                    cand["caller_confluence"] = srcs
+                    confluence[addr] = {"sources": srcs, "ts": time.time()}
                 candidates.append(cand)
             await asyncio.sleep(0.4)
+        if confluence:
+            _save_confluence(confluence)
     finally:
         await ds.close()
         await gp.close()

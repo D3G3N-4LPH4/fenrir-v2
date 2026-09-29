@@ -91,6 +91,9 @@ def format_scout_alert(cand: dict) -> str:
         if pb.get("confluent"):
             pb_line += " \u26a1confluent"
         lines.append(pb_line)
+    cc = cand.get("caller_confluence")
+    if cc:
+        lines.append("\U0001f465 caller confluence: " + " + ".join(escape_md(str(x)) for x in cc))
     lines.append("")
 
     lines.append(
