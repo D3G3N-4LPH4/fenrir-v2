@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -30,16 +31,40 @@ def load_env(path: str) -> dict:
 
 
 def send_message(token: str, chat_id: str, text: str) -> dict:
+    """POST to sendMessage with a few quick retries on transport-level failures.
+
+    The sandbox proxy occasionally drops connections mid-request ("Remote end closed
+    connection without response"); a bounded retry with backoff rides through those
+    blips. API-level errors (ok:false) are NOT retried — only connection/timeout
+    failures (a successful POST returns immediately, ok:false and all).
+    """
+    import http.client
     import json
+    import time
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    data = urllib.parse.urlencode(
+    payload = urllib.parse.urlencode(
         {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
     ).encode()
-    req = urllib.request.Request(url, data=data, method="POST")
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        result: dict = json.loads(resp.read().decode())
-        return result
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, data=payload, method="POST")  # noqa: S310 - fixed https Telegram API URL
+            with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310
+                result: dict = json.loads(resp.read().decode())
+                return result
+        except (
+            urllib.error.URLError,
+            http.client.RemoteDisconnected,
+            http.client.HTTPException,
+            TimeoutError,
+            ConnectionError,
+        ) as e:
+            last_exc = e
+            time.sleep(1.5 * (attempt + 1))
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("send_message: no attempt was made")  # unreachable
 
 
 def main() -> int:
