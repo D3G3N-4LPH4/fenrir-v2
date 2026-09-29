@@ -18,7 +18,7 @@ import logging
 
 from fenrir.discovery.models import Chain, TokenSnapshot
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider
-from fenrir.discovery.providers.goplus import GoPlusProvider
+from fenrir.discovery.providers.goplus import GoPlusProvider, distribution_metrics
 
 logger = logging.getLogger("FENRIR.EvmAdapter")
 
@@ -52,8 +52,14 @@ class EvmAdapter:
         snap.safety = sec.safety
         if sec.holder_count is not None:
             snap.holder_count = sec.holder_count
-        if sec.top_holder_pct is not None:
-            snap.top_holder_pct = sec.top_holder_pct
+        # Wallet concentration: distribution_metrics drops AMM infrastructure
+        # (contracts — v2/v3 pools, the v4 PoolManager — plus locked supply),
+        # leaving EOA-held supply, the actual dump risk. top10 doubles as the
+        # concentration/bundle proxy. pair_address is passed as a fallback for
+        # chains where GoPlus omits the is_contract flag.
+        top, top10 = distribution_metrics(sec.holders, {snap.pair_address or ""})
+        snap.top_holder_pct = top if top is not None else sec.top_holder_pct
+        snap.top10_holder_pct = top10
         if sec.dev_wallet_pct is not None:
             snap.dev_wallet_pct = sec.dev_wallet_pct
 

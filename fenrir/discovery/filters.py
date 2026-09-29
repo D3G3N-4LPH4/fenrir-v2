@@ -52,8 +52,23 @@ class FilterThresholds:
     min_holder_count: int | None = None
     max_holder_count: int | None = None
     min_buys_24h: int | None = None
+    # Flow freshness (1h window): buy/sell ratio + share of 24h volume in the last hour.
+    # The ratio is only enforced when the 1h txn sample is big enough to mean something.
+    min_buy_sell_ratio_1h: float | None = None
+    min_volume_1h_share: float | None = None
+    # Turnover: 24h volume / market cap. Too high = churn/wash; too low = dead tape.
+    min_turnover_24h: float | None = None
+    max_turnover_24h: float | None = None
+    # Liquidity depth relative to market cap (%). Absolute floors alone let a
+    # $35k pool "support" anything from $80k to $900k mcap identically.
+    min_liquidity_to_mcap_pct: float | None = None
+    # Chase guard: reject entries going vertical (None = no guard on this window).
+    # Low caps are exempt by design — early volatility IS the low_cap thesis.
+    max_price_change_1h_pct: float | None = None
+    max_price_change_24h_pct: float | None = None
     # Distribution caps (%)
     max_top_holder_pct: float | None = None
+    max_top10_holder_pct: float | None = None  # concentration / bundle proxy (pool excluded)
     max_dev_wallet_pct: float | None = None
     # Solana launch extras (%)
     max_bond_progress_pct: float | None = None
@@ -74,11 +89,17 @@ LOW_CAP_ALPHA = FilterThresholds(
     max_market_cap_usd=75_000.0,
     max_age_minutes=120.0,  # ideal 0–30m, hard cap 2h
     min_liquidity_usd=1_000.0,
+    min_liquidity_to_mcap_pct=5.0,
     min_volume_24h_usd=2_000.0,
+    min_volume_1h_share=0.04,  # ≥4% of daily volume in the last hour = tape is alive
+    min_turnover_24h=0.05,
+    max_turnover_24h=10.0,  # >10x daily churn = wash/churn, not accumulation
     min_holder_count=25,
     max_holder_count=250,
     min_buys_24h=15,
+    min_buy_sell_ratio_1h=1.15,  # needs a real buying edge, not balanced flow
     max_top_holder_pct=12.0,
+    max_top10_holder_pct=70.0,
     max_dev_wallet_pct=10.0,
     max_bond_progress_pct=40.0,
     max_sniper_pct=20.0,
@@ -92,11 +113,19 @@ MID_CAP_MOMENTUM = FilterThresholds(
     min_age_minutes=30.0,
     max_age_minutes=7 * 24 * 60.0,  # 7 days
     min_liquidity_usd=35_000.0,
+    min_liquidity_to_mcap_pct=8.0,
     min_volume_24h_usd=100_000.0,
+    min_volume_1h_share=0.02,
+    min_turnover_24h=0.10,
+    max_turnover_24h=8.0,
     min_holder_count=400,
     max_holder_count=4_000,
     max_top_holder_pct=8.0,
+    max_top10_holder_pct=50.0,
     max_dev_wallet_pct=5.0,
+    min_buy_sell_ratio_1h=1.2,  # 1h edge on top of the 24h buys>sells requirement
+    max_price_change_1h_pct=40.0,  # don't chase the vertical candle
+    max_price_change_24h_pct=150.0,
     min_bond_progress_pct=65.0,
     require_migrated_or_bond=True,  # bond 65–100% OR migrated
     require_buys_exceed_sells=True,
@@ -108,8 +137,14 @@ HIGH_CAP = FilterThresholds(
     min_market_cap_usd=1_000_000.0,
     min_age_minutes=24 * 60.0,  # > 1 day
     min_liquidity_usd=250_000.0,
+    min_liquidity_to_mcap_pct=10.0,
     min_volume_24h_usd=1_000_000.0,
+    max_turnover_24h=5.0,
     min_holder_count=3_000,
+    max_top10_holder_pct=40.0,
+    min_buy_sell_ratio_1h=1.1,
+    max_price_change_1h_pct=30.0,  # established coins shouldn't be vertical
+    max_price_change_24h_pct=100.0,
     # Soft-safety flags are intentionally OFF for established large-caps: RugCheck
     # reports low/zero lpLockedPct for migrated Raydium tokens (LP burned into the
     # pool, not held in a locker) and Jupiter's verified list is curated/narrow, so
@@ -167,6 +202,7 @@ class FilterEngine:
 
         self._check_market(snap, thr, failures)
         self._check_holders(snap, thr, failures, warnings)
+        self._check_flow(snap, thr, failures, warnings)
         self._check_distribution(snap, thr, failures, warnings)
         self._check_solana_extras(snap, thr, failures, warnings)
         self._check_booleans(snap, thr, failures, warnings)
@@ -219,7 +255,74 @@ class FilterEngine:
         snap: TokenSnapshot, thr: FilterThresholds, fails: list[str], warns: list[str]
     ) -> None:
         _cap(snap.top_holder_pct, thr.max_top_holder_pct, "Top holder", fails, warns)
+        _cap(snap.top10_holder_pct, thr.max_top10_holder_pct, "Top-10 holders", fails, warns)
         _cap(snap.dev_wallet_pct, thr.max_dev_wallet_pct, "Dev wallet", fails, warns)
+
+    # Minimum 1h txn sample before the buy/sell ratio is treated as signal.
+    _MIN_1H_TXN_SAMPLE = 10
+
+    @staticmethod
+    def _check_flow(
+        snap: TokenSnapshot, thr: FilterThresholds, fails: list[str], warns: list[str]
+    ) -> None:
+        """Fresh-momentum checks: 1h buy/sell edge, live tape, turnover,
+        liquidity depth relative to mcap, and the anti-chase guard."""
+        # 1h buy/sell edge (stricter and fresher than the 24h buys>sells boolean).
+        if thr.min_buy_sell_ratio_1h is not None:
+            total_1h = snap.txns_1h_buys + snap.txns_1h_sells
+            if total_1h < FilterEngine._MIN_1H_TXN_SAMPLE:
+                warns.append(f"1h txn sample too small ({total_1h})")
+            else:
+                ratio = snap.buy_sell_ratio_1h  # inf when sells==0 and buys>0
+                if ratio is None:
+                    warns.append("1h buy/sell data unavailable")
+                elif ratio < thr.min_buy_sell_ratio_1h:
+                    r = f"{ratio:.2f}" if ratio != float("inf") else "all-buys"
+                    fails.append(f"1h buy/sell {r} < {thr.min_buy_sell_ratio_1h}")
+        # Live tape: share of 24h volume printed in the last hour.
+        if thr.min_volume_1h_share is not None:
+            share = snap.volume_1h_share
+            if share is None:
+                warns.append("1h/24h volume share unavailable")
+            elif share < thr.min_volume_1h_share:
+                fails.append(f"1h vol share {share:.1%} < {thr.min_volume_1h_share:.0%}")
+        # Turnover: 24h volume / mcap. Too high = churn/wash, too low = dead tape.
+        if thr.min_turnover_24h is not None or thr.max_turnover_24h is not None:
+            t = snap.turnover_24h
+            if t is None:
+                warns.append("turnover unavailable")
+            else:
+                if thr.min_turnover_24h is not None and t < thr.min_turnover_24h:
+                    fails.append(f"Turnover {t:.2f}x < {thr.min_turnover_24h:.2f}x")
+                if thr.max_turnover_24h is not None and t > thr.max_turnover_24h:
+                    fails.append(f"Turnover {t:.1f}x > {thr.max_turnover_24h:.0f}x (churn)")
+        # Liquidity depth relative to market cap.
+        if thr.min_liquidity_to_mcap_pct is not None:
+            if snap.market_cap_usd <= 0:
+                warns.append("liquidity/mcap unavailable")
+            else:
+                depth_pct = snap.liquidity_to_mcap * 100.0
+                if depth_pct < thr.min_liquidity_to_mcap_pct:
+                    fails.append(
+                        f"Liq/mcap {depth_pct:.1f}% < {thr.min_liquidity_to_mcap_pct:.0f}%"
+                    )
+        # Chase guard: don't enter vertical candles.
+        if (
+            thr.max_price_change_1h_pct is not None
+            and snap.price_change_1h_pct > thr.max_price_change_1h_pct
+        ):
+            fails.append(
+                f"1h change +{snap.price_change_1h_pct:.0f}% > "
+                f"+{thr.max_price_change_1h_pct:.0f}% (vertical — don't chase)"
+            )
+        if (
+            thr.max_price_change_24h_pct is not None
+            and snap.price_change_24h_pct > thr.max_price_change_24h_pct
+        ):
+            fails.append(
+                f"24h change +{snap.price_change_24h_pct:.0f}% > "
+                f"+{thr.max_price_change_24h_pct:.0f}% (vertical — don't chase)"
+            )
 
     @staticmethod
     def _check_solana_extras(

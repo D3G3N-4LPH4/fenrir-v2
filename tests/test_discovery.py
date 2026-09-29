@@ -33,11 +33,17 @@ def _low_cap_pass() -> TokenSnapshot:
         market_cap_usd=20_000,
         liquidity_usd=5_000,
         volume_24h_usd=10_000,
+        volume_1h_usd=2_000,
         age_minutes=15,
         holder_count=100,
         txns_24h_buys=50,
         txns_24h_sells=10,
+        txns_1h_buys=30,
+        txns_1h_sells=10,
+        price_change_1h_pct=10.0,
+        price_change_24h_pct=25.0,
         top_holder_pct=8.0,
+        top10_holder_pct=40.0,
         dev_wallet_pct=5.0,
         bond_progress_pct=20.0,
         sniper_pct=10.0,
@@ -53,11 +59,17 @@ def _mid_cap_pass() -> TokenSnapshot:
         market_cap_usd=200_000,
         liquidity_usd=50_000,
         volume_24h_usd=200_000,
+        volume_1h_usd=10_000,
         age_minutes=60 * 24,
         holder_count=1_000,
         txns_24h_buys=100,
         txns_24h_sells=50,
+        txns_1h_buys=40,
+        txns_1h_sells=20,
+        price_change_1h_pct=5.0,
+        price_change_24h_pct=30.0,
         top_holder_pct=6.0,
+        top10_holder_pct=30.0,
         dev_wallet_pct=4.0,
         migrated=True,
         safety=_safe(),
@@ -71,10 +83,16 @@ def _high_cap_pass() -> TokenSnapshot:
         market_cap_usd=5_000_000,
         liquidity_usd=500_000,
         volume_24h_usd=2_000_000,
+        volume_1h_usd=100_000,
         age_minutes=60 * 24 * 10,
         holder_count=5_000,
         txns_24h_buys=400,
         txns_24h_sells=300,
+        txns_1h_buys=60,
+        txns_1h_sells=40,
+        price_change_1h_pct=3.0,
+        price_change_24h_pct=15.0,
+        top10_holder_pct=25.0,
         safety=_safe(),
     )
 
@@ -221,6 +239,97 @@ class TestFilters:
         assert engine.evaluate(snap, FilterName.LOW_CAP_ALPHA).passed
 
 
+class TestFlowChecks:
+    """The 2026-09 filter hardening: 1h edge, turnover, chase guard, depth, concentration."""
+
+    def setup_method(self) -> None:
+        self.engine = FilterEngine()
+
+    def test_balanced_1h_flow_fails_low_cap(self) -> None:
+        snap = _low_cap_pass()
+        snap.txns_1h_buys, snap.txns_1h_sells = 20, 20  # ratio 1.0 < 1.15
+        res = self.engine.evaluate(snap, FilterName.LOW_CAP_ALPHA)
+        assert not res.passed
+        assert any("1h buy/sell" in f for f in res.failures)
+
+    def test_tiny_1h_sample_warns_not_fails(self) -> None:
+        snap = _low_cap_pass()
+        snap.txns_1h_buys, snap.txns_1h_sells = 3, 2  # real but tiny sample
+        res = self.engine.evaluate(snap, FilterName.LOW_CAP_ALPHA)
+        assert res.passed
+        assert any("sample too small" in w for w in res.warnings)
+
+    def test_churn_turnover_fails(self) -> None:
+        snap = _low_cap_pass()
+        snap.volume_24h_usd = 300_000  # 15x turnover on $20k mcap
+        snap.volume_1h_usd = 60_000  # keep the live-tape check passing
+        res = self.engine.evaluate(snap, FilterName.LOW_CAP_ALPHA)
+        assert not res.passed
+        assert any("churn" in f for f in res.failures)
+
+    def test_dead_tape_turnover_fails(self) -> None:
+        snap = _mid_cap_pass()
+        snap.volume_24h_usd = 100_000  # floor volume…
+        snap.market_cap_usd = 900_000  # …on max mcap → 0.11x turnover, still ≥ 0.10
+        snap.volume_1h_usd = 5_000
+        snap.liquidity_usd = 80_000  # keep liq/mcap ≥ 8%
+        assert self.engine.evaluate(snap, FilterName.MID_CAP_MOMENTUM).passed
+        snap.volume_24h_usd = 80_000  # below floor AND turnover 0.089x
+        snap.volume_1h_usd = 4_000
+        res = self.engine.evaluate(snap, FilterName.MID_CAP_MOMENTUM)
+        assert not res.passed
+        assert any("Turnover" in f for f in res.failures)
+
+    def test_thin_relative_liquidity_fails(self) -> None:
+        snap = _mid_cap_pass()
+        snap.liquidity_usd = 35_000  # absolute floor…
+        snap.market_cap_usd = 900_000  # …but only 3.9% of mcap
+        res = self.engine.evaluate(snap, FilterName.MID_CAP_MOMENTUM)
+        assert not res.passed
+        assert any("Liq/mcap" in f for f in res.failures)
+
+    def test_chase_guard_rejects_vertical_mid_cap(self) -> None:
+        snap = _mid_cap_pass()
+        snap.price_change_1h_pct = 45.0
+        res = self.engine.evaluate(snap, FilterName.MID_CAP_MOMENTUM)
+        assert not res.passed
+        assert any("vertical" in f for f in res.failures)
+        snap.price_change_1h_pct = 5.0
+        snap.price_change_24h_pct = 402.0
+        res = self.engine.evaluate(snap, FilterName.MID_CAP_MOMENTUM)
+        assert not res.passed
+
+    def test_low_cap_exempt_from_chase_guard(self) -> None:
+        # Early volatility IS the low_cap thesis — no 1h/24h vertical guard there.
+        snap = _low_cap_pass()
+        snap.price_change_1h_pct = 120.0
+        assert self.engine.evaluate(snap, FilterName.LOW_CAP_ALPHA).passed
+
+    def test_top10_concentration_fails(self) -> None:
+        snap = _mid_cap_pass()
+        snap.top10_holder_pct = 55.0  # > 50% cap
+        res = self.engine.evaluate(snap, FilterName.MID_CAP_MOMENTUM)
+        assert not res.passed
+        assert any("Top-10" in f for f in res.failures)
+
+    def test_distribution_metrics_excludes_infrastructure(self) -> None:
+        from fenrir.discovery.providers.goplus import distribution_metrics
+
+        holders = [
+            ("0xPoolManager", 47.13, 1, 0),  # v4 PoolManager singleton (contract)
+            ("0xdead", 11.2, 0, 1),  # burned (locked)
+            ("0xA", 4.30, 0, 0),
+            ("0xB", 3.69, 0, 0),
+            ("0xUnknown", 2.0, None, None),  # unknown flags → kept (conservative)
+        ]
+        top, top10 = distribution_metrics(holders, {"0xunmatched"})
+        assert top == 4.30
+        assert abs(top10 - (4.30 + 3.69 + 2.0)) < 1e-9
+        # Explicit address exclusion still works when the flag is missing.
+        top2, _ = distribution_metrics([("0xPool", 47.0, None, None)], {"0xpool"})
+        assert top2 is None  # everything excluded → unknown, not zero
+
+
 # ── Scoring ───────────────────────────────────────────────────────────
 
 
@@ -249,6 +358,22 @@ class TestScoring:
         s = TokenSnapshot(chain=Chain.SOLANA, token_address="X", market_cap_usd=100_000)
         b = self.engine.score(s)
         assert 0 < b.overall < 100  # unknowns don't zero it out
+
+    def test_empty_safety_caps_overall(self) -> None:
+        # No provider data at all: even perfect momentum can't earn confidence.
+        s = _mid_cap_pass()
+        s.safety = SafetySignals()  # nothing known
+        assert s.safety.is_empty
+        b = self.engine.score(s)
+        assert b.overall <= 60.0
+        # …but partial data (RugCheck-style) is not "empty" and not capped.
+        s.safety = SafetySignals(
+            mint_disabled=True, freeze_disabled=True, lp_locked_or_burned=True,
+            risk_score=10.0, honeypot=False,
+        )
+        assert not s.safety.is_empty
+        b2 = self.engine.score(s)
+        assert b2.overall > 60.0
 
     def test_weights_shift_overall(self) -> None:
         s = _mid_cap_pass()

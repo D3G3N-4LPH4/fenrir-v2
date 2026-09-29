@@ -30,6 +30,9 @@ GOPLUS_CHAIN_IDS: dict[Chain, str] = {
     Chain.ETHEREUM: "1",
     Chain.BNB: "56",
     Chain.BASE: "8453",
+    # Robinhood Chain (Arbitrum Orbit L2, chain id 4663) — verified live on
+    # GoPlus 2026-09-28. This closes the "safety unknown on Robinhood" gap.
+    Chain.ROBINHOOD: "4663",
 }
 
 _ZERO = "0x0000000000000000000000000000000000000000"
@@ -65,8 +68,47 @@ class GoPlusSecurity:
 
     safety: SafetySignals = field(default_factory=SafetySignals)
     holder_count: int | None = None
-    top_holder_pct: float | None = None
+    top_holder_pct: float | None = None  # raw holders[0] (may be the pool — see below)
     dev_wallet_pct: float | None = None
+    # Top-10 holders as (address, percent, is_contract, is_locked) tuples.
+    # Callers compute wallet concentration via ``distribution_metrics`` —
+    # holders[0] is very often AMM infrastructure (a v2/v3 pool contract, or
+    # the Uniswap v4 PoolManager singleton), which is liquidity, not a whale.
+    holders: list[tuple[str, float, int | None, int | None]] = field(default_factory=list)
+
+
+def distribution_metrics(
+    holders: list[tuple[str, float, int | None, int | None]],
+    exclude_addresses: set[str] | None = None,
+) -> tuple[float | None, float | None]:
+    """(top_holder_pct, top10_holder_pct) over EOA-held supply — the dump risk.
+
+    Pure helper shared by the EVM adapter and the scout's enrich path.
+    Excludes, in order:
+
+    1. Explicit ``exclude_addresses`` (a known pool/pair address).
+    2. Any holder flagged ``is_contract`` — AMM infrastructure (v2/v3 pool
+       contracts, the Uniswap v4 PoolManager singleton) custodies tokens but
+       never market-sells them. Address-matching alone can't catch v4: the
+       PoolManager serves every pool, and DexScreener reports v4 pools by
+       PoolId (bytes32), so there is no pool address to match.
+    3. Holders flagged ``is_locked`` (burned/locked supply can't dump).
+
+    Exclusion needs an explicit positive flag (``== 1``); unknown (``None``)
+    flags keep the holder, so missing data fails conservative instead of
+    silently shrinking the metric.
+    """
+    exclude = {a.lower() for a in (exclude_addresses or set()) if a}
+    wallet = [
+        (a, p)
+        for a, p, is_contract, is_locked in holders
+        if a.lower() not in exclude and is_contract != 1 and is_locked != 1
+    ]
+    if not wallet:
+        return None, None
+    top = max(p for _, p in wallet)
+    top10 = sum(p for _, p in sorted(wallet, key=lambda x: x[1], reverse=True)[:10])
+    return top, top10
 
 
 def _lp_locked_pct(res: dict[str, Any]) -> float | None:
@@ -105,8 +147,23 @@ def parse_goplus(res: dict[str, Any]) -> GoPlusSecurity:
     lp_pct = _lp_locked_pct(res)
     holders = res.get("holders") or []
     top_pct = None
-    if holders and isinstance(holders[0], dict):
-        top_pct = _pct(holders[0].get("percent"))
+    pairs: list[tuple[str, float, int | None, int | None]] = []
+    for h in holders:
+        if not isinstance(h, dict):
+            continue
+        addr = str(h.get("address", ""))
+        pct = _pct(h.get("percent"))
+        if addr and pct is not None:
+            is_contract = h.get("is_contract")
+            is_locked = h.get("is_locked")
+            pairs.append((
+                addr,
+                pct,
+                int(is_contract) if isinstance(is_contract, (int, bool)) else None,
+                int(is_locked) if isinstance(is_locked, (int, bool)) else None,
+            ))
+    if pairs:
+        top_pct = max(p for _, p, _, _ in pairs)
 
     safety = SafetySignals(
         # EVM has no mint/freeze authority; map the closest analogues.
@@ -132,6 +189,7 @@ def parse_goplus(res: dict[str, Any]) -> GoPlusSecurity:
         holder_count=_int(res.get("holder_count")),
         top_holder_pct=top_pct,
         dev_wallet_pct=_pct(res.get("creator_percent")),
+        holders=pairs,
     )
 
 

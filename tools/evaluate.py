@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""FENRIR token evaluator — one-shot verdict for a token address.
+
+Reuses the bot's own discovery stack instead of hand-rolled checks:
+  DexScreenerProvider.fetch_snapshot -> TokenSnapshot (market data)
+  GoPlusProvider (EVM: eth/bnb/base) or RugCheck (solana) -> SafetySignals
+  FilterEngine  -> low_cap_alpha / mid_cap_momentum / high_cap pass-fail
+  ScoringEngine -> 0-100 breakdown (momentum/safety/liquidity/holder/community/risk)
+
+Usage:
+  python tools/evaluate.py <token_address> [--chain solana|ethereum|bnb|base|robinhood] [--json]
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+
+sys.path.insert(0, ".")
+
+from fenrir.discovery.chains.solana import (
+    RUGCHECK_SUMMARY,
+    enrich_jupiter_holders,
+    map_rugcheck_summary,
+)
+from fenrir.discovery.filters import FilterEngine, FilterName
+from fenrir.discovery.models import Chain
+from fenrir.discovery.providers.dexscreener import DexScreenerProvider
+from fenrir.discovery.providers.goplus import GoPlusProvider, distribution_metrics
+from fenrir.discovery.scoring import ScoringEngine
+
+
+async def enrich_safety(snap, goplus: GoPlusProvider) -> list[str]:
+    """Attach contract-safety signals. Returns notes about coverage gaps."""
+    notes: list[str] = []
+    if snap.chain is Chain.SOLANA:
+        try:
+            import aiohttp
+
+            async with aiohttp.ClientSession(trust_env=True) as s:
+                async with s.get(
+                    RUGCHECK_SUMMARY.format(mint=snap.token_address),
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as r:
+                    if r.status == 200:
+                        snap.safety = map_rugcheck_summary(await r.json())
+                    else:
+                        notes.append(f"RugCheck HTTP {r.status} — safety unknown")
+        except Exception as e:  # noqa: BLE001 - fail-open
+            notes.append(f"RugCheck unreachable ({type(e).__name__}) — safety unknown")
+        # Jupiter holder data: DexScreener snapshots carry no holder info, so
+        # without this the holder/distribution filter checks warn-and-pass forever.
+        try:
+            if not await enrich_jupiter_holders(snap):
+                notes.append("Jupiter holder data unavailable — holder checks skipped")
+        except Exception:  # noqa: BLE001 - fail-open
+            notes.append("Jupiter holder lookup failed — holder checks skipped")
+    elif snap.chain.is_evm:
+        sec = await goplus.token_security(snap.chain, snap.token_address)
+        if sec is None:
+            notes.append("GoPlus has no coverage for this chain — safety unknown")
+        else:
+            snap.safety = sec.safety
+            if sec.holder_count:
+                snap.holder_count = sec.holder_count
+            # Wallet concentration: drop AMM infrastructure (contract holders —
+            # v2/v3 pools, the v4 PoolManager — plus locked supply) and keep
+            # EOA-held supply, the actual dump risk. top10 doubles as the
+            # concentration/bundle proxy.
+            top, top10 = distribution_metrics(sec.holders, {snap.pair_address or ""})
+            snap.top_holder_pct = top if top is not None else sec.top_holder_pct
+            snap.top10_holder_pct = top10
+            snap.dev_wallet_pct = sec.dev_wallet_pct
+    return notes
+
+
+def verdict(score_overall: float, results: dict, snap) -> tuple[str, str]:
+    """(label, reason) — FENRIR's read, not financial advice."""
+    s = snap.safety
+    if s.honeypot:
+        return "AVOID", "honeypot: sells are blocked"
+    if (s.sell_tax_pct or 0) > 15 or (s.buy_tax_pct or 0) > 15:
+        return "AVOID", f"punitive tax (buy {s.buy_tax_pct}% / sell {s.sell_tax_pct}%)"
+    if s.mint_disabled is False:
+        return "AVOID", "mint authority live — supply can be inflated"
+    passed = [k for k, r in results.items() if r.passed]
+    if score_overall >= 65 and passed:
+        return "WORTH A LOOK", f"scores {score_overall:.0f}/100, fits FENRIR '{passed[0]}' profile"
+    if score_overall >= 65:
+        return "WORTH A LOOK", f"scores {score_overall:.0f}/100 but fits no FENRIR entry profile"
+    if score_overall >= 40:
+        return "NEUTRAL", f"scores {score_overall:.0f}/100 — nothing disqualifying, nothing compelling"
+    return "WEAK", f"scores {score_overall:.0f}/100 — below FENRIR's bar"
+
+
+def fmt_usd(v: float) -> str:
+    if v >= 1_000_000:
+        return f"${v/1_000_000:.2f}M"
+    if v >= 1_000:
+        return f"${v/1_000:.1f}k"
+    return f"${v:,.0f}"
+
+
+def report_text(sym, snap, results, breakdown, notes) -> str:
+    age = f"{snap.age_minutes:.0f}m" if snap.age_minutes else "?"
+    lines = [
+        f"{snap.symbol} ({snap.name}) — {snap.chain.value} · {snap.token_address[:10]}…",
+        f"Price ${snap.price_usd:.8f} | MCap {fmt_usd(snap.market_cap_usd)} | "
+        f"LP {fmt_usd(snap.liquidity_usd)} | Vol24h {fmt_usd(snap.volume_24h_usd)} | Age {age}",
+        f"Buys/Sells 1h {snap.txns_1h_buys}/{snap.txns_1h_sells} | "
+        f"24h {snap.txns_24h_buys}/{snap.txns_24h_sells} | "
+        f"Holders {snap.holder_count if snap.holder_count is not None else '?'}",
+        "",
+        "FENRIR FILTERS",
+    ]
+    for name in ("low_cap_alpha", "mid_cap_momentum", "high_cap"):
+        r = results[name]
+        status = "PASS" if r.passed else "FAIL"
+        detail = "" if r.passed else " — " + "; ".join(r.failures[:3])
+        lines.append(f"  [{status}] {name}{detail}")
+        for w in r.warnings[:2]:
+            lines.append(f"         warn: {w}")
+    b = breakdown
+    lines += [
+        "",
+        f"SCORE {b.overall:.1f}/100  "
+        f"(momentum {b.momentum:.0f} · safety {b.safety:.0f} · liquidity {b.liquidity:.0f} · "
+        f"holder {b.holder:.0f} · community {b.community:.0f} · risk {b.risk:.0f})",
+        "",
+        "SAFETY",
+    ]
+    s = snap.safety
+    def yn(v):
+        return "?" if v is None else ("yes" if v else "no")
+    lines += [
+        f"  honeypot: {yn(s.honeypot)} | buy tax: {s.buy_tax_pct if s.buy_tax_pct is not None else '?'}% | "
+        f"sell tax: {s.sell_tax_pct if s.sell_tax_pct is not None else '?'}%",
+        f"  mint disabled: {yn(s.mint_disabled)} | ownership renounced: {yn(s.ownership_renounced)} | "
+        f"blacklist: {yn(s.blacklist_present)}",
+        f"  LP locked/burned: {yn(s.lp_locked_or_burned)}"
+        + (f" ({s.lp_locked_pct:.0f}%)" if s.lp_locked_pct is not None else ""),
+    ]
+    if s.risk_flags:
+        lines.append(f"  risk flags: {', '.join(s.risk_flags[:5])}")
+    for n in notes:
+        lines.append(f"  note: {n}")
+    label, reason = verdict(b.overall, results, snap)
+    lines += ["", f"VERDICT: {label} — {reason}"]
+    return "\n".join(lines)
+
+
+async def amain() -> int:
+    ap = argparse.ArgumentParser(description="FENRIR one-shot token evaluator")
+    ap.add_argument("address", help="token contract/mint address")
+    ap.add_argument("--chain", choices=[c.value for c in Chain], default=None)
+    ap.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    args = ap.parse_args()
+
+    chain = Chain(args.chain) if args.chain else None
+    ds = DexScreenerProvider(timeout_seconds=15)
+    gp = GoPlusProvider(timeout_seconds=10)
+    try:
+        snap = await ds.fetch_snapshot(args.address, chain=chain)
+    finally:
+        await ds.close()
+    if snap is None:
+        print("No DexScreener pair found for this address.")
+        return 1
+
+    notes = await enrich_safety(snap, gp)
+    await gp.close()
+
+    engine = FilterEngine()
+    results = {fn.value: engine.evaluate(snap, fn) for fn in FilterName}
+    breakdown = ScoringEngine().score(snap)
+
+    if args.json:
+        print(json.dumps({
+            "symbol": snap.symbol, "name": snap.name, "chain": snap.chain.value,
+            "address": snap.token_address,
+            "price_usd": snap.price_usd, "market_cap_usd": snap.market_cap_usd,
+            "liquidity_usd": snap.liquidity_usd, "volume_24h_usd": snap.volume_24h_usd,
+            "filters": {k: {"passed": r.passed, "failures": r.failures, "warnings": r.warnings}
+                        for k, r in results.items()},
+            "score": breakdown.as_dict(),
+            "verdict": verdict(breakdown.overall, results, snap),
+            "notes": notes,
+        }, indent=1))
+    else:
+        print(report_text(args.address, snap, results, breakdown, notes))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(amain()))

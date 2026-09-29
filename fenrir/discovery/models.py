@@ -79,6 +79,29 @@ class SafetySignals:
     # Free-form risk labels surfaced by the provider (e.g. "mint live").
     risk_flags: list[str] = field(default_factory=list)
 
+    @property
+    def is_empty(self) -> bool:
+        """True when NO safety provider contributed anything.
+
+        Distinct from "unknown on one axis": a Solana token with RugCheck data
+        (mint/freeze/LP/risk_score) is not empty even though honeypot/tax are
+        None. Only a total provider miss counts — that's the blind spot we
+        must not score with confidence.
+        """
+        return all(
+            v is None
+            for v in (
+                self.mint_disabled,
+                self.freeze_disabled,
+                self.lp_locked_or_burned,
+                self.honeypot,
+                self.buy_tax_pct,
+                self.sell_tax_pct,
+                self.blacklist_present,
+                self.risk_score,
+            )
+        )
+
 
 @dataclass
 class TokenSnapshot:
@@ -131,7 +154,8 @@ class TokenSnapshot:
 
     # ── Holders / distribution ────────────────────────────────────────
     holder_count: int | None = None
-    top_holder_pct: float | None = None  # single largest holder %
+    top_holder_pct: float | None = None  # single largest holder % (pool excluded when known)
+    top10_holder_pct: float | None = None  # top-10 holders % (pool excluded) — concentration / bundle proxy
     dev_wallet_pct: float | None = None  # creator/deployer holdings %
 
     # ── Solana-specific launch extras (None off Solana) ───────────────
@@ -170,6 +194,29 @@ class TokenSnapshot:
         """Buy fraction over 24h. 0.5 when no data (neutral)."""
         total = self.txns_24h_total
         return self.txns_24h_buys / total if total > 0 else 0.5
+
+    @property
+    def buy_pressure_1h(self) -> float | None:
+        """Buy fraction over 1h. None when no 1h txn data (neutral unknown)."""
+        total = self.txns_1h_buys + self.txns_1h_sells
+        return self.txns_1h_buys / total if total > 0 else None
+
+    @property
+    def buy_sell_ratio_1h(self) -> float | None:
+        """1h buys/sells ratio. None when no 1h sells AND no buys; inf when buys>0, sells==0."""
+        if self.txns_1h_sells == 0:
+            return float("inf") if self.txns_1h_buys > 0 else None
+        return self.txns_1h_buys / self.txns_1h_sells
+
+    @property
+    def turnover_24h(self) -> float | None:
+        """24h volume / market cap. None when mcap is zero/unknown."""
+        return self.volume_24h_usd / self.market_cap_usd if self.market_cap_usd > 0 else None
+
+    @property
+    def volume_1h_share(self) -> float | None:
+        """Share of 24h volume that happened in the last hour. None when 24h vol is zero."""
+        return self.volume_1h_usd / self.volume_24h_usd if self.volume_24h_usd > 0 else None
 
     @property
     def liquidity_to_mcap(self) -> float:

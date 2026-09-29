@@ -20,6 +20,11 @@ from fenrir.discovery.models import ScoreBreakdown, TokenSnapshot
 
 NEUTRAL = 50.0
 
+# A token no safety provider could evaluate must not earn a confident score,
+# no matter how good its momentum looks. (Unknowns on individual axes already
+# cost points inside _safety; this caps the blind spot itself.)
+MAX_OVERALL_WHEN_SAFETY_EMPTY = 60.0
+
 
 def _scale(value: float, lo: float, hi: float) -> float:
     """Linear map ``value`` in [lo, hi] → [0, 100], clamped."""
@@ -73,6 +78,10 @@ class ScoringEngine:
             + w.community * community
             + w.risk * (100.0 - risk)
         ) / total
+
+        if snap.safety.is_empty:
+            # No provider data at all: cap confidence, don't just average unknowns.
+            overall = min(overall, MAX_OVERALL_WHEN_SAFETY_EMPTY)
 
         return ScoreBreakdown(
             overall=_clamp(overall),
@@ -145,6 +154,9 @@ class ScoringEngine:
         risk += max(0.0, (snap.bundle_pct or 0.0)) * 2.0
         risk += max(0.0, (snap.insider_pct or 0.0)) * 2.0
         risk += max(0.0, (snap.dev_wallet_pct or 0.0) - 3.0) * 2.0
+        # EVM concentration proxy: top-10 share above 30% adds risk scaled to excess.
+        if snap.top10_holder_pct is not None:
+            risk += max(0.0, snap.top10_holder_pct - 30.0) * 1.0
         if snap.safety.honeypot is True:
             risk += 100.0
         if snap.safety.blacklist_present is True:
