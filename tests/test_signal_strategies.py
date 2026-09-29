@@ -209,6 +209,29 @@ class TestMigrationEvaluate:
     def test_none_market_data(self, cfg: BotConfig) -> None:
         assert MigrationSniperStrategy(cfg).evaluate_token({"token_address": TOKEN}, None) is None
 
+    def test_token_snapshot_sums_5m_txns(self, cfg: BotConfig) -> None:
+        # Scout path passes a TokenSnapshot, which has no txns_5m_total
+        # property (the live-trading MarketData type does). The strategy must
+        # sum txns_5m_buys + txns_5m_sells; reading a default 0 silently
+        # disabled this tagger (min_txns_5m=100 never reachable).
+        from fenrir.discovery.models import Chain, TokenSnapshot
+
+        snap = TokenSnapshot(
+            chain=Chain.SOLANA,
+            token_address=TOKEN,
+            pair_address="PAIR",
+            dex_id="raydium",
+            age_minutes=1.0,
+            liquidity_usd=50_000.0,
+            market_cap_usd=80_000.0,
+            volume_5m_usd=20_000.0,
+            txns_5m_buys=80,
+            txns_5m_sells=40,
+        )
+        sig = MigrationSniperStrategy(cfg).evaluate_token({"token_address": TOKEN}, snap)
+        assert sig is not None
+        assert sig.txns_5m == 120
+
     def test_inactive_returns_none(self, cfg: BotConfig) -> None:
         strat = MigrationSniperStrategy(cfg)
         strat.deactivate()

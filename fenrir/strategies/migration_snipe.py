@@ -201,7 +201,13 @@ class MigrationSniperStrategy(TradingStrategy):
         liq = getattr(market_data, "liquidity_usd", 0.0)
         mcap = getattr(market_data, "market_cap_usd", 0.0)
         vol_5m = getattr(market_data, "volume_5m_usd", 0.0)
-        txns_5m = getattr(market_data, "txns_5m_total", 0)
+        txns_5m = getattr(market_data, "txns_5m_total", None)
+        if txns_5m is None:
+            # TokenSnapshot (scout path) has no txns_5m_total property — the
+            # live-trading market-data type does. Sum buys+sells instead.
+            txns_5m = getattr(market_data, "txns_5m_buys", 0) + getattr(
+                market_data, "txns_5m_sells", 0
+            )
         price_usd = getattr(market_data, "price_usd", 0.0)
         pair_address = getattr(market_data, "pair_address", "") or ""
         dex_id = getattr(market_data, "dex_id", "") or ""
