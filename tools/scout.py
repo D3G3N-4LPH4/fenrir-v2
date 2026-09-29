@@ -38,6 +38,11 @@ from fenrir.discovery.playbooks import PlaybookTagger  # noqa: E402
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider  # noqa: E402
 from fenrir.discovery.providers.geckoterminal import GeckoTerminalProvider  # noqa: E402
 from fenrir.discovery.providers.goplus import GoPlusProvider  # noqa: E402
+from fenrir.discovery.providers.perceptor import (  # noqa: E402
+    ROBINHOOD_CHAIN_ID,
+    PerceptorProvider,
+    enrich_robinhood_safety,
+)
 from fenrir.discovery.scoring import ScoringEngine  # noqa: E402
 
 # Source names in dedup-priority order (first source keeps credit on overlap).
@@ -118,7 +123,8 @@ def dedupe_sources(source_addrs: list[tuple[str, list[str]]]) -> list[tuple[str,
 async def evaluate_address(source: str, addr: str, chain: Chain, ds: DexScreenerProvider,
                            gp: GoPlusProvider, engine: FilterEngine,
                            scorer: ScoringEngine, tagger: PlaybookTagger,
-                           min_score: float) -> dict | None:
+                           min_score: float,
+                           perceptor: PerceptorProvider | None = None) -> dict | None:
     """Run one address through snapshot + safety + filters + scoring.
 
     Returns the candidate dict, or None when it doesn't clear the bar.
@@ -137,6 +143,30 @@ async def evaluate_address(source: str, addr: str, chain: Chain, ds: DexScreener
     results = {fn.value: engine.evaluate(snap, fn) for fn in FilterName}
     passed = [k for k, r in results.items() if r.passed]
     score = scorer.score(snap)
+    # Robinhood safety net: when GoPlus has nothing, Perceptor's on-chain
+    # forensics can still clear (or kill) the candidate. A landed verdict
+    # re-runs the hard-fail check and the score — the safety_unknown score
+    # cap lifts when safety becomes verifiable.
+    perceptor_info: dict | None = None
+    if perceptor is not None and snap.chain is Chain.ROBINHOOD and safety_unknown(snap):
+        try:
+            report = await enrich_robinhood_safety(snap, perceptor)
+        except Exception:  # noqa: BLE001 - fail-open
+            report = None
+        if report is not None:
+            fail = hard_fail(snap)
+            score = scorer.score(snap)
+            perceptor_info = {
+                "status": "complete",
+                "band": report.band,
+                "band_label": report.band_label,
+                "headline": report.headline,
+                "investigation_id": report.investigation_id,
+            }
+        else:
+            inv_id = await perceptor.ensure_investigation(ROBINHOOD_CHAIN_ID, snap.token_address)
+            if inv_id:
+                perceptor_info = {"status": "pending", "investigation_id": inv_id}
     if fail or not passed or score.overall < min_score:
         return None
     ratio_1h = snap.buy_sell_ratio_1h
@@ -174,6 +204,7 @@ async def evaluate_address(source: str, addr: str, chain: Chain, ds: DexScreener
         "playbooks": tagger.tag(snap).as_dict(),
         "score": score.as_dict(),
         "safety_unknown": safety_unknown(snap),
+        "perceptor": perceptor_info,
         "dexscreener": f"https://dexscreener.com/{snap.chain.value}/{snap.token_address}",
     }
 
@@ -182,13 +213,14 @@ async def scout_chain(chain: Chain, ds: DexScreenerProvider, gt: GeckoTerminalPr
                       gp: GoPlusProvider, engine: FilterEngine, scorer: ScoringEngine,
                       tagger: PlaybookTagger, sources: list[str],
                       limit: int, extra_limit: int,
-                      min_score: float) -> tuple[list[dict], dict[str, int]]:
+                      min_score: float,
+                      perceptor: PerceptorProvider | None = None) -> tuple[list[dict], dict[str, int]]:
     candidates: list[dict] = []
     by_source: dict[str, int] = {}
     source_addrs = await fetch_source_addresses(chain, ds, gt, sources, limit, extra_limit)
     for source, addr in dedupe_sources(source_addrs):
         cand = await evaluate_address(source, addr, chain, ds, gp, engine,
-                                      scorer, tagger, min_score)
+                                      scorer, tagger, min_score, perceptor)
         by_source[source] = by_source.get(source, 0) + 1
         if cand is None:
             await asyncio.sleep(0.4)
@@ -215,6 +247,7 @@ async def amain() -> int:
     ds = DexScreenerProvider(timeout_seconds=15)
     gt = GeckoTerminalProvider(timeout_seconds=15)
     gp = GoPlusProvider(timeout_seconds=10)
+    perceptor = PerceptorProvider()
     engine = FilterEngine()
     scorer = ScoringEngine()
     tagger = PlaybookTagger()
@@ -224,7 +257,7 @@ async def amain() -> int:
         for c in args.chains:
             cands, bs = await scout_chain(Chain(c), ds, gt, gp, engine, scorer, tagger,
                                           args.sources, args.limit, args.extra_limit,
-                                          args.min_score)
+                                          args.min_score, perceptor)
             all_cands.extend(cands)
             for k, v in bs.items():
                 by_source[k] = by_source.get(k, 0) + v
@@ -232,6 +265,7 @@ async def amain() -> int:
         await ds.close()
         await gt.close()
         await gp.close()
+        await perceptor.close()
 
     all_cands.sort(key=lambda c: -c["score"]["overall"])
     print(json.dumps({

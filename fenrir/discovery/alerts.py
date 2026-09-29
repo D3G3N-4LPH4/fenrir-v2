@@ -125,4 +125,15 @@ def format_scout_alert(cand: dict) -> str:
         lines.append("")
         lines.append("\u26a0\ufe0f safety not verifiable on this chain")
 
+    perc = cand.get("perceptor") or {}
+    if perc.get("status") == "complete" and perc.get("band_label"):
+        lines.append("")
+        pline = f"\U0001f50d Perceptor: *{escape_md(str(perc['band_label']))}*"
+        if perc.get("headline"):
+            pline += f" \u2014 {escape_md(str(perc['headline']))}"
+        lines.append(pline)
+    elif perc.get("investigation_id"):
+        lines.append("")
+        lines.append("\U0001f50d Perceptor on-chain scan running\u2026")
+
     return "\n".join(lines).strip() + "\n"

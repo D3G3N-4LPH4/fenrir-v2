@@ -1,0 +1,185 @@
+{
+ "investigation_id": "d69cff1d27574161b11fef9b28a561a1",
+ "status": "complete",
+ "token": {
+  "name": "Perceptor",
+  "symbol": "0XP"
+ },
+ "verdict": {
+  "band": "medium",
+  "band_label": "Caution",
+  "headline": "One thing to watch: fresh wallets hold 27.82% of the supply",
+  "checks": [
+   {
+    "key": "liquidity",
+    "label": "Liquidity",
+    "value": "Locked",
+    "tone": "low",
+    "detail": "100.0% is held by the Pons v2 launch locker, which has no way to withdraw it."
+   },
+   {
+    "key": "owner",
+    "label": "Contract owner",
+    "value": "None",
+    "tone": "low",
+    "detail": "The contract has no owner."
+   },
+   {
+    "key": "powers",
+    "label": "Mint / blacklist / pause",
+    "value": "None found",
+    "tone": "low",
+    "detail": "No mint, blacklist, pause or trading switch in the code."
+   },
+   {
+    "key": "tax",
+    "label": "Buy tax",
+    "value": "4%",
+    "tone": "low",
+    "detail": "Measured on 3,848 buys in the main pool. The hook's own cut on sells is not visible here."
+   },
+   {
+    "key": "selling",
+    "label": "Selling",
+    "value": "Works",
+    "tone": "low",
+    "detail": "1,533 wallets other than the dev have sold."
+   }
+  ],
+  "signals": [
+   {
+    "key": "early_dump",
+    "label": "Early buyers sold 82% of what they bought",
+    "plain": "The first wallets in sold 82% of what they bought, and 5 in 10 buyers are down on it.",
+    "tone": "medium",
+    "basis": "518 wallets in the opening window, from decoded trades",
+    "tab": "cohorts"
+   },
+   {
+    "key": "concentration",
+    "label": "The ten largest wallets hold 22% of the supply",
+    "plain": "The ten largest wallets hold 22% of the supply. Pools and burned tokens are not counted as holders.",
+    "tone": "low",
+    "basis": "balances replayed from every transfer and checked against the contract",
+    "tab": "holders"
+   },
+   {
+    "key": "dev",
+    "label": "The dev wallet locked 100% of its tokens until 18 Nov 2026",
+    "plain": "The dev wallet locked 100% of its tokens in a token locker. Nobody can move them before 18 Nov 2026; then they return to the dev wallet.",
+    "tone": "low",
+    "basis": "dev named by the token's deployer() getter; decoded trades and transfers",
+    "tab": "dev"
+   },
+   {
+    "key": "fresh_wallets",
+    "label": "Fresh wallets hold 27.82% of the supply",
+    "plain": "39 of the 98 largest holders had sent fewer than 50 transactions and hold 27.82% of the supply between them. Spreading one buy across new wallets looks like this, and so does a token bought mostly by people new to the chain: it says the supply sits in wallets with no history, not who is behind them. The 37 of them that bought are up 17.6% on what they spent, 88.1% of it not yet sold.",
+    "tone": "medium",
+    "basis": "transaction counts at the pinned block",
+    "tab": "wallets"
+   },
+   {
+    "key": "launch_bundle",
+    "label": "4.37% was bought in the launch transaction",
+    "plain": "One wallet bought 4.37% of the supply inside the transaction that created the token, before anyone else could trade.",
+    "tone": "low",
+    "basis": "decoded buys in the token's creation transaction",
+    "tab": "timeline"
+   }
+  ],
+  "liquidity_control": {
+   "measured": true,
+   "protocol": "univ4",
+   "positions": 1,
+   "shares": {
+    "locker": 100.0
+   },
+   "removable": 0.0,
+   "safe": 100.0,
+   "top_holder": null,
+   "top_holder_share": 0.0,
+   "holders": 0,
+   "top_holder_is_dev": false,
+   "permanent": 100.0,
+   "lockers": [
+    "the Pons v2 launch locker"
+   ],
+   "unlock": null,
+   "quote_asset": "0x0000000000000000000000000000000000000000",
+   "hook_fee": true,
+   "removable_quote": "0",
+   "removable_token": "0"
+  },
+  "contract": {
+   "measured": true,
+   "owner": null,
+   "owner_status": "none",
+   "owner_is_dev": false,
+   "powers": [],
+   "proxy": false,
+   "proxy_pattern": "none_detected",
+   "implementation": null,
+   "selectors_found": 25
+  },
+  "tax": {
+   "measured": true,
+   "buy": 4.0,
+   "sell": 0.0,
+   "buys": 3848,
+   "sells": 3306
+  },
+  "trading_now": {
+   "measured": true,
+   "buyers": 1768,
+   "sellers": 1533,
+   "sold_share": 85.0,
+   "sold_buyers": 1503,
+   "last_sell_seconds": 416,
+   "age_seconds": 391452,
+   "recent_buys": 3,
+   "recent_sells": 2,
+   "recent_wallets": 4,
+   "recent_top_holder_sells": 0,
+   "window_minutes": 15,
+   "sellers_not_dev": 1533
+  },
+  "snipers": {
+   "measured": true,
+   "seconds": 10,
+   "wallets": 20,
+   "holding": 9,
+   "held_pct": 7.78
+  },
+  "fresh_wallets": {
+   "measured": true,
+   "threshold": 50,
+   "holders_considered": 100,
+   "checked": 98,
+   "fresh": 39,
+   "supply_pct": 27.82,
+   "pnl": {
+    "measured": true,
+    "wallets": 37,
+    "handed": 2,
+    "return_pct": 17.6,
+    "median_return_pct": 45.7,
+    "up_share": 64.9,
+    "unrealised_share": 88.1,
+    "priced": true,
+    "basis": "decoded pool trades, plus tokens still held valued at the last traded price in the pool's quote asset; trades in other quote assets are counted at the rate the token's own trades implied at the time"
+   }
+  },
+  "opening_burst": {
+   "measured": true,
+   "blocks": 4,
+   "wallets": 1,
+   "largest_tx_wallets": 1,
+   "supply_pct": 4.37,
+   "first_block": 71547873,
+   "bundled_txs": 0,
+   "bundled_wallets": 0,
+   "bundled_supply_pct": 0.0
+  }
+ }
+}

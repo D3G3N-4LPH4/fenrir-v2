@@ -30,6 +30,10 @@ from fenrir.discovery.models import Chain
 from fenrir.discovery.playbooks import PlaybookTagger
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider
 from fenrir.discovery.providers.goplus import GoPlusProvider, distribution_metrics
+from fenrir.discovery.providers.perceptor import (
+    ROBINHOOD_CHAIN_ID,
+    PerceptorProvider,
+)
 from fenrir.discovery.scoring import ScoringEngine
 
 
@@ -173,6 +177,10 @@ async def amain() -> int:
     ap.add_argument("address", help="token contract/mint address")
     ap.add_argument("--chain", choices=[c.value for c in Chain], default=None)
     ap.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    ap.add_argument("--no-perceptor", action="store_true",
+                    help="skip the Perceptor on-chain scan for Robinhood tokens")
+    ap.add_argument("--perceptor-timeout", type=float, default=300.0,
+                    help="seconds to wait for a Perceptor verdict (default 300)")
     args = ap.parse_args()
 
     chain = Chain(args.chain) if args.chain else None
@@ -188,6 +196,31 @@ async def amain() -> int:
 
     notes = await enrich_safety(snap, gp)
     await gp.close()
+
+    # Robinhood safety net: when GoPlus has nothing, Perceptor's on-chain
+    # forensics scan can still verify safety. Manual tool => wait for it.
+    perceptor_info: dict | None = None
+    if (not args.no_perceptor and snap.chain is Chain.ROBINHOOD
+            and snap.safety.is_empty):
+        pp = PerceptorProvider()
+        try:
+            if not args.json:
+                print("Perceptor: scanning on-chain history (up to "
+                      f"{args.perceptor_timeout:.0f}s)…", flush=True)
+            report = await pp.investigate(ROBINHOOD_CHAIN_ID, snap.token_address,
+                                          timeout_seconds=args.perceptor_timeout)
+        finally:
+            await pp.close()
+        if report is not None:
+            snap.safety = report.safety
+            perceptor_info = {
+                "band": report.band, "band_label": report.band_label,
+                "headline": report.headline,
+                "investigation_id": report.investigation_id,
+            }
+            notes.append(f"Perceptor verdict: {report.band_label} — {report.headline}")
+        else:
+            notes.append("Perceptor scan did not complete in time — safety unknown")
 
     engine = FilterEngine()
     results = {fn.value: engine.evaluate(snap, fn) for fn in FilterName}
@@ -213,6 +246,7 @@ async def amain() -> int:
                     "playbooks": tags.as_dict(),
                     "score": breakdown.as_dict(),
                     "verdict": verdict(breakdown.overall, results, snap),
+                    "perceptor": perceptor_info,
                     "notes": notes,
                 },
                 indent=1,
