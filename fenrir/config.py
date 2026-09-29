@@ -439,6 +439,19 @@ class BotConfig:
     # analyst prefers ai_model, fails over to these in order, sticks to the
     # working one, and re-probes ai_model periodically.
     ai_model_fallbacks: list[str] = field(default_factory=list)
+    # Free-tier models tried LAST, after every paid candidate 402s. They keep
+    # the Brain analyzing when the account is out of credits. NOTE: OpenRouter
+    # free models are served by specific providers — if the account's
+    # allowed-providers setting (openrouter.ai/settings) excludes them, these
+    # fail with "No allowed providers" and the Brain skips as before. Widen
+    # the provider allowlist or override via AI_FREE_FALLBACKS (comma-separated).
+    ai_free_fallbacks: list[str] = field(
+        default_factory=lambda: [
+            "qwen/qwen3.8-27b:free",
+            "google/gemma-4-26b-a4b-it:free",
+            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        ]
+    )
     ai_provider: str = "openrouter"  # "openrouter" or "anthropic_direct"
     ai_entry_timeout_seconds: float = 12.0  # Max wait for entry analysis
     ai_exit_timeout_seconds: float = 10.0  # Max wait for exit evaluation
@@ -554,6 +567,11 @@ class BotConfig:
         env_ai_fallbacks = os.getenv("AI_MODEL_FALLBACKS", "")
         if env_ai_fallbacks:
             self.ai_model_fallbacks = [m.strip() for m in env_ai_fallbacks.split(",") if m.strip()]
+        env_ai_free_fallbacks = os.getenv("AI_FREE_FALLBACKS", "")
+        if env_ai_free_fallbacks:
+            self.ai_free_fallbacks = [
+                m.strip() for m in env_ai_free_fallbacks.split(",") if m.strip()
+            ]
         self.ai_evaluate_all_launches = _env_bool(
             "AI_EVALUATE_ALL_LAUNCHES", self.ai_evaluate_all_launches
         )
