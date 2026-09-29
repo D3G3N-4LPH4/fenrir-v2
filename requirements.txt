@@ -7,6 +7,7 @@ base58==2.1.1
 
 # HTTP & Async
 aiohttp==3.11.11
+pycryptodome>=3.20  # EIP-55 checksums in rh_onchain (early-sight pair monitor)
 httpx==0.28.1
 
 # FastAPI & Web Server

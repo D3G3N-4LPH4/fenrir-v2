@@ -7,6 +7,9 @@ Each run:
        - gecko_new:  GeckoTerminal newest pools (earliest post-launch listings)
        - gecko_trending: GeckoTerminal trending pools (momentum)
        - ds_profile: DexScreener latest paid token profiles (promotion signal)
+       - graduation: pump.fun tokens at 50-85% of the bonding curve (Solana)
+       - rh_onchain: Uniswap v4 pools initialized on Robinhood Chain in the
+         last 6h, seen at block zero via eth_getLogs (Robinhood)
   2. Build a TokenSnapshot for each (most-liquid pair), deduped across sources.
   3. Enrich safety: GoPlus for covered EVM chains, RugCheck for Solana.
   4. Run FilterEngine (low_cap_alpha / mid_cap_momentum / high_cap) + ScoringEngine.
@@ -54,8 +57,9 @@ SOURCE_GECKO_NEW = "gecko_new"
 SOURCE_GECKO_TRENDING = "gecko_trending"
 SOURCE_DS_PROFILE = "ds_profile"
 SOURCE_GRADUATION = "graduation"
+SOURCE_ONCHAIN = "rh_onchain"
 
-SOURCE_GROUPS = ("boosted", "gecko", "ds_profile", "graduation")
+SOURCE_GROUPS = ("boosted", "gecko", "ds_profile", "graduation", "onchain")
 
 
 def safety_unknown(snap) -> bool:
@@ -110,6 +114,26 @@ async def fetch_graduation_addresses(
         await provider.close()
 
 
+async def fetch_onchain_addresses(limit: int) -> list[str]:
+    """Robinhood tokens first seen on-chain within the fresh window.
+
+    The ``rh-pair-watch`` cron keeps the registry warm every 2 minutes; this
+    just reads it (no RPC here, so the scout stays fast). Tokens DexScreener
+    hasn't indexed yet evaluate to None downstream and are retried next
+    cycle while still fresh.
+    """
+    from fenrir.discovery.providers.rh_onchain import RobinhoodPairMonitor
+
+    monitor = RobinhoodPairMonitor()
+    try:
+        # Opportunistic sync: if the fast cron hasn't run yet (e.g. first
+        # run after migration), advance the cursor here instead of waiting.
+        await monitor.sync()
+        return monitor.fresh_addresses(max_age_hours=6.0)[:limit]
+    finally:
+        await monitor.close()
+
+
 async def fetch_source_addresses(
     chain: Chain,
     ds: DexScreenerProvider,
@@ -157,14 +181,24 @@ async def fetch_source_addresses(
                 await safe(fetch_graduation_addresses(gt, chain, extra_limit), SOURCE_GRADUATION),
             )
         )
+    if "onchain" in sources and chain is Chain.ROBINHOOD:
+        out.append(
+            (
+                SOURCE_ONCHAIN,
+                await safe(fetch_onchain_addresses(extra_limit), SOURCE_ONCHAIN),
+            )
+        )
 
     # Per-source caps (boosted uses --limit; extras use --extra-limit).
+    # On-chain is high-volume (~100 pools/h on Robinhood) and cheap to check
+    # (an unindexed token is one fast DexScreener miss), so it gets headroom.
     caps = {
         SOURCE_BOOSTED: limit,
         SOURCE_GECKO_NEW: extra_limit,
         SOURCE_GECKO_TRENDING: extra_limit,
         SOURCE_DS_PROFILE: extra_limit,
         SOURCE_GRADUATION: extra_limit,
+        SOURCE_ONCHAIN: extra_limit * 3,
     }
     return [(name, addrs[: caps[name]]) for name, addrs in out]
 
@@ -188,7 +222,7 @@ def dedupe_sources(source_addrs: list[tuple[str, list[str]]]) -> list[tuple[str,
 async def evaluate_address(
     source: str,
     addr: str,
-    chain: Chain,
+    chain: Chain | None,
     ds: DexScreenerProvider,
     gp: GoPlusProvider,
     engine: FilterEngine,
