@@ -28,7 +28,8 @@ import urllib.parse
 STATE_PATH = os.path.expanduser(
     "~/workspace/goals/token-scout-watch/hidden_files/coin_watch.json")
 ALERT_MOVE_PCT = 50.0  # Telegram ping when |move vs prev tick| >= this
-MAX_POINTS = 1008      # ~21 days at 30-min ticks
+MAX_POINTS = 5040       # ~7 days at 2-minute live cadence
+JUPITER_SEARCH = "https://lite-api.jup.ag/tokens/v2/search"
 
 
 def load_state(path: str = STATE_PATH) -> dict:
@@ -88,6 +89,40 @@ def fetch_snapshot(addr: str, timeout: int = 20) -> dict | None:
     }
 
 
+def fetch_holders(addr: str, timeout: int = 10) -> tuple[int | None, float | None]:
+    """Best-effort holder count + top-holder % from Jupiter's keyless search.
+
+    Fail-open: returns (None, None) on any error — the series keeps its
+    price/volume/flow data regardless.
+    """
+    url = f"{JUPITER_SEARCH}?query={urllib.parse.quote(addr)}"
+    try:
+        out = subprocess.run(
+            ["curl", "-sS", "--max-time", str(timeout), url],
+            capture_output=True, text=True, timeout=timeout + 5,
+        )
+        data = json.loads(out.stdout or "null")
+    except Exception:
+        return None, None
+    toks = data if isinstance(data, list) else (data.get("tokens") or [])
+    if not toks or not isinstance(toks[0], dict):
+        return None, None
+    tok = toks[0]
+    holders, top_pct = None, None
+    try:
+        if tok.get("holderCount") is not None:
+            holders = int(tok["holderCount"])
+    except (TypeError, ValueError):
+        pass
+    try:
+        audit = tok.get("audit") or {}
+        if audit.get("topHoldersPercentage") is not None:
+            top_pct = float(audit["topHoldersPercentage"])
+    except (TypeError, ValueError):
+        pass
+    return holders, top_pct
+
+
 def _send_telegram(text: str) -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     try:
@@ -122,6 +157,7 @@ def cmd_add(args) -> int:
         "label": args.label or addr[:8],
         "added_ts": now,
         "base_price": snap["price"] if snap else None,
+        "alerts": not args.no_alerts,
         "series": [],
     }
     if snap:
@@ -140,12 +176,15 @@ def cmd_tick(args) -> int:
         snap = fetch_snapshot(addr)
         if not snap:
             continue
+        holders, top_pct = fetch_holders(addr)
+        snap["holders"] = holders
+        snap["top_holder_pct"] = top_pct
         series = coin.setdefault("series", [])
         prev = series[-1] if series else None
         series.append({"ts": now, **snap})
         del series[:-MAX_POINTS]
-        # violent-move alert vs previous tick
-        if prev and prev.get("price") and snap["price"]:
+        # violent-move alert vs previous tick (skipped for data-only coins)
+        if coin.get("alerts", True) and prev and prev.get("price") and snap["price"]:
             move = (snap["price"] / prev["price"] - 1) * 100
             if abs(move) >= ALERT_MOVE_PCT:
                 arrow = "🚀" if move > 0 else "📉"
@@ -178,12 +217,34 @@ def cmd_report(args) -> int:
             print(f"  since watch start: {(last['price']/base-1)*100:+.1f}% "
                   f"| mcap {_fmt_usd(last.get('mcap'))} | liq {_fmt_usd(last.get('liq'))}")
         peak = max((p.get("price") or 0) for p in series)
+        mcaps = [p.get("mcap") for p in series if p.get("mcap")]
         if peak and last.get("price"):
-            print(f"  vs series peak: {(last['price']/peak-1)*100:+.1f}%")
+            rng = (f" | session mcap range {_fmt_usd(min(mcaps))}–{_fmt_usd(max(mcaps))}"
+                   if mcaps else "")
+            print(f"  vs series peak: {(last['price']/peak-1)*100:+.1f}%{rng}")
         b5, s5 = last.get("buys_5m"), last.get("sells_5m")
         if b5 is not None and s5:
             print(f"  5m flow: {b5}/{s5} buys/sells (edge {b5/s5:.2f}x) "
                   f"| 5m vol {_fmt_usd(last.get('vol_5m'))} | 5m chg {last.get('chg_5m')}")
+        h_first = next((p.get("holders") for p in series if p.get("holders")), None)
+        h_last = last.get("holders")
+        if h_first and h_last:
+            th = last.get("top_holder_pct")
+            th_s = f"{th:.1f}%" if isinstance(th, (int, float)) else "?"
+            print(f"  holders: {h_first} → {h_last} ({(h_last/h_first-1)*100:+.1f}%) "
+                  f"| top holder {th_s}")
+    return 0
+
+
+def cmd_alerts(args) -> int:
+    state = load_state()
+    coin = state.get("coins", {}).get(args.address)
+    if not coin:
+        print("not watched")
+        return 1
+    coin["alerts"] = args.state == "on"
+    save_state(state)
+    print(f"alerts {'on' if coin['alerts'] else 'off'} for {coin.get('label')}")
     return 0
 
 
@@ -204,13 +265,18 @@ def main() -> int:
     a = sub.add_parser("add")
     a.add_argument("address")
     a.add_argument("--label", default="")
+    a.add_argument("--no-alerts", action="store_true",
+                   help="data-only: never Telegram-ping for this coin")
+    al = sub.add_parser("alerts")
+    al.add_argument("address")
+    al.add_argument("state", choices=["on", "off"])
     sub.add_parser("tick")
     sub.add_parser("report")
     r = sub.add_parser("remove")
     r.add_argument("address")
     args = ap.parse_args()
     return {"add": cmd_add, "tick": cmd_tick, "report": cmd_report,
-            "remove": cmd_remove}[args.cmd](args)
+            "remove": cmd_remove, "alerts": cmd_alerts}[args.cmd](args)
 
 
 if __name__ == "__main__":
