@@ -196,6 +196,13 @@ class TokenSnapshot:
         return self.txns_24h_buys / total if total > 0 else 0.5
 
     @property
+    def buy_pressure_5m(self) -> float:
+        """Buy fraction over 5m. 0.5 when no data (neutral) — strategies treat
+        the 5m window as a float, not an optional."""
+        total = self.txns_5m_buys + self.txns_5m_sells
+        return self.txns_5m_buys / total if total > 0 else 0.5
+
+    @property
     def buy_pressure_1h(self) -> float | None:
         """Buy fraction over 1h. None when no 1h txn data (neutral unknown)."""
         total = self.txns_1h_buys + self.txns_1h_sells

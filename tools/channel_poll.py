@@ -38,6 +38,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.evaluate import enrich_safety  # noqa: E402
 from tools.scout import hard_fail, safety_unknown  # noqa: E402
 
+from fenrir.discovery.playbooks import PlaybookTagger  # noqa: E402
+
 from fenrir.discovery.filters import FilterEngine, FilterName  # noqa: E402
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider  # noqa: E402
 from fenrir.discovery.providers.goplus import GoPlusProvider  # noqa: E402
@@ -117,7 +119,7 @@ async def poll_tg_api(session: aiohttp.ClientSession, token: str, offset: int):
     return data.get("result", [])
 
 
-async def evaluate(addr: str, ds, gp, engine, scorer, min_score):
+async def evaluate(addr: str, ds, gp, engine, scorer, tagger, min_score):
     """Run one address through the pipeline; return candidate dict or None."""
     try:
         snap = await ds.fetch_snapshot(addr)  # chain=None: DexScreener resolves
@@ -150,6 +152,7 @@ async def evaluate(addr: str, ds, gp, engine, scorer, min_score):
         "buys_24h": snap.txns_24h_buys, "sells_24h": snap.txns_24h_sells,
         "holder_count": snap.holder_count,
         "passed_filters": passed,
+        "playbooks": tagger.tag(snap).as_dict(),
         "score": score.as_dict(),
         "safety_unknown": safety_unknown(snap),
         "dexscreener": f"https://dexscreener.com/{snap.chain.value}/{snap.token_address}",
@@ -235,11 +238,12 @@ async def amain() -> int:
     gp = GoPlusProvider(timeout_seconds=10)
     engine = FilterEngine()
     scorer = ScoringEngine()
+    tagger = PlaybookTagger()
     candidates: list[dict] = []
     scanned = 0
     try:
         for addr, src in uniq.items():
-            cand = await evaluate(addr, ds, gp, engine, scorer, args.min_score)
+            cand = await evaluate(addr, ds, gp, engine, scorer, tagger, args.min_score)
             scanned += 1
             if cand:
                 cand["source"] = src
