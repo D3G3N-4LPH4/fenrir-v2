@@ -29,6 +29,7 @@ from tools.evaluate import enrich_safety  # noqa: E402
 
 from fenrir.discovery.filters import FilterEngine, FilterName  # noqa: E402
 from fenrir.discovery.models import Chain  # noqa: E402
+from fenrir.discovery.playbooks import PlaybookTagger  # noqa: E402
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider  # noqa: E402
 from fenrir.discovery.providers.goplus import GoPlusProvider  # noqa: E402
 from fenrir.discovery.scoring import ScoringEngine  # noqa: E402
@@ -55,7 +56,7 @@ def hard_fail(snap) -> str | None:
 
 
 async def scout_chain(chain: Chain, ds: DexScreenerProvider, gp: GoPlusProvider,
-                     engine: FilterEngine, scorer: ScoringEngine,
+                     engine: FilterEngine, scorer: ScoringEngine, tagger: PlaybookTagger,
                      limit: int, min_score: float) -> tuple[list[dict], int]:
     candidates: list[dict] = []
     scanned = 0
@@ -105,6 +106,7 @@ async def scout_chain(chain: Chain, ds: DexScreenerProvider, gp: GoPlusProvider,
             "top10_holder_pct": snap.top10_holder_pct,
             "passed_filters": passed,
             "filter_warnings": [w for r in results.values() for w in r.warnings],
+            "playbooks": tagger.tag(snap).as_dict(),
             "score": score.as_dict(),
             "safety_unknown": safety_unknown(snap),
             "dexscreener": f"https://dexscreener.com/{snap.chain.value}/{snap.token_address}",
@@ -125,11 +127,12 @@ async def amain() -> int:
     gp = GoPlusProvider(timeout_seconds=10)
     engine = FilterEngine()
     scorer = ScoringEngine()
+    tagger = PlaybookTagger()
     all_cands: list[dict] = []
     scanned = 0
     try:
         for c in args.chains:
-            cands, n = await scout_chain(Chain(c), ds, gp, engine, scorer,
+            cands, n = await scout_chain(Chain(c), ds, gp, engine, scorer, tagger,
                                         args.limit, args.min_score)
             all_cands.extend(cands)
             scanned += n

@@ -26,6 +26,7 @@ from fenrir.discovery.chains.solana import (
 )
 from fenrir.discovery.filters import FilterEngine, FilterName
 from fenrir.discovery.models import Chain
+from fenrir.discovery.playbooks import PlaybookTagger
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider
 from fenrir.discovery.providers.goplus import GoPlusProvider, distribution_metrics
 from fenrir.discovery.scoring import ScoringEngine
@@ -102,7 +103,7 @@ def fmt_usd(v: float) -> str:
     return f"${v:,.0f}"
 
 
-def report_text(sym, snap, results, breakdown, notes) -> str:
+def report_text(sym, snap, results, breakdown, notes, tags=None) -> str:
     age = f"{snap.age_minutes:.0f}m" if snap.age_minutes else "?"
     lines = [
         f"{snap.symbol} ({snap.name}) — {snap.chain.value} · {snap.token_address[:10]}…",
@@ -147,6 +148,15 @@ def report_text(sym, snap, results, breakdown, notes) -> str:
         lines.append(f"  note: {n}")
     label, reason = verdict(b.overall, results, snap)
     lines += ["", f"VERDICT: {label} — {reason}"]
+    if tags is not None:
+        if tags.matches:
+            pb = ", ".join(f"{m.display_name} ({m.strength:.2f})" for m in tags.matches)
+            lines += ["", f"PLAYBOOKS: {pb}"]
+            if tags.confluent:
+                lines.append(f"  ⚡ confluent ({len(tags.sources)} strategies, "
+                             f"combined {tags.combined_strength:.2f})")
+        else:
+            lines += ["", "PLAYBOOKS: none of the 6 strategy playbooks fit"]
     return "\n".join(lines)
 
 
@@ -174,6 +184,7 @@ async def amain() -> int:
     engine = FilterEngine()
     results = {fn.value: engine.evaluate(snap, fn) for fn in FilterName}
     breakdown = ScoringEngine().score(snap)
+    tags = PlaybookTagger().tag(snap)
 
     if args.json:
         print(json.dumps({
@@ -183,12 +194,13 @@ async def amain() -> int:
             "liquidity_usd": snap.liquidity_usd, "volume_24h_usd": snap.volume_24h_usd,
             "filters": {k: {"passed": r.passed, "failures": r.failures, "warnings": r.warnings}
                         for k, r in results.items()},
+            "playbooks": tags.as_dict(),
             "score": breakdown.as_dict(),
             "verdict": verdict(breakdown.overall, results, snap),
             "notes": notes,
         }, indent=1))
     else:
-        print(report_text(args.address, snap, results, breakdown, notes))
+        print(report_text(args.address, snap, results, breakdown, notes, tags))
     return 0
 
 
