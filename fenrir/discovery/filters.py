@@ -40,6 +40,7 @@ class FilterName(str, Enum):
     VOLUME_SURGE = "volume_surge"
     GRADUATION_WATCH = "graduation_watch"
     MOMENTUM_TRANSITION = "momentum_transition"
+    CURVE_IGNITION = "curve_ignition"
 
 
 @dataclass
@@ -321,6 +322,32 @@ MOMENTUM_TRANSITION = FilterThresholds(
 )
 
 
+CURVE_IGNITION = FilterThresholds(
+    # The earliest on-chain entry: a pump.fun curve at 10-50% progress with
+    # strong SOL inflow velocity. This is pre-DexScreener — the ignition, not
+    # the graduation. Most curves die here, so the inflow bar is high and the
+    # sniper/bundle caps stay strict; inflow velocity is the signal, everything
+    # else is risk control. No chase guard by design: at <50% progress the
+    # vertical move hasn't happened yet.
+    min_market_cap_usd=3_000.0,
+    max_market_cap_usd=150_000.0,
+    max_age_minutes=90.0,  # ignition is fast; older + still <50% = stalled
+    min_volume_24h_usd=3_000.0,
+    min_volume_1h_share=0.05,  # tape must be alive right now
+    min_holder_count=10,  # earlier than graduation_watch's 20
+    min_buys_24h=10,
+    min_buy_sell_ratio_1h=1.1,  # tape must lean buy
+    min_bond_progress_pct=10.0,
+    max_bond_progress_pct=50.0,
+    min_bond_inflow_sol=1.0,  # the core signal: SOL pouring into the curve
+    require_bond_data=True,  # no curve data = not an ignition play, fail
+    max_top_holder_pct=25.0,  # raw early distribution
+    max_sniper_pct=25.0,
+    max_bundle_pct=20.0,
+    require_verified=False,  # pump.fun launches are never on curated lists
+)
+
+
 DEFAULT_THRESHOLDS: dict[FilterName, FilterThresholds] = {
     FilterName.LOW_CAP_ALPHA: LOW_CAP_ALPHA,
     FilterName.MID_CAP_MOMENTUM: MID_CAP_MOMENTUM,
@@ -330,6 +357,7 @@ DEFAULT_THRESHOLDS: dict[FilterName, FilterThresholds] = {
     FilterName.VOLUME_SURGE: VOLUME_SURGE,
     FilterName.GRADUATION_WATCH: GRADUATION_WATCH,
     FilterName.MOMENTUM_TRANSITION: MOMENTUM_TRANSITION,
+    FilterName.CURVE_IGNITION: CURVE_IGNITION,
 }
 
 

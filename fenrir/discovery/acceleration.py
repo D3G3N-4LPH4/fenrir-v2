@@ -154,6 +154,51 @@ class AccelTracker:
     def polls_seen(self, address: str) -> int:
         return len(self._hist.get(address, []))
 
+    def hot_candidates(
+        self,
+        within_minutes: float = 30.0,
+        min_txn_growth: float = 1.25,
+        min_holder_growth: float = 1.3,
+        min_edge_delta: float = 0.05,
+        limit: int = 25,
+        now: float | None = None,
+    ) -> list[str]:
+        """Addresses showing a pulse since the last poll — the fast-lane list.
+
+        An address qualifies when its latest observation is fresh AND any of
+        the acceleration dimensions is already moving: txn growth, holder
+        growth, or buy-edge delta vs the previous poll. Growth is recomputed
+        from the last two observations so this works without a live snapshot.
+        Most-recent first, capped at ``limit``.
+        """
+        now = time.time() if now is None else now
+        window = within_minutes * 60.0
+        hot: list[tuple[float, str]] = []
+        for addr, obs in self._hist.items():
+            if len(obs) < 2:
+                continue
+            last, prev = obs[-1], obs[-2]
+            if now - float(last.get("ts", 0)) > window:
+                continue
+            txn_g = _growth(float(last.get("txns_1h") or 0), float(prev.get("txns_1h") or 0))
+            hold_g = _growth(
+                float(last["holders"]) if last.get("holders") is not None else None,
+                float(prev["holders"]) if prev.get("holders") is not None else None,
+            )
+            edge_d = (
+                (last["edge"] - prev["edge"])
+                if last.get("edge") is not None and prev.get("edge") is not None
+                else None
+            )
+            if (
+                (txn_g is not None and txn_g >= min_txn_growth)
+                or (hold_g is not None and hold_g >= min_holder_growth)
+                or (edge_d is not None and edge_d >= min_edge_delta)
+            ):
+                hot.append((float(last["ts"]), addr))
+        hot.sort(reverse=True)
+        return [addr for _, addr in hot[:limit]]
+
     def prune(self, now: float | None = None) -> int:
         """Drop addresses with no observation inside the age window. Returns count dropped."""
         now = time.time() if now is None else now

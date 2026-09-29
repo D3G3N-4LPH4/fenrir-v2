@@ -7,8 +7,9 @@ persistence, pruning) and the momentum_transition entry filter
 
 from __future__ import annotations
 
-import sys
 import os
+import sys
+from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -38,7 +39,7 @@ def _snap(**over) -> TokenSnapshot:
     $500k mcap, 2h old, $100k LP, $600k 24h vol with 5% in the last hour,
     1.3x 1h buy/sell, +25% 1h (moving, not vertical), distributed holders.
     """
-    base = dict(
+    base: dict[str, Any] = dict(
         chain=Chain.SOLANA,
         token_address="ACCEL000000000000000000000000000000000000001",
         symbol="ACCEL",
@@ -188,16 +189,25 @@ def test_tracker_first_sighting_returns_none(tmp_path):
     assert snap.accel_txn_growth is None
 
 
+def _growth_val(growth: dict[str, float | None] | None, key: str) -> float:
+    """Unwrap one acceleration metric; the tests only read keys that must be present."""
+    assert growth is not None
+    v = growth[key]
+    assert v is not None
+    return v
+
+
 def test_tracker_computes_growth(tmp_path):
     t = AccelTracker(tmp_path / "accel.json")
     t.record(_obs_snap(60, 40, 20), now=1000.0)  # 100 txns, edge 0.6, 20 holders
     snap = _obs_snap(108, 72, 32)  # 180 txns, edge 0.6, 32 holders
     growth = t.record(snap, now=1600.0)
     assert growth is not None
-    assert abs(growth["accel_txn_growth"] - 1.8) < 1e-9
-    assert abs(growth["accel_holder_growth"] - 1.6) < 1e-9
-    assert abs(growth["accel_edge_delta"] - 0.0) < 1e-9
+    assert abs(_growth_val(growth, "accel_txn_growth") - 1.8) < 1e-9
+    assert abs(_growth_val(growth, "accel_holder_growth") - 1.6) < 1e-9
+    assert abs(_growth_val(growth, "accel_edge_delta") - 0.0) < 1e-9
     assert snap.accel_polls_seen == 2
+    assert snap.accel_txn_growth is not None
     assert abs(snap.accel_txn_growth - 1.8) < 1e-9
 
 
@@ -206,7 +216,7 @@ def test_tracker_edge_delta(tmp_path):
     t.record(_obs_snap(50, 50, 20), now=1000.0)  # edge 0.5
     snap = _obs_snap(70, 30, 25)  # edge 0.7
     growth = t.record(snap, now=1600.0)
-    assert abs(growth["accel_edge_delta"] - 0.2) < 1e-9
+    assert abs(_growth_val(growth, "accel_edge_delta") - 0.2) < 1e-9
 
 
 def test_tracker_dead_tape_waking_up_caps_growth(tmp_path):
@@ -214,7 +224,7 @@ def test_tracker_dead_tape_waking_up_caps_growth(tmp_path):
     t.record(_obs_snap(0, 0, 5), now=1000.0)
     snap = _obs_snap(50, 30, 12)
     growth = t.record(snap, now=1600.0)
-    assert growth["accel_txn_growth"] == 999.0  # capped "infinite"
+    assert _growth_val(growth, "accel_txn_growth") == 999.0  # capped "infinite"
 
 
 def test_tracker_missing_holders_gives_none_growth(tmp_path):
@@ -224,6 +234,7 @@ def test_tracker_missing_holders_gives_none_growth(tmp_path):
     t.record(s1, now=1000.0)
     snap = _obs_snap(108, 72, 32)
     growth = t.record(snap, now=1600.0)
+    assert growth is not None
     assert growth["accel_holder_growth"] is None
     assert growth["accel_txn_growth"] is not None
 
@@ -253,3 +264,121 @@ def test_tracker_ignores_empty_address(tmp_path):
     t = AccelTracker(tmp_path / "accel.json")
     snap = _obs_snap(60, 40, 20, addr="")
     assert t.record(snap) is None
+
+
+# ── Curve ignition filter ────────────────────────────────────────────
+
+
+def _ignition_snap(**over) -> TokenSnapshot:
+    """A snapshot that PASSES curve_ignition: $40k mcap, 30m old, curve at 30%
+    with 2.5 SOL of fresh inflow velocity, buy-leaning tape, clean-ish early
+    distribution."""
+    base: dict[str, Any] = dict(
+        chain=Chain.SOLANA,
+        token_address="IGNITE00000000000000000000000000000000000001",
+        symbol="IGNITE",
+        market_cap_usd=40_000.0,
+        volume_24h_usd=50_000.0,
+        volume_1h_usd=4_000.0,
+        age_minutes=30.0,
+        holder_count=25,
+        txns_1h_buys=140,
+        txns_1h_sells=100,
+        txns_24h_buys=400,
+        txns_24h_sells=300,
+        price_change_1h_pct=35.0,
+        top_holder_pct=12.0,
+        sniper_pct=10.0,
+        bundle_pct=8.0,
+        bond_progress_pct=30.0,
+        bond_inflow_sol=2.5,
+        safety=_safe(),
+    )
+    base.update(over)
+    return TokenSnapshot(**base)
+
+
+def _eval_ignition(snap):
+    return FilterEngine().evaluate(snap, FilterName.CURVE_IGNITION)
+
+
+def test_ignition_registered():
+    assert FilterName.CURVE_IGNITION in DEFAULT_THRESHOLDS
+    assert FilterName.CURVE_IGNITION.value == "curve_ignition"
+
+
+def test_ignition_passes():
+    res = _eval_ignition(_ignition_snap())
+    assert res.passed, f"expected pass, failures={res.failures}"
+
+
+def test_ignition_fails_past_50pct():
+    # 60% belongs to graduation_watch, not ignition.
+    res = _eval_ignition(_ignition_snap(bond_progress_pct=60.0))
+    assert not res.passed
+    assert any("bond" in f.lower() for f in res.failures)
+
+
+def test_ignition_fails_weak_inflow():
+    res = _eval_ignition(_ignition_snap(bond_inflow_sol=0.2))
+    assert not res.passed
+    assert any("inflow" in f.lower() for f in res.failures)
+
+
+def test_ignition_fails_without_bond_data():
+    res = _eval_ignition(_ignition_snap(bond_progress_pct=None, bond_inflow_sol=None))
+    assert not res.passed
+
+
+def test_ignition_fails_stalled_curve():
+    res = _eval_ignition(_ignition_snap(age_minutes=200.0))
+    assert not res.passed
+    assert any("Age" in f for f in res.failures)
+
+
+def test_ignition_fails_sniper_farm():
+    res = _eval_ignition(_ignition_snap(sniper_pct=40.0))
+    assert not res.passed
+    assert any("niper" in f for f in res.failures)
+
+
+def test_ignition_fails_too_big():
+    res = _eval_ignition(_ignition_snap(market_cap_usd=500_000.0))
+    assert not res.passed
+
+
+# ── hot_candidates ───────────────────────────────────────────────────
+
+
+def test_hot_candidates_empty_without_acceleration(tmp_path):
+    t = AccelTracker(tmp_path / "a.json")
+    t.record(_obs_snap(60, 40, 20, addr="FLAT"), now=1000.0)
+    t.record(_obs_snap(62, 41, 20, addr="FLAT"), now=1600.0)
+    assert t.hot_candidates(now=1600.0) == []
+
+
+def test_hot_candidates_picks_accelerating(tmp_path):
+    t = AccelTracker(tmp_path / "a.json")
+    t.record(_obs_snap(60, 40, 20, addr="HOT"), now=1000.0)
+    t.record(_obs_snap(108, 72, 32, addr="HOT"), now=1600.0)  # 1.8x txns
+    t.record(_obs_snap(60, 40, 20, addr="COLD"), now=1000.0)
+    t.record(_obs_snap(61, 40, 20, addr="COLD"), now=1600.0)
+    hot = t.hot_candidates(now=1600.0)
+    assert hot == ["HOT"]
+
+
+def test_hot_candidates_ignores_stale(tmp_path):
+    t = AccelTracker(tmp_path / "a.json")
+    t.record(_obs_snap(60, 40, 20, addr="OLD"), now=1000.0)
+    t.record(_obs_snap(200, 50, 60, addr="OLD"), now=1600.0)
+    # Observation is 2h old — outside the 30m window.
+    assert t.hot_candidates(now=1600.0 + 7200) == []
+
+
+def test_hot_candidates_respects_limit(tmp_path):
+    t = AccelTracker(tmp_path / "a.json")
+    for i in range(5):
+        a = f"T{i}"
+        t.record(_obs_snap(60, 40, 20, addr=a), now=1000.0)
+        t.record(_obs_snap(120, 60, 30, addr=a), now=1600.0)
+    assert len(t.hot_candidates(limit=3, now=1600.0)) == 3
