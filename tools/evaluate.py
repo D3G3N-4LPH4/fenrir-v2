@@ -171,9 +171,13 @@ def report_text(sym, snap, results, breakdown, notes, tags=None) -> str:
         f"sell tax: {s.sell_tax_pct if s.sell_tax_pct is not None else '?'}%",
         f"  mint disabled: {yn(s.mint_disabled)} | ownership renounced: {yn(s.ownership_renounced)} | "
         f"blacklist: {yn(s.blacklist_present)}",
-        f"  LP locked/burned: {yn(s.lp_locked_or_burned)}"
-        + (f" ({s.lp_locked_pct:.0f}%)" if s.lp_locked_pct is not None else ""),
     ]
+    lp_line = f"  LP locked/burned: {yn(s.lp_locked_or_burned)}"
+    if snap.migrated is False:
+        lp_line = "  LP locked/burned: n/a (pre-migration)"
+    elif s.lp_locked_pct is not None:
+        lp_line += f" ({s.lp_locked_pct:.0f}%)"
+    lines.append(lp_line)
     if s.risk_flags:
         lines.append(f"  risk flags: {', '.join(s.risk_flags[:5])}")
     for n in notes:

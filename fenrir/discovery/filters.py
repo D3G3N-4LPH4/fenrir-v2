@@ -688,7 +688,9 @@ class FilterEngine:
             elif snap.safety.contract_verified is False:
                 fails.append("contract not verified")
         if thr.require_lp_locked:
-            if snap.safety.lp_locked_or_burned is None:
+            if snap.migrated is False:
+                warns.append("pre-migration: no LP to lock yet")
+            elif snap.safety.lp_locked_or_burned is None:
                 warns.append("LP lock status unknown")
             elif snap.safety.lp_locked_or_burned is False:
                 fails.append("LP not locked/burned")
@@ -718,7 +720,7 @@ class FilterEngine:
             u,
         )
         _gate(
-            s.lp_locked_or_burned is True,
+            s.lp_locked_or_burned is True or snap.migrated is False,
             s.lp_locked_or_burned,
             u.require_lp_locked,
             "LP not locked",

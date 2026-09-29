@@ -205,6 +205,12 @@ class DexScreenerProvider:
         price_change = pair.get("priceChange") or {}
         liquidity = pair.get("liquidity") or {}
         info = pair.get("info") or {}
+        # Bonding-curve venues (pump.fun pre-graduation) have no LP to lock —
+        # the pool is created at migration. Mark explicitly so scoring/filters
+        # don't penalize the token for an LP that can't exist yet.
+        dex_id = pair.get("dexId")
+        labels = [str(label).lower() for label in (pair.get("labels") or [])]
+        migrated = False if dex_id in ("pumpfun",) or "pump.fun" in labels else None
         socials = {
             s.get("type"): s.get("url") for s in (info.get("socials") or []) if isinstance(s, dict)
         }
@@ -239,5 +245,6 @@ class DexScreenerProvider:
             twitter=socials.get("twitter"),
             telegram=socials.get("telegram"),
             website=(websites[0].get("url") if websites else None),
+            migrated=migrated,
             raw=pair,
         )

@@ -63,7 +63,7 @@ class ScoringWeights:
         )
 
     @classmethod
-    def sparsity_aligned(cls) -> "ScoringWeights":
+    def sparsity_aligned(cls) -> ScoringWeights:
         """Weighting that mirrors Sparsity's Holder Strength Index areas.
 
         Conviction 50% → holder 0.30 + safety 0.20; demand 25% → momentum
@@ -140,7 +140,12 @@ class ScoringEngine:
         # Bad/unknown contract states subtract; unknowns are lighter than negatives.
         score -= {True: 0.0, False: 40.0, None: 10.0}[s.mint_disabled]
         score -= {True: 0.0, False: 30.0, None: 8.0}[s.freeze_disabled]
-        score -= {True: 0.0, False: 40.0, None: 10.0}[s.lp_locked_or_burned]
+        lp_locked = s.lp_locked_or_burned
+        if snap.migrated is False and lp_locked is False:
+            # Pre-migration (bonding curve): no LP exists to lock yet — don't
+            # penalize like an unlocked post-migration pool.
+            lp_locked = None
+        score -= {True: 0.0, False: 40.0, None: 10.0}[lp_locked]
         score -= {True: 100.0, False: 0.0, None: 5.0}[s.honeypot]
         score -= {True: 0.0, False: 15.0, None: 5.0}[s.contract_verified]
         if s.blacklist_present is True:
