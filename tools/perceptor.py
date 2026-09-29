@@ -26,6 +26,7 @@ from fenrir.discovery.providers.perceptor import (  # noqa: E402
     ROBINHOOD_CHAIN_ID,
     PerceptorProvider,
 )
+from fenrir.discovery.alerts import format_perceptor_verdict  # noqa: E402
 
 
 def print_report(report, address: str) -> None:
@@ -91,36 +92,72 @@ async def cmd_status(args) -> int:
         await p.close()
 
 
-async def cmd_sweep(_args) -> int:
+async def cmd_sweep(args) -> int:
     p = PerceptorProvider()
     try:
         cache = p._load_cache()
         pending = [a for a, e in cache.items() if e.get("status") == "pending"]
         if not pending:
-            print(json.dumps({"checked": 0, "completed": []}))
+            print(json.dumps({"checked": 0, "completed": [], "notified": []}))
             return 0
         completed = []
+        notified = []
         for addr in pending:
             report = await p.refresh_report(addr)
-            if report is not None:
-                completed.append(
-                    {
-                        "address": addr,
-                        "band": report.band,
-                        "band_label": report.band_label,
-                        "headline": report.headline,
-                        "investigation_id": report.investigation_id,
-                        "honeypot": report.safety.honeypot,
-                        "buy_tax_pct": report.safety.buy_tax_pct,
-                        "sell_tax_pct": report.safety.sell_tax_pct,
-                        "mint_disabled": report.safety.mint_disabled,
-                        "lp_locked_or_burned": report.safety.lp_locked_or_burned,
-                    }
-                )
-        print(json.dumps({"checked": len(pending), "completed": completed}, indent=1))
+            if report is None:
+                continue
+            entry = cache[addr]
+            completed.append(
+                {
+                    "address": addr,
+                    "symbol": (entry.get("context") or {}).get("symbol"),
+                    "band": report.band,
+                    "band_label": report.band_label,
+                    "headline": report.headline,
+                    "investigation_id": report.investigation_id,
+                    "honeypot": report.safety.honeypot,
+                    "buy_tax_pct": report.safety.buy_tax_pct,
+                    "sell_tax_pct": report.safety.sell_tax_pct,
+                    "mint_disabled": report.safety.mint_disabled,
+                    "lp_locked_or_burned": report.safety.lp_locked_or_burned,
+                }
+            )
+            if args.notify and not entry.get("followup_sent"):
+                msg = format_perceptor_verdict(addr, entry.get("context"), report)
+                if _send_telegram(msg):
+                    entry["followup_sent"] = True
+                    p._save_cache()
+                    notified.append(addr)
+                # else: leave followup_sent unset so the next sweep retries
+        print(
+            json.dumps(
+                {"checked": len(pending), "completed": completed, "notified": notified},
+                indent=1,
+            )
+        )
         return 0
     finally:
         await p.close()
+
+
+def _send_telegram(text: str) -> bool:
+    """Deliver one message via tools/telegram_notify.py (reads .env itself)."""
+    import subprocess
+
+    notify = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telegram_notify.py")
+    try:
+        r = subprocess.run(
+            [sys.executable, notify, "--parse-mode", "Markdown", text],
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        if r.returncode != 0:
+            print(f"telegram follow-up failed: {r.stderr.strip()}", file=sys.stderr)
+        return r.returncode == 0
+    except Exception as e:  # noqa: BLE001 - fail-open
+        print(f"telegram follow-up failed: {e}", file=sys.stderr)
+        return False
 
 
 def main() -> int:
@@ -140,6 +177,11 @@ def main() -> int:
     st.set_defaults(func=cmd_status)
 
     sw = sub.add_parser("sweep", help="refresh all pending scans")
+    sw.add_argument(
+        "--notify",
+        action="store_true",
+        help="send a Telegram follow-up for each newly completed verdict",
+    )
     sw.set_defaults(func=cmd_sweep)
 
     args = ap.parse_args()

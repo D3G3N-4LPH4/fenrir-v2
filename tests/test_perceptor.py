@@ -26,7 +26,8 @@ FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "perceptor_oxp.jso
 
 def load_fixture() -> dict:
     with open(FIXTURE) as f:
-        data: dict = json.load(f)
+        data = json.load(f)
+        assert isinstance(data, dict)
         return data
 
 
@@ -68,7 +69,8 @@ def test_parse_incomplete_verdict() -> None:
 def test_parse_garbage() -> None:
     assert parse_perceptor({}) is None
     assert parse_perceptor({"verdict": None}) is None
-    assert parse_perceptor("nope") is None
+    # Deliberately wrong type: the parser must fail open, not raise.
+    assert parse_perceptor("nope") is None  # type: ignore[arg-type]
 
 
 def _snap(chain: Chain = Chain.ROBINHOOD) -> TokenSnapshot:
@@ -117,7 +119,7 @@ async def test_ensure_investigation_posts_once(tmp_path) -> None:
     class FakeSession:
         closed = False
 
-        def post(self, url, json: dict | None = None, timeout=None):
+        def post(self, url, json=None, timeout=None):
             assert json is not None
             posts.append(json)
             return FakeResp()
@@ -219,4 +221,166 @@ async def test_enrich_merges_completed_report(tmp_path) -> None:
     assert report is not None and report.band == "medium"
     assert snap.safety.lp_locked_or_burned is True
     assert snap.safety.honeypot is False
+    await p.close()
+
+
+# ---------------------------------------------------------------------------
+# Verdict follow-ups
+# ---------------------------------------------------------------------------
+
+
+def _oxp_report():
+    return parse_perceptor(load_fixture())
+
+
+def test_snapshot_context() -> None:
+    from fenrir.discovery.providers.perceptor import snapshot_context
+
+    snap = TokenSnapshot(
+        chain=Chain.ROBINHOOD,
+        token_address="0xabc",
+        symbol="TST",
+        name="Test Token",
+    )
+    ctx = snapshot_context(snap)
+    assert ctx == {
+        "symbol": "TST",
+        "name": "Test Token",
+        "chain": "robinhood",
+        "dexscreener": "https://dexscreener.com/robinhood/0xabc",
+    }
+
+
+@pytest.mark.asyncio
+async def test_ensure_investigation_stores_context(tmp_path) -> None:
+    class FakeResp:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def json(self):
+            return {"investigation_id": "ctx1"}
+
+    class FakeSession:
+        def post(self, url, json=None, timeout=None):
+            return FakeResp()
+
+        async def close(self):
+            pass
+
+    p = PerceptorProvider(cache_path=str(tmp_path / "c.json"))
+
+    async def fake_session():
+        return FakeSession()
+
+    p._get_session = fake_session  # type: ignore[method-assign]
+    ctx = {"symbol": "TST", "chain": "robinhood"}
+    inv = await p.ensure_investigation(4663, "0xDEF", ctx)
+    assert inv == "ctx1"
+    entry = p._load_cache()["0xdef"]
+    assert entry["context"] == ctx
+    assert entry["followup_sent"] is False
+    # cache hit merges new context without a second POST
+    await p.ensure_investigation(4663, "0xdef", {"name": "Test"})
+    entry = p._load_cache()["0xdef"]
+    assert entry["context"] == {"symbol": "TST", "chain": "robinhood", "name": "Test"}
+    await p.close()
+
+
+def test_format_perceptor_verdict() -> None:
+    from fenrir.discovery.alerts import format_perceptor_verdict
+
+    report = _oxp_report()
+    assert report is not None
+    ctx = {
+        "symbol": "OXP",
+        "name": "Perceptor",
+        "chain": "robinhood",
+        "dexscreener": "https://dexscreener.com/robinhood/0x32dae312abe8f6fdb782907b85edbc90d2e74b02",
+    }
+    msg = format_perceptor_verdict("0x32dae312abe8f6fdb782907b85edbc90d2e74b02", ctx, report)
+    assert "*OXP*" in msg
+    assert "Perceptor verdict" in msg
+    assert "Caution" in msg  # band_label from the OXP fixture
+    assert "`0x32dae312abe8f6fdb782907b85edbc90d2e74b02`" in msg
+    assert (
+        "[DexScreener](https://dexscreener.com/robinhood/0x32dae312abe8f6fdb782907b85edbc90d2e74b02)"
+        in msg
+    )
+    assert "perceptor.info" in msg
+    # no raw Markdown-breaking chars from free text
+    assert "\n\n\n" not in msg
+
+
+def test_format_perceptor_verdict_no_context() -> None:
+    from fenrir.discovery.alerts import format_perceptor_verdict
+
+    report = _oxp_report()
+    assert report is not None
+    msg = format_perceptor_verdict("0xabc", None, report)
+    assert "*?*" in msg  # symbol fallback
+    assert "`0xabc`" in msg
+    assert "dexscreener.com/robinhood/0xabc" in msg
+
+
+@pytest.mark.asyncio
+async def test_sweep_notify_sends_once(tmp_path, monkeypatch) -> None:
+    import importlib.util
+    import sys
+    from types import SimpleNamespace
+
+    spec = importlib.util.spec_from_file_location(
+        "perceptor_tool",
+        os.path.join(os.path.dirname(__file__), "..", "tools", "perceptor.py"),
+    )
+    assert spec is not None
+    tool = importlib.util.module_from_spec(spec)
+    sys.modules["perceptor_tool"] = tool
+    assert spec.loader is not None
+    spec.loader.exec_module(tool)
+
+    sent: list[str] = []
+
+    def _capture(text: str) -> bool:
+        sent.append(text)
+        return True
+
+    monkeypatch.setattr(tool, "_send_telegram", _capture)
+
+    p = PerceptorProvider(cache_path=str(tmp_path / "c.json"))
+    addr = "0xbeef"
+    p._load_cache()[addr] = {
+        "investigation_id": "sweep1",
+        "status": "pending",
+        "report": None,
+        "checked_at": 0.0,
+        "followup_sent": False,
+        "context": {"symbol": "SWP", "chain": "robinhood"},
+    }
+    p._save_cache()
+
+    async def fake_refresh(a):
+        # simulate the verdict landing on this sweep
+        p._load_cache()[a]["status"] = "complete"
+        p._load_cache()[a]["report"] = load_fixture()
+        p._save_cache()
+        return _oxp_report()
+
+    monkeypatch.setattr(p, "refresh_report", fake_refresh)
+    monkeypatch.setattr(tool, "PerceptorProvider", lambda *a, **k: p)
+
+    rc = await tool.cmd_sweep(SimpleNamespace(notify=True))
+    assert rc == 0
+    assert len(sent) == 1
+    assert "*SWP*" in sent[0]
+    assert p._load_cache()[addr]["followup_sent"] is True
+
+    # second sweep: already notified -> no duplicate send
+    rc = await tool.cmd_sweep(SimpleNamespace(notify=True))
+    assert rc == 0
+    assert len(sent) == 1
     await p.close()
