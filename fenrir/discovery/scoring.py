@@ -39,7 +39,16 @@ def _clamp(value: float) -> float:
 
 @dataclass
 class ScoringWeights:
-    """Relative weights for the ``overall`` score (need not sum to 1 — normalized)."""
+    """Relative weights for the ``overall`` score (need not sum to 1 — normalized).
+
+    Component → Sparsity Holder-Strength-Index area mapping (sparsitydata.com):
+    conviction 50% ≈ holder + safety (supply held through drawdowns, no rug
+    vectors so holders *can* hold with conviction), demand 25% ≈ momentum
+    (holder growth, dip absorption, buy pressure), market health 12.5% ≈
+    liquidity (concentration, depth for its size), attention 12.5% ≈ community
+    (mindshare for its size). ``risk`` has no Sparsity counterpart and stays
+    small in both presets.
+    """
 
     momentum: float = 0.25
     safety: float = 0.25
@@ -51,6 +60,28 @@ class ScoringWeights:
     def total(self) -> float:
         return (
             self.momentum + self.safety + self.liquidity + self.holder + self.community + self.risk
+        )
+
+    @classmethod
+    def sparsity_aligned(cls) -> "ScoringWeights":
+        """Weighting that mirrors Sparsity's Holder Strength Index areas.
+
+        Conviction 50% → holder 0.30 + safety 0.20; demand 25% → momentum
+        0.25; market health 12.5% → liquidity 0.125; attention 12.5% →
+        community 0.125; risk keeps a small 0.10 stabilizer.
+
+        This is an *available preset*, not the default: the default weights
+        stay until the gate tracker accumulates enough clearance observations
+        to tune against. Use ``ScoringEngine(ScoringWeights.sparsity_aligned())``
+        to A/B it.
+        """
+        return cls(
+            momentum=0.25,
+            safety=0.20,
+            liquidity=0.125,
+            holder=0.30,
+            community=0.125,
+            risk=0.10,
         )
 
 
