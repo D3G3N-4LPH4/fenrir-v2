@@ -27,7 +27,7 @@ from fenrir.discovery.chains.solana import (
 )
 from fenrir.discovery.filters import FilterEngine, FilterName
 from fenrir.discovery.models import Chain
-from fenrir.discovery.playbooks import PlaybookTagger
+from fenrir.discovery.playbooks import PLAYBOOK_STRATEGY_IDS, PlaybookTagger
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider
 from fenrir.discovery.providers.goplus import GoPlusProvider, distribution_metrics
 from fenrir.discovery.providers.perceptor import (
@@ -130,6 +130,7 @@ def report_text(sym, snap, results, breakdown, notes, tags=None) -> str:
         "high_cap",
         "degen_launch",
         "volatility_breakout",
+        "volume_surge",
         "graduation_watch",
     ):
         r = results[name]
@@ -186,7 +187,10 @@ def report_text(sym, snap, results, breakdown, notes, tags=None) -> str:
                     f"combined {tags.combined_strength:.2f})"
                 )
         else:
-            lines += ["", "PLAYBOOKS: none of the 6 strategy playbooks fit"]
+            lines += [
+                "",
+                f"PLAYBOOKS: none of the {len(PLAYBOOK_STRATEGY_IDS)} strategy playbooks fit",
+            ]
     return "\n".join(lines)
 
 
