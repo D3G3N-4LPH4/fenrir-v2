@@ -223,7 +223,11 @@ GRADUATION_WATCH = FilterThresholds(
     min_market_cap_usd=5_000.0,
     max_market_cap_usd=150_000.0,
     max_age_minutes=240.0,  # graduation plays are fast; older = stalled
-    min_liquidity_usd=3_000.0,  # ~42.5 SOL in the curve at 50%
+    # No Dex liquidity gate by design: DexScreener reports liquidity.usd=None
+    # for pre-graduation pump.fun pairs (verified live), so our snapshot reads
+    # 0.0 and any min_liquidity_usd would make this filter unpassable. The
+    # 50% bond-progress floor below already implies ~42.5 SOL of real curve
+    # liquidity, which is what the gate was trying to ensure.
     min_volume_24h_usd=5_000.0,
     min_holder_count=20,
     min_buys_24h=20,

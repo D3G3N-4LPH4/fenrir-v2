@@ -200,6 +200,14 @@ class TestGraduationWatch:
         assert not r.passed
         assert any("bond progress unavailable" in f for f in r.failures)
 
+    def test_pass_zero_dex_liquidity(self):
+        # DexScreener reports liquidity.usd=None for pre-graduation pump.fun
+        # pairs, so the snapshot reads 0.0. The filter must not gate on Dex
+        # liquidity: the 50% bond-progress floor already implies ~42.5 SOL
+        # of real curve liquidity.
+        r = self.engine.evaluate(_grad_snapshot(liquidity_usd=0.0), FilterName.GRADUATION_WATCH)
+        assert r.passed, f"failures={r.failures} warnings={r.warnings}"
+
     def test_fail_robinhood_token(self):
         # A Robinhood token has no curve data -> require_bond_data fails it
         snap = _grad_snapshot(
