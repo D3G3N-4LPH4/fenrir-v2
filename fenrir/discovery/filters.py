@@ -11,6 +11,8 @@ Filters (spec):
   - LOW_CAP_ALPHA     — very early launches before migration.
   - MID_CAP_MOMENTUM  — approaching / just past migration.
   - HIGH_CAP          — established meme coins.
+  - DEGEN_LAUNCH      — risk-on: minutes-old trench launches, tiny caps.
+  - VOLATILITY_BREAKOUT — risk-on: the vertical 1h move other filters reject.
 
 Policy:
   - Numeric market fields (mcap/liquidity/volume) come from DexScreener and are
@@ -33,6 +35,8 @@ class FilterName(str, Enum):
     LOW_CAP_ALPHA = "low_cap_alpha"
     MID_CAP_MOMENTUM = "mid_cap_momentum"
     HIGH_CAP = "high_cap"
+    DEGEN_LAUNCH = "degen_launch"
+    VOLATILITY_BREAKOUT = "volatility_breakout"
 
 
 @dataclass
@@ -64,6 +68,9 @@ class FilterThresholds:
     min_liquidity_to_mcap_pct: float | None = None
     # Chase guard: reject entries going vertical (None = no guard on this window).
     # Low caps are exempt by design — early volatility IS the low_cap thesis.
+    # min_price_change_1h_pct inverts the guard: REQUIRE a minimum 1h move
+    # (used by volatility_breakout — the vertical move is the signal).
+    min_price_change_1h_pct: float | None = None
     max_price_change_1h_pct: float | None = None
     max_price_change_24h_pct: float | None = None
     # Distribution caps (%)
@@ -154,10 +161,64 @@ HIGH_CAP = FilterThresholds(
     require_lp_locked=False,
 )
 
+# ── Risk-on filters ─────────────────────────────────────────────────
+# These deliberately trade safety margin for earliness. Universal safety
+# (honeypot / mint / freeze / blacklist / tax ceiling) still applies — risk
+# here means volatility and earliness, not scams.
+
+DEGEN_LAUNCH = FilterThresholds(
+    min_market_cap_usd=500.0,
+    max_market_cap_usd=30_000.0,  # below low_cap_alpha's floor — the true trenches
+    max_age_minutes=45.0,  # minutes old, not hours
+    min_liquidity_usd=500.0,
+    min_liquidity_to_mcap_pct=3.0,
+    min_volume_24h_usd=1_000.0,
+    min_volume_1h_share=0.08,  # tape must be HOT right now
+    min_turnover_24h=0.10,
+    max_turnover_24h=30.0,  # degen churn is normal — don't mistake it for wash
+    min_holder_count=10,
+    max_holder_count=500,
+    min_buys_24h=10,
+    min_buy_sell_ratio_1h=1.5,  # strong early buy edge or nothing
+    max_top_holder_pct=20.0,
+    max_top10_holder_pct=85.0,
+    max_dev_wallet_pct=15.0,
+    max_bond_progress_pct=60.0,
+    max_sniper_pct=30.0,
+    max_bundle_pct=25.0,
+    # No chase guard: vertical IS the degen thesis.
+    # require_verified off: trench launches are never on curated lists.
+)
+
+VOLATILITY_BREAKOUT = FilterThresholds(
+    min_market_cap_usd=30_000.0,
+    max_market_cap_usd=2_000_000.0,
+    max_age_minutes=48 * 60.0,
+    min_liquidity_usd=10_000.0,
+    min_liquidity_to_mcap_pct=5.0,
+    min_volume_24h_usd=50_000.0,
+    min_volume_1h_share=0.10,  # the move is happening NOW
+    min_turnover_24h=0.20,
+    max_turnover_24h=15.0,
+    min_holder_count=100,
+    min_buys_24h=50,
+    min_buy_sell_ratio_1h=1.3,  # buy-driven move, not a short-squeeze wick
+    max_top_holder_pct=15.0,
+    max_top10_holder_pct=70.0,
+    max_dev_wallet_pct=10.0,
+    # The inverted chase guard: REQUIRE the vertical move other filters reject.
+    min_price_change_1h_pct=40.0,
+    max_price_change_1h_pct=400.0,  # beyond this it's one wick, not a trend
+    require_buys_exceed_sells=True,
+)
+
+
 DEFAULT_THRESHOLDS: dict[FilterName, FilterThresholds] = {
     FilterName.LOW_CAP_ALPHA: LOW_CAP_ALPHA,
     FilterName.MID_CAP_MOMENTUM: MID_CAP_MOMENTUM,
     FilterName.HIGH_CAP: HIGH_CAP,
+    FilterName.DEGEN_LAUNCH: DEGEN_LAUNCH,
+    FilterName.VOLATILITY_BREAKOUT: VOLATILITY_BREAKOUT,
 }
 
 
@@ -306,7 +367,17 @@ class FilterEngine:
                     fails.append(
                         f"Liq/mcap {depth_pct:.1f}% < {thr.min_liquidity_to_mcap_pct:.0f}%"
                     )
-        # Chase guard: don't enter vertical candles.
+        # Chase guard: don't enter vertical candles — unless the filter's thesis
+        # IS the vertical move (min_price_change_1h_pct set), in which case the
+        # minimum move is required and only absurd wicks are capped.
+        if (
+            thr.min_price_change_1h_pct is not None
+            and snap.price_change_1h_pct < thr.min_price_change_1h_pct
+        ):
+            fails.append(
+                f"1h change {snap.price_change_1h_pct:+.0f}% < "
+                f"+{thr.min_price_change_1h_pct:.0f}% (no breakout)"
+            )
         if (
             thr.max_price_change_1h_pct is not None
             and snap.price_change_1h_pct > thr.max_price_change_1h_pct

@@ -14,6 +14,7 @@ config explicitly enables them.
 """
 
 from fenrir.strategies.base import StrategyState, TradeParams, TradingStrategy
+from fenrir.strategies.degen_ignition import DegenIgnitionStrategy
 from fenrir.strategies.graduation import GraduationStrategy
 from fenrir.strategies.mean_reversion import MeanReversionStrategy
 from fenrir.strategies.migration_snipe import MigrationSniperStrategy
@@ -25,6 +26,7 @@ from fenrir.strategies.sniper import (
     DegenSniperStrategy,
     SniperStrategy,
 )
+from fenrir.strategies.volatility_breakout import VolatilityBreakoutStrategy
 from fenrir.strategies.volume_anomaly import VolumeAnomalyStrategy
 
 # Strategy registry: strategy_id -> class
@@ -39,6 +41,8 @@ STRATEGY_REGISTRY: dict[str, type[TradingStrategy]] = {
     "reversal": ReversalStrategy,
     "volume_anomaly": VolumeAnomalyStrategy,
     "narrative_tracker": NarrativeTrackerStrategy,
+    "degen_ignition": DegenIgnitionStrategy,
+    "volatility_breakout": VolatilityBreakoutStrategy,
 }
 
 # Strategies enabled unless the operator opts in. The signal-oriented
@@ -52,6 +56,8 @@ DEFAULT_DISABLED_STRATEGIES: frozenset[str] = frozenset(
         "reversal",
         "volume_anomaly",
         "narrative_tracker",
+        "degen_ignition",
+        "volatility_breakout",
     }
 )
 

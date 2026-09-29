@@ -36,6 +36,8 @@ PLAYBOOK_STRATEGY_IDS: tuple[str, ...] = (
     "narrative_tracker",
     "mean_reversion",
     "reversal",
+    "degen_ignition",
+    "volatility_breakout",
 )
 
 
