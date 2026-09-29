@@ -10,7 +10,14 @@ Usage:
   python tools/coin_watch.py add <address> --label SI
   python tools/coin_watch.py tick        # snapshot all watched coins
   python tools/coin_watch.py report      # print current state + series stats
+  python tools/coin_watch.py tag <address> --set si-pvp   # group coins into a named set
+  python tools/coin_watch.py pvp si-pvp  # side-by-side PVP set view (volume rotation)
   python tools/coin_watch.py remove <address>
+
+PVP sets: coins sharing a ticker/narrative fight for the same capital. The pvp
+view aligns their series tick-by-tick and shows each coin's share of the set's
+5m volume plus the mcap leader per tick — the rotation signature of a PVP
+battle (wild volume swings until a winner emerges or all die out).
 
 State: <scout-goal>/hidden_files/coin_watch.json (outside the repo).
 """
@@ -259,6 +266,74 @@ def cmd_remove(args) -> int:
     return 0
 
 
+def cmd_tag(args) -> int:
+    state = load_state()
+    coin = state.get("coins", {}).get(args.address)
+    if not coin:
+        print("not watched")
+        return 1
+    coin["set"] = args.set_name or None
+    save_state(state)
+    print(f"{coin.get('label')}: set={coin.get('set')}")
+    return 0
+
+
+def _local_hm(ts: float) -> str:
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        return datetime.fromtimestamp(ts, tz=ZoneInfo("America/Los_Angeles")).strftime("%H:%M")
+    except Exception:
+        return time.strftime("%H:%M", time.localtime(ts))
+
+
+def cmd_pvp(args) -> int:
+    """Side-by-side PVP set view: per-tick mcap, 5m volume, volume share of the
+    set, buy/sell edge, and the mcap leader — the rotation signature."""
+    state = load_state()
+    members = [(addr, c) for addr, c in state.get("coins", {}).items()
+               if c.get("set") == args.set_name and c.get("series")]
+    if not members:
+        print(f"no coins in set '{args.set_name}'")
+        return 1
+    members.sort(key=lambda ac: ac[1].get("label", ""))
+    labels = [c.get("label", a[:8]) for a, c in members]
+    n = min(len(c["series"]) for _, c in members)
+    show = max(1, min(args.last, n))
+    print(f"== PVP '{args.set_name}' — {len(members)} coins, last {show} ticks ==")
+    lead_wins: dict[str, int] = {lb: 0 for lb in labels}
+    shares: dict[str, list[float]] = {lb: [] for lb in labels}
+    for i in range(n - show, n):
+        pts = [(lb, c["series"][i]) for lb, (_, c) in zip(labels, members)]
+        ts = pts[0][1].get("ts", 0)
+        vols = [(lb, p.get("vol_5m") or 0) for lb, p in pts]
+        tot_vol = sum(v for _, v in vols) or 1
+        mcaps = [(lb, p.get("mcap") or 0) for lb, p in pts]
+        leader = max(mcaps, key=lambda x: x[1])[0]
+        lead_wins[leader] += 1
+        print(f"-- {_local_hm(ts)}  leader: {leader} | set 5m vol {_fmt_usd(tot_vol)}")
+        for lb, p in pts:
+            v = p.get("vol_5m") or 0
+            share = v / tot_vol * 100
+            shares[lb].append(share)
+            b5, s5 = p.get("buys_5m"), p.get("sells_5m")
+            edge = f"{b5/s5:.2f}x" if b5 is not None and s5 else "?"
+            chg = p.get("chg_5m")
+            chg_s = f"{chg:+.1f}" if isinstance(chg, (int, float)) else "?"
+            print(f"   {lb[:10]:<10} mcap {_fmt_usd(p.get('mcap')):>8} "
+                  f"vol5m {_fmt_usd(v):>8} share {share:5.1f}% "
+                  f"edge {edge:>6} chg5m {chg_s}")
+    print("-- session --")
+    for lb, (_, c) in zip(labels, members):
+        mcaps = [p.get("mcap") or 0 for p in c["series"]]
+        sh = shares[lb]
+        swing = f"{min(sh):.0f}–{max(sh):.0f}%" if sh else "?"
+        print(f"   {lb[:10]:<10} peak {_fmt_usd(max(mcaps)):>8} "
+              f"now {_fmt_usd(mcaps[-1]):>8} led {lead_wins[lb]}/{show} ticks "
+              f"vol-share swing {swing}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Watch specific coins for data")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -274,9 +349,16 @@ def main() -> int:
     sub.add_parser("report")
     r = sub.add_parser("remove")
     r.add_argument("address")
+    t = sub.add_parser("tag")
+    t.add_argument("address")
+    t.add_argument("--set-name", default="")
+    p = sub.add_parser("pvp")
+    p.add_argument("set_name")
+    p.add_argument("--last", type=int, default=10)
     args = ap.parse_args()
     return {"add": cmd_add, "tick": cmd_tick, "report": cmd_report,
-            "remove": cmd_remove, "alerts": cmd_alerts}[args.cmd](args)
+            "remove": cmd_remove, "alerts": cmd_alerts,
+            "tag": cmd_tag, "pvp": cmd_pvp}[args.cmd](args)
 
 
 if __name__ == "__main__":
