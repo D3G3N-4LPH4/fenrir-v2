@@ -40,6 +40,7 @@ PLAYBOOK_STRATEGY_IDS: tuple[str, ...] = (
     "volatility_breakout",
     "volume_surge",
     "range_rotation",
+    "flush_recovery",
 )
 
 

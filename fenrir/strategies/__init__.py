@@ -15,11 +15,13 @@ config explicitly enables them.
 
 from fenrir.strategies.base import StrategyState, TradeParams, TradingStrategy
 from fenrir.strategies.degen_ignition import DegenIgnitionStrategy
+from fenrir.strategies.flush_recovery import FlushRecoveryStrategy
 from fenrir.strategies.graduation import GraduationStrategy
 from fenrir.strategies.mean_reversion import MeanReversionStrategy
 from fenrir.strategies.migration_snipe import MigrationSniperStrategy
 from fenrir.strategies.momentum import MomentumStrategy
 from fenrir.strategies.narrative import NarrativeTrackerStrategy
+from fenrir.strategies.range_rotation import RangeRotationStrategy
 from fenrir.strategies.reversal import ReversalStrategy
 from fenrir.strategies.sniper import (
     ConservativeSniperStrategy,
@@ -29,7 +31,6 @@ from fenrir.strategies.sniper import (
 from fenrir.strategies.volatility_breakout import VolatilityBreakoutStrategy
 from fenrir.strategies.volume_anomaly import VolumeAnomalyStrategy
 from fenrir.strategies.volume_surge import VolumeSurgeStrategy
-from fenrir.strategies.range_rotation import RangeRotationStrategy
 
 # Strategy registry: strategy_id -> class
 STRATEGY_REGISTRY: dict[str, type[TradingStrategy]] = {
@@ -47,6 +48,7 @@ STRATEGY_REGISTRY: dict[str, type[TradingStrategy]] = {
     "volatility_breakout": VolatilityBreakoutStrategy,
     "volume_surge": VolumeSurgeStrategy,
     "range_rotation": RangeRotationStrategy,
+    "flush_recovery": FlushRecoveryStrategy,
 }
 
 # Strategies enabled unless the operator opts in. The signal-oriented
@@ -64,6 +66,7 @@ DEFAULT_DISABLED_STRATEGIES: frozenset[str] = frozenset(
         "volatility_breakout",
         "volume_surge",
         "range_rotation",
+        "flush_recovery",
     }
 )
 

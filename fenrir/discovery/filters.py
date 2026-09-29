@@ -13,6 +13,11 @@ Filters (spec):
   - HIGH_CAP          — established meme coins.
   - DEGEN_LAUNCH      — risk-on: minutes-old trench launches, tiny caps.
   - VOLATILITY_BREAKOUT — risk-on: the vertical 1h move other filters reject.
+  - VOLUME_SURGE      — higher-cap coins whose tape is accelerating into a move.
+  - GRADUATION_WATCH  — pump.fun curves at 50-85% with fresh SOL inflow.
+  - MOMENTUM_TRANSITION — pre-run acceleration (txn/holder/buy-edge growth).
+  - CURVE_IGNITION    — earliest on-chain entry, curve at 10-50% with inflow.
+  - FLUSH_RECOVERY    — post -60%..-95% flush, stabilized, buyers returning.
 
 Policy:
   - Numeric market fields (mcap/liquidity/volume) come from DexScreener and are
@@ -41,6 +46,7 @@ class FilterName(str, Enum):
     GRADUATION_WATCH = "graduation_watch"
     MOMENTUM_TRANSITION = "momentum_transition"
     CURVE_IGNITION = "curve_ignition"
+    FLUSH_RECOVERY = "flush_recovery"
 
 
 @dataclass
@@ -76,6 +82,10 @@ class FilterThresholds:
     # (used by volatility_breakout — the vertical move is the signal).
     min_price_change_1h_pct: float | None = None
     max_price_change_1h_pct: float | None = None
+    # 24h change floor: REQUIRE the change to be at least this (mirrors the 1h
+    # min). Used by flush_recovery — the flush must not be a total death
+    # (e.g. -95% floor rejects coins that went to zero and stayed there).
+    min_price_change_24h_pct: float | None = None
     max_price_change_24h_pct: float | None = None
     # Distribution caps (%)
     max_top_holder_pct: float | None = None
@@ -348,6 +358,30 @@ CURVE_IGNITION = FilterThresholds(
 )
 
 
+FLUSH_RECOVERY = FilterThresholds(
+    # The kioto $100M-runner structure: a coin that flushed -60%..-95% in 24h,
+    # stabilized on the short windows, with buyers stepping back in and the
+    # holder base intact (supply migrated to strong hands). Entered for the
+    # second leg, not the flush itself.
+    min_market_cap_usd=500_000.0,  # post-flush coins are bigger; flushes need size
+    max_market_cap_usd=100_000_000.0,
+    min_age_minutes=360.0,  # the flush leg takes time to play out
+    min_liquidity_usd=50_000.0,
+    min_liquidity_to_mcap_pct=3.0,  # thin sell side is expected post-flush
+    min_volume_24h_usd=200_000.0,  # still a real coin
+    min_volume_1h_share=0.03,  # tape alive right now
+    min_turnover_24h=0.10,
+    max_turnover_24h=15.0,  # >15x daily churn = wash, not accumulation
+    min_buy_sell_ratio_1h=1.05,  # buyers stepping back in at the lows
+    min_price_change_24h_pct=-95.0,  # flushed, not dead
+    max_price_change_24h_pct=-60.0,  # negative cap = REQUIRE the flush
+    min_price_change_1h_pct=-10.0,  # the knife has stopped…
+    max_price_change_1h_pct=50.0,  # …but the second leg hasn't gone vertical yet
+    max_top_holder_pct=25.0,  # supply migrated, not concentrated
+    max_top10_holder_pct=70.0,
+)
+
+
 DEFAULT_THRESHOLDS: dict[FilterName, FilterThresholds] = {
     FilterName.LOW_CAP_ALPHA: LOW_CAP_ALPHA,
     FilterName.MID_CAP_MOMENTUM: MID_CAP_MOMENTUM,
@@ -358,6 +392,7 @@ DEFAULT_THRESHOLDS: dict[FilterName, FilterThresholds] = {
     FilterName.GRADUATION_WATCH: GRADUATION_WATCH,
     FilterName.MOMENTUM_TRANSITION: MOMENTUM_TRANSITION,
     FilterName.CURVE_IGNITION: CURVE_IGNITION,
+    FilterName.FLUSH_RECOVERY: FLUSH_RECOVERY,
 }
 
 
@@ -530,9 +565,24 @@ class FilterEngine:
             thr.max_price_change_24h_pct is not None
             and snap.price_change_24h_pct > thr.max_price_change_24h_pct
         ):
+            if thr.max_price_change_24h_pct < 0:
+                # Negative cap: the filter REQUIRES a deep flush (flush_recovery).
+                fails.append(
+                    f"24h change {snap.price_change_24h_pct:+.0f}% — not a flush "
+                    f"(want ≤ {thr.max_price_change_24h_pct:.0f}%)"
+                )
+            else:
+                fails.append(
+                    f"24h change +{snap.price_change_24h_pct:.0f}% > "
+                    f"+{thr.max_price_change_24h_pct:.0f}% (vertical — don't chase)"
+                )
+        if (
+            thr.min_price_change_24h_pct is not None
+            and snap.price_change_24h_pct < thr.min_price_change_24h_pct
+        ):
             fails.append(
-                f"24h change +{snap.price_change_24h_pct:.0f}% > "
-                f"+{thr.max_price_change_24h_pct:.0f}% (vertical — don't chase)"
+                f"24h change {snap.price_change_24h_pct:+.0f}% < "
+                f"{thr.min_price_change_24h_pct:.0f}% (dead, not a flush)"
             )
 
     @staticmethod
