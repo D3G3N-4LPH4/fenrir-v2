@@ -110,6 +110,20 @@ def format_scout_alert(cand: dict) -> str:
             pass
     lines.append(f"\U0001f4ca {flow}")
     lines.append(f"\u23f1\ufe0f {_age_str(cand.get('age_minutes'))}")
+    # Bonding-curve position for pre-graduation pump.fun tokens.
+    bond = cand.get("bond_progress_pct")
+    if bond is not None:
+        try:
+            curve_line = f"\U0001f30a Bonding curve {float(bond):.0f}%"
+            remaining = cand.get("bond_sol_remaining")
+            if remaining is not None:
+                curve_line += f" \u00b7 {float(remaining):.0f} SOL to graduation"
+            inflow = cand.get("bond_inflow_sol")
+            if inflow is not None:
+                curve_line += f" (\u25b2{float(inflow):.1f} SOL)"
+            lines.append(curve_line)
+        except (TypeError, ValueError):
+            pass
     lines.append("")
 
     if address:

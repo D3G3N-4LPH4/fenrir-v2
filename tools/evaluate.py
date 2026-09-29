@@ -123,13 +123,20 @@ def report_text(sym, snap, results, breakdown, notes, tags=None) -> str:
         "",
         "FENRIR FILTERS",
     ]
-    for name in ("low_cap_alpha", "mid_cap_momentum", "high_cap"):
+    for name in ("low_cap_alpha", "mid_cap_momentum", "high_cap",
+                 "degen_launch", "volatility_breakout", "graduation_watch"):
         r = results[name]
         status = "PASS" if r.passed else "FAIL"
         detail = "" if r.passed else " — " + "; ".join(r.failures[:3])
         lines.append(f"  [{status}] {name}{detail}")
         for w in r.warnings[:2]:
             lines.append(f"         warn: {w}")
+    if snap.bond_progress_pct is not None:
+        inflow = (f" · inflow {snap.bond_inflow_sol:+.1f} SOL"
+                  if snap.bond_inflow_sol is not None else "")
+        remaining = (f" · {snap.bond_sol_remaining:.1f} SOL to graduation"
+                     if snap.bond_sol_remaining is not None else "")
+        lines.append(f"  🌊 Bonding curve {snap.bond_progress_pct:.0f}%{inflow}{remaining}")
     b = breakdown
     lines += [
         "",
@@ -197,6 +204,16 @@ async def amain() -> int:
     notes = await enrich_safety(snap, gp)
     await gp.close()
 
+    # Solana: live bonding-curve position for the graduation_watch filter.
+    if snap.chain is Chain.SOLANA and not args.json:
+        print("Bonding curve: reading on-chain state…", flush=True)
+    if snap.chain is Chain.SOLANA:
+        try:
+            from fenrir.discovery.providers.pumpfun import annotate_bond_curve
+            await annotate_bond_curve(snap)
+        except Exception:  # noqa: BLE001 - fail-open
+            pass
+
     # Robinhood safety net: when GoPlus has nothing, Perceptor's on-chain
     # forensics scan can still verify safety. Manual tool => wait for it.
     perceptor_info: dict | None = None
@@ -239,6 +256,9 @@ async def amain() -> int:
                     "market_cap_usd": snap.market_cap_usd,
                     "liquidity_usd": snap.liquidity_usd,
                     "volume_24h_usd": snap.volume_24h_usd,
+                    "bond_progress_pct": snap.bond_progress_pct,
+                    "bond_inflow_sol": snap.bond_inflow_sol,
+                    "bond_sol_remaining": snap.bond_sol_remaining,
                     "filters": {
                         k: {"passed": r.passed, "failures": r.failures, "warnings": r.warnings}
                         for k, r in results.items()
@@ -252,6 +272,7 @@ async def amain() -> int:
                 indent=1,
             )
         )
+
     else:
         print(report_text(args.address, snap, results, breakdown, notes, tags))
     return 0

@@ -146,6 +146,13 @@ async def evaluate(addr: str, ds, gp, engine, scorer, tagger, min_score,
         await enrich_safety(snap, gp)
     except Exception:
         pass
+    # Solana: live bonding-curve position (graduation_watch filter data).
+    if snap.chain is Chain.SOLANA:
+        try:
+            from fenrir.discovery.providers.pumpfun import annotate_bond_curve
+            await annotate_bond_curve(snap)
+        except Exception:
+            pass
     if hard_fail(snap):
         return None
     results = {fn.value: engine.evaluate(snap, fn) for fn in FilterName}
@@ -192,6 +199,9 @@ async def evaluate(addr: str, ds, gp, engine, scorer, tagger, min_score,
         "sells_24h": snap.txns_24h_sells,
         "holder_count": snap.holder_count,
         "passed_filters": passed,
+        "bond_progress_pct": snap.bond_progress_pct,
+        "bond_inflow_sol": snap.bond_inflow_sol,
+        "bond_sol_remaining": snap.bond_sol_remaining,
         "playbooks": tagger.tag(snap).as_dict(),
         "score": score.as_dict(),
         "safety_unknown": safety_unknown(snap),

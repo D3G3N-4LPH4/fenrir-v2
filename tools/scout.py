@@ -50,8 +50,9 @@ SOURCE_BOOSTED = "boosted"
 SOURCE_GECKO_NEW = "gecko_new"
 SOURCE_GECKO_TRENDING = "gecko_trending"
 SOURCE_DS_PROFILE = "ds_profile"
+SOURCE_GRADUATION = "graduation"
 
-SOURCE_GROUPS = ("boosted", "gecko", "ds_profile")
+SOURCE_GROUPS = ("boosted", "gecko", "ds_profile", "graduation")
 
 
 def safety_unknown(snap) -> bool:
@@ -72,6 +73,36 @@ def hard_fail(snap) -> str | None:
     if s.mint_disabled is False:
         return "mint authority live"
     return None
+
+
+async def fetch_graduation_addresses(gt: GeckoTerminalProvider, chain: Chain,
+                                     limit: int) -> list[str]:
+    """Solana tokens sitting at 50-85% of the pump.fun bonding curve.
+
+    The base universe is GeckoTerminal's fresh pools; each address gets one
+    batched curve-state read and the reading is recorded for velocity. This
+    is the pre-DexScreener-momentum discovery the other sources can't see.
+    """
+    from fenrir.discovery.providers.pumpfun import PumpFunProvider
+    provider = PumpFunProvider()
+    try:
+        base = await gt.fetch_new_pool_addresses(chain, limit * 2)
+        if not base:
+            return []
+        states = await provider.curve_states(base)
+        now = time.time()
+        out: list[str] = []
+        for mint, state in states.items():
+            if state.complete:
+                continue
+            progress = state.get_migration_progress()
+            if 50.0 <= progress <= 85.0:
+                provider.record_reading(mint, state, now)
+                out.append(mint)
+        provider.prune_state()
+        return out
+    finally:
+        await provider.close()
 
 
 async def fetch_source_addresses(chain: Chain, ds: DexScreenerProvider,
@@ -97,10 +128,15 @@ async def fetch_source_addresses(chain: Chain, ds: DexScreenerProvider,
     if "ds_profile" in sources:
         out.append((SOURCE_DS_PROFILE,
                     await safe(ds.fetch_profiled_addresses(chain, extra_limit), SOURCE_DS_PROFILE)))
+    if "graduation" in sources and chain is Chain.SOLANA:
+        out.append((SOURCE_GRADUATION,
+                    await safe(fetch_graduation_addresses(gt, chain, extra_limit),
+                               SOURCE_GRADUATION)))
 
     # Per-source caps (boosted uses --limit; extras use --extra-limit).
     caps = {SOURCE_BOOSTED: limit, SOURCE_GECKO_NEW: extra_limit,
-            SOURCE_GECKO_TRENDING: extra_limit, SOURCE_DS_PROFILE: extra_limit}
+            SOURCE_GECKO_TRENDING: extra_limit, SOURCE_DS_PROFILE: extra_limit,
+            SOURCE_GRADUATION: extra_limit}
     return [(name, addrs[:caps[name]]) for name, addrs in out]
 
 
@@ -139,6 +175,13 @@ async def evaluate_address(source: str, addr: str, chain: Chain, ds: DexScreener
         await enrich_safety(snap, gp)
     except Exception:
         pass
+    # Solana: live bonding-curve position (graduation_watch filter data).
+    if snap.chain is Chain.SOLANA:
+        try:
+            from fenrir.discovery.providers.pumpfun import annotate_bond_curve
+            await annotate_bond_curve(snap)
+        except Exception:
+            pass
     fail = hard_fail(snap)
     results = {fn.value: engine.evaluate(snap, fn) for fn in FilterName}
     passed = [k for k, r in results.items() if r.passed]
@@ -201,6 +244,9 @@ async def evaluate_address(source: str, addr: str, chain: Chain, ds: DexScreener
         "top10_holder_pct": snap.top10_holder_pct,
         "passed_filters": passed,
         "filter_warnings": [w for r in results.values() for w in r.warnings],
+        "bond_progress_pct": snap.bond_progress_pct,
+        "bond_inflow_sol": snap.bond_inflow_sol,
+        "bond_sol_remaining": snap.bond_sol_remaining,
         "playbooks": tagger.tag(snap).as_dict(),
         "score": score.as_dict(),
         "safety_unknown": safety_unknown(snap),
