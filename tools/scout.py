@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools.evaluate import enrich_safety  # noqa: E402
 
+from fenrir.discovery.acceleration import AccelTracker  # noqa: E402
 from fenrir.discovery.filters import FilterEngine, FilterName  # noqa: E402
 from fenrir.discovery.models import Chain  # noqa: E402
 from fenrir.discovery.playbooks import PlaybookTagger  # noqa: E402
@@ -195,6 +196,7 @@ async def evaluate_address(
     tagger: PlaybookTagger,
     min_score: float,
     perceptor: PerceptorProvider | None = None,
+    accel: AccelTracker | None = None,
 ) -> dict | None:
     """Run one address through snapshot + safety + filters + scoring.
 
@@ -216,6 +218,14 @@ async def evaluate_address(
             from fenrir.discovery.providers.pumpfun import annotate_bond_curve
 
             await annotate_bond_curve(snap)
+        except Exception:
+            pass
+    # Acceleration: seed this poll's observation and attach poll-over-poll
+    # growth before the filters run (momentum_transition fails closed without
+    # a prior sighting).
+    if accel is not None:
+        try:
+            accel.record(snap)
         except Exception:
             pass
     fail = hard_fail(snap)
@@ -304,13 +314,14 @@ async def scout_chain(
     extra_limit: int,
     min_score: float,
     perceptor: PerceptorProvider | None = None,
+    accel: AccelTracker | None = None,
 ) -> tuple[list[dict], dict[str, int]]:
     candidates: list[dict] = []
     by_source: dict[str, int] = {}
     source_addrs = await fetch_source_addresses(chain, ds, gt, sources, limit, extra_limit)
     for source, addr in dedupe_sources(source_addrs):
         cand = await evaluate_address(
-            source, addr, chain, ds, gp, engine, scorer, tagger, min_score, perceptor
+            source, addr, chain, ds, gp, engine, scorer, tagger, min_score, perceptor, accel
         )
         by_source[source] = by_source.get(source, 0) + 1
         if cand is None:
@@ -347,6 +358,7 @@ async def amain() -> int:
     gt = GeckoTerminalProvider(timeout_seconds=15)
     gp = GoPlusProvider(timeout_seconds=10)
     perceptor = PerceptorProvider()
+    accel = AccelTracker(AccelTracker.default_state_path())
     engine = FilterEngine()
     scorer = ScoringEngine()
     tagger = PlaybookTagger()
@@ -367,6 +379,7 @@ async def amain() -> int:
                 args.extra_limit,
                 args.min_score,
                 perceptor,
+                accel,
             )
             all_cands.extend(cands)
             for k, v in bs.items():
@@ -376,6 +389,7 @@ async def amain() -> int:
         await gt.close()
         await gp.close()
         await perceptor.close()
+        accel.save()
 
     all_cands.sort(key=lambda c: -c["score"]["overall"])
     print(

@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools.evaluate import enrich_safety  # noqa: E402
 from tools.scout import hard_fail, safety_unknown  # noqa: E402
+from fenrir.discovery.acceleration import AccelTracker  # noqa: E402
 
 from fenrir.discovery.playbooks import PlaybookTagger  # noqa: E402
 
@@ -134,7 +135,15 @@ async def poll_tg_api(session: aiohttp.ClientSession, token: str, offset: int):
 
 
 async def evaluate(
-    addr: str, ds, gp, engine, scorer, tagger, min_score, perceptor: PerceptorProvider | None = None
+    addr: str,
+    ds,
+    gp,
+    engine,
+    scorer,
+    tagger,
+    min_score,
+    perceptor: PerceptorProvider | None = None,
+    accel: AccelTracker | None = None,
 ):
     """Run one address through the pipeline; return candidate dict or None."""
     try:
@@ -153,6 +162,11 @@ async def evaluate(
             from fenrir.discovery.providers.pumpfun import annotate_bond_curve
 
             await annotate_bond_curve(snap)
+        except Exception:
+            pass
+    if accel is not None:
+        try:
+            accel.record(snap)
         except Exception:
             pass
     if hard_fail(snap):
@@ -292,6 +306,7 @@ async def amain() -> int:
     ds = DexScreenerProvider(timeout_seconds=15)
     gp = GoPlusProvider(timeout_seconds=10)
     perceptor = PerceptorProvider()
+    accel = AccelTracker(AccelTracker.default_state_path())
     engine = FilterEngine()
     scorer = ScoringEngine()
     tagger = PlaybookTagger()
@@ -299,7 +314,9 @@ async def amain() -> int:
     scanned = 0
     try:
         for addr, src in uniq.items():
-            cand = await evaluate(addr, ds, gp, engine, scorer, tagger, args.min_score, perceptor)
+            cand = await evaluate(
+                addr, ds, gp, engine, scorer, tagger, args.min_score, perceptor, accel
+            )
             scanned += 1
             if cand:
                 cand["source"] = src
@@ -309,6 +326,7 @@ async def amain() -> int:
         await ds.close()
         await gp.close()
         await perceptor.close()
+        accel.save()
 
     candidates.sort(key=lambda c: -c["score"]["overall"])
     out = {"ts": time.time(), "scanned": scanned, "candidates": candidates}

@@ -131,6 +131,7 @@ def report_text(sym, snap, results, breakdown, notes, tags=None) -> str:
         "degen_launch",
         "volatility_breakout",
         "volume_surge",
+        "momentum_transition",
         "graduation_watch",
     ):
         r = results[name]

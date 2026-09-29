@@ -39,6 +39,7 @@ class FilterName(str, Enum):
     VOLATILITY_BREAKOUT = "volatility_breakout"
     VOLUME_SURGE = "volume_surge"
     GRADUATION_WATCH = "graduation_watch"
+    MOMENTUM_TRANSITION = "momentum_transition"
 
 
 @dataclass
@@ -86,6 +87,14 @@ class FilterThresholds:
     require_bond_data: bool = False  # fail (not warn) when bond progress unknown
     max_sniper_pct: float | None = None
     max_bundle_pct: float | None = None
+    # Acceleration (poll-over-poll, attached by the scout's AccelTracker).
+    # None = dimension not checked. require_accel_history fails the filter when
+    # there is no prior poll — the filter only fires from the second sighting,
+    # which is exactly the pre-run window it is designed for.
+    require_accel_history: bool = False
+    min_txn_accel_1h: float | None = None  # 1h txn count growth vs previous poll
+    min_holder_growth: float | None = None  # holder count growth vs previous poll
+    min_buy_edge_delta: float | None = None  # 1h buy-pressure improvement vs previous poll
     # Boolean requirements
     require_buys_exceed_sells: bool = False
     require_migrated_or_bond: bool = False  # migrated OR bond >= min_bond_progress_pct
@@ -283,6 +292,35 @@ GRADUATION_WATCH = FilterThresholds(
 )
 
 
+MOMENTUM_TRANSITION = FilterThresholds(
+    # The pre-run catcher: fills the mcap gap between low_cap_alpha ($75k) and
+    # volume_surge ($2M) for coins whose tape is *accelerating into* a move.
+    # Static gates see "buy/sell 1.4"; this filter sees "buy/sell went 0.9 →
+    # 1.4 while 1h activity grew 50%+ and holders grew 40%+". It only fires from
+    # the second scout sighting on (require_accel_history) — the first sighting
+    # seeds the baseline, so manual one-shot evaluations always fail it closed.
+    min_market_cap_usd=75_000.0,
+    max_market_cap_usd=2_000_000.0,
+    min_age_minutes=15.0,  # skip the literal first seconds of a launch
+    max_age_minutes=7 * 24 * 60.0,
+    min_liquidity_usd=30_000.0,
+    min_liquidity_to_mcap_pct=5.0,
+    min_volume_24h_usd=100_000.0,
+    min_volume_1h_share=0.03,  # tape alive right now
+    min_turnover_24h=0.10,
+    max_turnover_24h=15.0,  # >15x daily churn = wash, not accumulation
+    min_buy_sell_ratio_1h=1.2,  # real edge right now, not balanced flow
+    min_price_change_1h_pct=-10.0,  # moving up, not dumping into the bid
+    max_price_change_1h_pct=100.0,  # pre-vertical: the big move hasn't happened yet
+    max_top_holder_pct=20.0,  # concentration still matters at thin liquidity
+    max_top10_holder_pct=75.0,
+    require_accel_history=True,
+    min_txn_accel_1h=1.5,  # 1h activity up 50%+ since the last poll
+    min_holder_growth=1.4,  # holders up 40%+ since the last poll
+    min_buy_edge_delta=0.02,  # buy pressure improving, not just high
+)
+
+
 DEFAULT_THRESHOLDS: dict[FilterName, FilterThresholds] = {
     FilterName.LOW_CAP_ALPHA: LOW_CAP_ALPHA,
     FilterName.MID_CAP_MOMENTUM: MID_CAP_MOMENTUM,
@@ -291,6 +329,7 @@ DEFAULT_THRESHOLDS: dict[FilterName, FilterThresholds] = {
     FilterName.VOLATILITY_BREAKOUT: VOLATILITY_BREAKOUT,
     FilterName.VOLUME_SURGE: VOLUME_SURGE,
     FilterName.GRADUATION_WATCH: GRADUATION_WATCH,
+    FilterName.MOMENTUM_TRANSITION: MOMENTUM_TRANSITION,
 }
 
 
@@ -336,6 +375,7 @@ class FilterEngine:
         self._check_market(snap, thr, failures)
         self._check_holders(snap, thr, failures, warnings)
         self._check_flow(snap, thr, failures, warnings)
+        self._check_acceleration(snap, thr, failures, warnings)
         self._check_distribution(snap, thr, failures, warnings)
         self._check_solana_extras(snap, thr, failures, warnings)
         self._check_booleans(snap, thr, failures, warnings)
@@ -466,6 +506,46 @@ class FilterEngine:
                 f"24h change +{snap.price_change_24h_pct:.0f}% > "
                 f"+{thr.max_price_change_24h_pct:.0f}% (vertical — don't chase)"
             )
+
+    @staticmethod
+    def _check_acceleration(
+        snap: TokenSnapshot, thr: FilterThresholds, fails: list[str], warns: list[str]
+    ) -> None:
+        """Poll-over-poll acceleration: the pre-run signature.
+
+        Metrics are attached to the snapshot by the scout's AccelTracker. The
+        txn-growth dimension fails closed (activity data always exists); holder
+        growth and edge delta only warn when the underlying data is missing,
+        since holder/edge coverage varies by chain and provider.
+        """
+        if (
+            not thr.require_accel_history
+            and thr.min_txn_accel_1h is None
+            and thr.min_holder_growth is None
+            and thr.min_buy_edge_delta is None
+        ):
+            return
+        if thr.require_accel_history and (snap.accel_polls_seen or 0) < 2:
+            fails.append(f"no acceleration history (polls seen: {snap.accel_polls_seen or 0})")
+            return
+        if thr.min_txn_accel_1h is not None:
+            g = snap.accel_txn_growth
+            if g is None:
+                fails.append("txn acceleration unavailable")
+            elif g < thr.min_txn_accel_1h:
+                fails.append(f"1h txn growth {g:.2f}x < {thr.min_txn_accel_1h:.2f}x")
+        if thr.min_holder_growth is not None:
+            g = snap.accel_holder_growth
+            if g is None:
+                warns.append("holder growth unavailable")
+            elif g < thr.min_holder_growth:
+                fails.append(f"holder growth {g:.2f}x < {thr.min_holder_growth:.2f}x")
+        if thr.min_buy_edge_delta is not None:
+            d = snap.accel_edge_delta
+            if d is None:
+                warns.append("buy-edge delta unavailable")
+            elif d < thr.min_buy_edge_delta:
+                fails.append(f"buy-edge delta {d:+.3f} < {thr.min_buy_edge_delta:+.3f}")
 
     @staticmethod
     def _check_solana_extras(
