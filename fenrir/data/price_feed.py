@@ -119,7 +119,9 @@ class PriceFeedManager:
     async def initialize(self):
         """Initialize HTTP session."""
         if not self.session:
-            self.session = aiohttp.ClientSession(trust_env=True, timeout=aiohttp.ClientTimeout(total=5))
+            self.session = aiohttp.ClientSession(
+                trust_env=True, timeout=aiohttp.ClientTimeout(total=5)
+            )
 
     async def close(self):
         """Close HTTP session."""

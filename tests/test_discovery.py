@@ -324,6 +324,7 @@ class TestFlowChecks:
         ]
         top, top10 = distribution_metrics(holders, {"0xunmatched"})
         assert top == 4.30
+        assert top10 is not None
         assert abs(top10 - (4.30 + 3.69 + 2.0)) < 1e-9
         # Explicit address exclusion still works when the flag is missing.
         top2, _ = distribution_metrics([("0xPool", 47.0, None, None)], {"0xpool"})
@@ -368,8 +369,11 @@ class TestScoring:
         assert b.overall <= 60.0
         # …but partial data (RugCheck-style) is not "empty" and not capped.
         s.safety = SafetySignals(
-            mint_disabled=True, freeze_disabled=True, lp_locked_or_burned=True,
-            risk_score=10.0, honeypot=False,
+            mint_disabled=True,
+            freeze_disabled=True,
+            lp_locked_or_burned=True,
+            risk_score=10.0,
+            honeypot=False,
         )
         assert not s.safety.is_empty
         b2 = self.engine.score(s)

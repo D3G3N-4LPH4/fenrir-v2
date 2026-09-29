@@ -59,9 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         print("no valid strategies selected")
         return 1
 
-    result = PortfolioBacktester().run(
-        strategies, samples, confluence_min_sources=args.min_sources
-    )
+    result = PortfolioBacktester().run(strategies, samples, confluence_min_sources=args.min_sources)
     print(f"\nLoaded {len(samples)} samples; ran {len(strategies)} strategies.\n")
     print(format_report(result))
     return 0

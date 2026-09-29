@@ -14,6 +14,7 @@ Dedup / alerting is the caller's job (the cron worker keeps a seen-list).
 Usage:
   python tools/scout.py [--chains solana robinhood] [--limit 25] [--min-score 60]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,7 +42,7 @@ def safety_unknown(snap) -> bool:
     Delegates to the model's ``is_empty`` — the single definition of
     "safety unknown" used by the scoring cap.
     """
-    return snap.safety.is_empty
+    return bool(snap.safety.is_empty)
 
 
 def hard_fail(snap) -> str | None:
@@ -55,9 +56,16 @@ def hard_fail(snap) -> str | None:
     return None
 
 
-async def scout_chain(chain: Chain, ds: DexScreenerProvider, gp: GoPlusProvider,
-                     engine: FilterEngine, scorer: ScoringEngine, tagger: PlaybookTagger,
-                     limit: int, min_score: float) -> tuple[list[dict], int]:
+async def scout_chain(
+    chain: Chain,
+    ds: DexScreenerProvider,
+    gp: GoPlusProvider,
+    engine: FilterEngine,
+    scorer: ScoringEngine,
+    tagger: PlaybookTagger,
+    limit: int,
+    min_score: float,
+) -> tuple[list[dict], int]:
     candidates: list[dict] = []
     scanned = 0
     try:
@@ -84,41 +92,54 @@ async def scout_chain(chain: Chain, ds: DexScreenerProvider, gp: GoPlusProvider,
             await asyncio.sleep(0.4)
             continue
         ratio_1h = snap.buy_sell_ratio_1h
-        candidates.append({
-            "address": snap.token_address,
-            "chain": snap.chain.value,
-            "symbol": snap.symbol,
-            "name": snap.name,
-            "price_usd": snap.price_usd,
-            "market_cap_usd": round(snap.market_cap_usd, 2),
-            "liquidity_usd": round(snap.liquidity_usd, 2),
-            "volume_24h_usd": round(snap.volume_24h_usd, 2),
-            "age_minutes": round(snap.age_minutes or 0),
-            "buys_1h": snap.txns_1h_buys, "sells_1h": snap.txns_1h_sells,
-            "buys_24h": snap.txns_24h_buys, "sells_24h": snap.txns_24h_sells,
-            "buy_sell_ratio_1h": round(ratio_1h, 2) if ratio_1h != float("inf") else None,
-            "volume_1h_share_pct": round(snap.volume_1h_share * 100, 1),
-            "turnover_24h": round(snap.turnover_24h, 2) if snap.turnover_24h else None,
-            "price_change_1h_pct": snap.price_change_1h_pct,
-            "price_change_24h_pct": snap.price_change_24h_pct,
-            "holder_count": snap.holder_count,
-            "top_holder_pct": snap.top_holder_pct,
-            "top10_holder_pct": snap.top10_holder_pct,
-            "passed_filters": passed,
-            "filter_warnings": [w for r in results.values() for w in r.warnings],
-            "playbooks": tagger.tag(snap).as_dict(),
-            "score": score.as_dict(),
-            "safety_unknown": safety_unknown(snap),
-            "dexscreener": f"https://dexscreener.com/{snap.chain.value}/{snap.token_address}",
-        })
+        candidates.append(
+            {
+                "address": snap.token_address,
+                "chain": snap.chain.value,
+                "symbol": snap.symbol,
+                "name": snap.name,
+                "price_usd": snap.price_usd,
+                "market_cap_usd": round(snap.market_cap_usd, 2),
+                "liquidity_usd": round(snap.liquidity_usd, 2),
+                "volume_24h_usd": round(snap.volume_24h_usd, 2),
+                "age_minutes": round(snap.age_minutes or 0),
+                "buys_1h": snap.txns_1h_buys,
+                "sells_1h": snap.txns_1h_sells,
+                "buys_24h": snap.txns_24h_buys,
+                "sells_24h": snap.txns_24h_sells,
+                "buy_sell_ratio_1h": (
+                    round(ratio_1h, 2)
+                    if ratio_1h is not None and ratio_1h != float("inf")
+                    else None
+                ),
+                "volume_1h_share_pct": (
+                    round(snap.volume_1h_share * 100, 1)
+                    if snap.volume_1h_share is not None
+                    else None
+                ),
+                "turnover_24h": round(snap.turnover_24h, 2) if snap.turnover_24h else None,
+                "price_change_1h_pct": snap.price_change_1h_pct,
+                "price_change_24h_pct": snap.price_change_24h_pct,
+                "holder_count": snap.holder_count,
+                "top_holder_pct": snap.top_holder_pct,
+                "top10_holder_pct": snap.top10_holder_pct,
+                "passed_filters": passed,
+                "filter_warnings": [w for r in results.values() for w in r.warnings],
+                "playbooks": tagger.tag(snap).as_dict(),
+                "score": score.as_dict(),
+                "safety_unknown": safety_unknown(snap),
+                "dexscreener": f"https://dexscreener.com/{snap.chain.value}/{snap.token_address}",
+            }
+        )
         await asyncio.sleep(0.4)
     return candidates, scanned
 
 
 async def amain() -> int:
     ap = argparse.ArgumentParser(description="FENRIR market scout")
-    ap.add_argument("--chains", nargs="+", default=["solana", "robinhood"],
-                    choices=[c.value for c in Chain])
+    ap.add_argument(
+        "--chains", nargs="+", default=["solana", "robinhood"], choices=[c.value for c in Chain]
+    )
     ap.add_argument("--limit", type=int, default=25)
     ap.add_argument("--min-score", type=float, default=60.0)
     args = ap.parse_args()
@@ -132,8 +153,9 @@ async def amain() -> int:
     scanned = 0
     try:
         for c in args.chains:
-            cands, n = await scout_chain(Chain(c), ds, gp, engine, scorer, tagger,
-                                        args.limit, args.min_score)
+            cands, n = await scout_chain(
+                Chain(c), ds, gp, engine, scorer, tagger, args.limit, args.min_score
+            )
             all_cands.extend(cands)
             scanned += n
     finally:
@@ -141,11 +163,15 @@ async def amain() -> int:
         await gp.close()
 
     all_cands.sort(key=lambda c: -c["score"]["overall"])
-    print(json.dumps({
-        "ts": time.time(),
-        "scanned": scanned,
-        "candidates": all_cands,
-    }))
+    print(
+        json.dumps(
+            {
+                "ts": time.time(),
+                "scanned": scanned,
+                "candidates": all_cands,
+            }
+        )
+    )
     return 0
 
 

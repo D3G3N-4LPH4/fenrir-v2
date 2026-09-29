@@ -193,7 +193,9 @@ class EnsembleScorer:
     async def initialize(self) -> None:
         """Open the shared aiohttp session."""
         if not self._session:
-            self._session = aiohttp.ClientSession(trust_env=True, timeout=aiohttp.ClientTimeout(total=self.timeout))
+            self._session = aiohttp.ClientSession(
+                trust_env=True, timeout=aiohttp.ClientTimeout(total=self.timeout)
+            )
 
     async def close(self) -> None:
         """Close the aiohttp session."""
