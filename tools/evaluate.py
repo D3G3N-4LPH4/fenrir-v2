@@ -18,6 +18,10 @@ import asyncio
 import json
 import sys
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 sys.path.insert(0, ".")
 
 from fenrir.discovery.chains.solana import (
@@ -26,6 +30,12 @@ from fenrir.discovery.chains.solana import (
     map_rugcheck_summary,
 )
 from fenrir.discovery.filters import FilterEngine, FilterName
+from fenrir.discovery.lp_vault import (
+    check_lp_platform_vault,
+    load_known_vaults,
+    resolve_lp_mint,
+    save_known_vaults,
+)
 from fenrir.discovery.models import Chain
 from fenrir.discovery.playbooks import PLAYBOOK_STRATEGY_IDS, PlaybookTagger
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider
@@ -36,9 +46,42 @@ from fenrir.discovery.providers.perceptor import (
     snapshot_context,
 )
 from fenrir.discovery.scoring import ScoringEngine
+import os
 
 
-async def enrich_safety(snap, goplus: GoPlusProvider) -> list[str]:
+async def _check_lp_vault(snap) -> str | None:
+    """Platform-vault LP check.
+
+    Launchpads like StonkFun keep graduated LP in a platform vault instead of
+    a recognised locker, so RugCheck reads 0% locked. If the LP mint is
+    concentrated in a platform vault wallet, treat LP as locked. Returns a
+    note for the report, or None.
+    """
+    rpc_url = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+    if not snap.pair_address:
+        return None
+    lp_mint = await resolve_lp_mint(snap.pair_address)
+    if not lp_mint:
+        return None
+    known = load_known_vaults()
+    check = await check_lp_platform_vault(lp_mint, rpc_url, known)
+    if check.is_platform_vault and check.holder and check.holder not in known:
+        known.add(check.holder)
+        save_known_vaults(known)
+    if not check.is_platform_vault:
+        return None
+    snap.safety.lp_locked_or_burned = True
+    snap.safety.lp_locked_pct = 100.0
+    detail = f"{check.holder_share_pct:.0f}% of LP" if check.holder_share_pct else "LP"
+    accts = f", {check.token_account_count} token accounts" if check.token_account_count else ""
+    cached = " (cached vault)" if check.cached else ""
+    return (
+        f"LP held by platform vault {(check.holder or "")[:8]}… — {detail} in "
+        f"platform custody{accts}{cached}; treated as locked"
+    )
+
+
+async def enrich_safety(snap, goplus: GoPlusProvider | None) -> list[str]:
     """Attach contract-safety signals. Returns notes about coverage gaps."""
     notes: list[str] = []
     if snap.chain is Chain.SOLANA:
@@ -63,7 +106,17 @@ async def enrich_safety(snap, goplus: GoPlusProvider) -> list[str]:
                 notes.append("Jupiter holder data unavailable — holder checks skipped")
         except Exception:  # noqa: BLE001 - fail-open
             notes.append("Jupiter holder lookup failed — holder checks skipped")
+        # Platform-vault LP (e.g. StonkFun graduates): RugCheck reads 0% locked
+        # when the platform custodies the LP instead of a known locker.
+        try:
+            if snap.safety.lp_locked_or_burned is False:
+                vault_note = await _check_lp_vault(snap)
+                if vault_note:
+                    notes.append(vault_note)
+        except Exception:  # noqa: BLE001 - fail-open
+            pass
     elif snap.chain.is_evm:
+        assert goplus is not None, "GoPlusProvider required for EVM safety enrichment"
         sec = await goplus.token_security(snap.chain, snap.token_address)
         if sec is None:
             notes.append("GoPlus has no coverage for this chain — safety unknown")

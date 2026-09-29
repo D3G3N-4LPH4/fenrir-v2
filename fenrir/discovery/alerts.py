@@ -93,10 +93,7 @@ def format_scout_alert(cand: dict) -> str:
         lines.append(pb_line)
     cc = cand.get("caller_confluence")
     if cc:
-        lines.append(
-            "\U0001f465 caller confluence: "
-            + " + ".join(escape_md(str(x)) for x in cc)
-        )
+        lines.append("\U0001f465 caller confluence: " + " + ".join(escape_md(str(x)) for x in cc))
     wb = cand.get("wallet_buys")
     if wb:
         labels = [str(w.get("label") or "?") for w in wb]
@@ -232,11 +229,14 @@ def format_perceptor_verdict(address: str, context: dict | None, report) -> str:
 
     if s.risk_flags:
         seen = {str(report.headline or "").strip().lower()}
-        flags = [
-            f
-            for f in s.risk_flags
-            if str(f).strip().lower() not in seen and seen.add(str(f).strip().lower()) is None
-        ][:4]
+        flags: list[str] = []
+        for f in s.risk_flags:
+            key = str(f).strip().lower()
+            if key not in seen:
+                seen.add(key)
+                flags.append(f)
+            if len(flags) == 4:
+                break
         if flags:
             lines.append("\u26a0\ufe0f " + escape_md("; ".join(flags)))
             lines.append("")
