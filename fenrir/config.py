@@ -351,6 +351,11 @@ class BotConfig:
     rugcheck_fail_open: bool = True
     # Optional Helius key for enriched holder data (falls back to public RPC).
     helius_api_key: str = ""
+    # Robinhood Chain JSON-RPC for the on-chain new-pair monitor
+    # (fenrir/discovery/providers/rh_onchain.py). Empty = the public
+    # endpoint; set ROBINHOOD_RPC_URL for a dedicated (faster, higher-limit)
+    # node. Env: ROBINHOOD_RPC_URL.
+    robinhood_rpc_url: str = ""
     # Two-tier DexScreener market-condition filter.
     market_filter_enabled: bool = False
     market_fail_open_on_fetch_error: bool = True
@@ -622,6 +627,8 @@ class BotConfig:
         self.rugcheck_fail_open = _env_bool("RUGCHECK_FAIL_OPEN", self.rugcheck_fail_open)
         if not self.helius_api_key:
             self.helius_api_key = os.getenv("HELIUS_API_KEY", "")
+        if not self.robinhood_rpc_url:
+            self.robinhood_rpc_url = os.getenv("ROBINHOOD_RPC_URL", "")
         self.market_filter_enabled = _env_bool("MARKET_FILTER_ENABLED", self.market_filter_enabled)
         self.market_fail_open_on_fetch_error = _env_bool(
             "MARKET_FAIL_OPEN_ON_FETCH_ERROR", self.market_fail_open_on_fetch_error
