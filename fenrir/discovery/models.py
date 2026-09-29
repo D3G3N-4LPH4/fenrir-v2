@@ -176,6 +176,12 @@ class TokenSnapshot:
     website: str | None = None
     organic_score: float | None = None  # provider organic-activity score
 
+    # ── Acceleration (poll-over-poll, attached by the scout's AccelTracker) ──
+    accel_txn_growth: float | None = None  # 1h txn count vs previous poll
+    accel_holder_growth: float | None = None  # holder count vs previous poll
+    accel_edge_delta: float | None = None  # 1h buy-pressure delta vs previous poll
+    accel_polls_seen: int = 0  # observations in history, including this one
+
     # ── Safety ────────────────────────────────────────────────────────
     safety: SafetySignals = field(default_factory=SafetySignals)
 
