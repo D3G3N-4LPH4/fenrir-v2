@@ -224,6 +224,8 @@ def fetch_holders(addr: str, timeout: int = 10) -> tuple[int | None, float | Non
         data = json.loads(out.stdout or "null")
     except Exception:
         return None, None
+    if not data:
+        return None, None
     toks = data if isinstance(data, list) else (data.get("tokens") or [])
     if not toks or not isinstance(toks[0], dict):
         return None, None
