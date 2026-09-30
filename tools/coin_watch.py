@@ -25,12 +25,14 @@ State: <scout-goal>/hidden_files/coin_watch.json (outside the repo).
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import subprocess
 import sys
 import time
 import urllib.parse
+from contextlib import contextmanager
 
 STATE_PATH = os.path.expanduser(
     "~/workspace/goals/token-scout-watch/hidden_files/coin_watch.json")
@@ -53,6 +55,28 @@ def save_state(state: dict, path: str = STATE_PATH) -> None:
     with open(tmp, "w") as f:
         json.dump(state, f, indent=1)
     os.replace(tmp, path)
+
+
+@contextmanager
+def locked_state(path: str = STATE_PATH):
+    """Exclusive-locked read-modify-write for the watch state.
+
+    save_state() is atomic on its own, but the load->modify->save sequence
+    is not: a tick running concurrently with an add (or two overlapping
+    ticks) lets the last writer silently drop the other's changes. On
+    2026-09-29 this ate a freshly-added coin (QUINE) — add saved 12 coins,
+    then tick saved its stale 11-coin copy. Hold this for the whole critical
+    section; do the slow network fetches outside it.
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".lock", "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            state = load_state(path)
+            yield state
+            save_state(state, path)
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
 
 
 def fetch_snapshot(addr: str, timeout: int = 20) -> dict | None:
@@ -152,56 +176,65 @@ def _fmt_usd(x) -> str:
 
 
 def cmd_add(args) -> int:
-    state = load_state()
     addr = args.address
-    coins = state.setdefault("coins", {})
-    if addr in coins:
-        print(f"already watching {addr}")
-        return 0
-    snap = fetch_snapshot(addr)
+    snap = fetch_snapshot(addr)  # network I/O outside the state lock
     now = time.time()
-    coins[addr] = {
-        "label": args.label or addr[:8],
-        "added_ts": now,
-        "base_price": snap["price"] if snap else None,
-        "alerts": not args.no_alerts,
-        "series": [],
-    }
-    if snap:
-        coins[addr]["series"].append({"ts": now, **snap})
-    save_state(state)
+    with locked_state() as state:
+        coins = state.setdefault("coins", {})
+        if addr in coins:
+            print(f"already watching {addr}")
+            return 0
+        coins[addr] = {
+            "label": args.label or addr[:8],
+            "added_ts": now,
+            "base_price": snap["price"] if snap else None,
+            "alerts": not args.no_alerts,
+            "series": [],
+        }
+        if snap:
+            coins[addr]["series"].append({"ts": now, **snap})
     print(f"watching {coins[addr]['label']} ({addr[:8]}…) "
           f"@ {_fmt_usd(snap['mcap']) if snap else '?'} mcap" if snap else "watching (no snapshot yet)")
     return 0
 
 
 def cmd_tick(args) -> int:
-    state = load_state()
-    coins = state.get("coins", {})
+    with locked_state() as state:
+        addrs = list(state.get("coins", {}).keys())
+    # Slow network fetches happen outside the state lock; the merge below
+    # re-reads fresh state so a concurrent add/remove is never clobbered.
     now = time.time()
-    for addr, coin in coins.items():
+    snaps: dict[str, dict] = {}
+    for addr in addrs:
         snap = fetch_snapshot(addr)
         if not snap:
             continue
         holders, top_pct = fetch_holders(addr)
         snap["holders"] = holders
         snap["top_holder_pct"] = top_pct
-        series = coin.setdefault("series", [])
-        prev = series[-1] if series else None
-        series.append({"ts": now, **snap})
-        del series[:-MAX_POINTS]
-        # violent-move alert vs previous tick (skipped for data-only coins)
-        if coin.get("alerts", True) and prev and prev.get("price") and snap["price"]:
-            move = (snap["price"] / prev["price"] - 1) * 100
-            if abs(move) >= ALERT_MOVE_PCT:
-                arrow = "🚀" if move > 0 else "📉"
-                _send_telegram(
-                    f"{arrow} <b>{coin['label']}</b> moved {move:+.0f}% since last check\n"
-                    f"mcap {_fmt_usd(snap['mcap'])} | 5m {_fmt_usd(snap['vol_5m'])} vol\n"
-                    f"<code>{addr}</code>")
-                coin["last_alert_ts"] = now
-    save_state(state)
-    print(f"ticked {len(coins)} coin(s)")
+        snaps[addr] = snap
+    with locked_state() as state:
+        coins = state.get("coins", {})
+        for addr, snap in snaps.items():
+            coin = coins.get(addr)
+            if coin is None:
+                continue  # removed while we were fetching
+            series = coin.setdefault("series", [])
+            prev = series[-1] if series else None
+            series.append({"ts": now, **snap})
+            del series[:-MAX_POINTS]
+            # violent-move alert vs previous tick (skipped for data-only coins)
+            if coin.get("alerts", True) and prev and prev.get("price") and snap["price"]:
+                move = (snap["price"] / prev["price"] - 1) * 100
+                if abs(move) >= ALERT_MOVE_PCT:
+                    arrow = "🚀" if move > 0 else "📉"
+                    _send_telegram(
+                        f"{arrow} <b>{coin['label']}</b> moved {move:+.0f}% since last check\n"
+                        f"mcap {_fmt_usd(snap['mcap'])} | 5m {_fmt_usd(snap['vol_5m'])} vol\n"
+                        f"<code>{addr}</code>")
+                    coin["last_alert_ts"] = now
+        n = len(coins)
+    print(f"ticked {n} coin(s)")
     return 0
 
 
@@ -244,36 +277,36 @@ def cmd_report(args) -> int:
 
 
 def cmd_alerts(args) -> int:
-    state = load_state()
-    coin = state.get("coins", {}).get(args.address)
+    with locked_state() as state:
+        coin = state.get("coins", {}).get(args.address)
+        if coin:
+            coin["alerts"] = args.state == "on"
     if not coin:
         print("not watched")
         return 1
-    coin["alerts"] = args.state == "on"
-    save_state(state)
     print(f"alerts {'on' if coin['alerts'] else 'off'} for {coin.get('label')}")
     return 0
 
 
 def cmd_remove(args) -> int:
-    state = load_state()
-    if args.address in state.get("coins", {}):
-        del state["coins"][args.address]
-        save_state(state)
-        print("removed")
-    else:
-        print("not watched")
+    with locked_state() as state:
+        if args.address in state.get("coins", {}):
+            del state["coins"][args.address]
+            removed = True
+        else:
+            removed = False
+    print("removed" if removed else "not watched")
     return 0
 
 
 def cmd_tag(args) -> int:
-    state = load_state()
-    coin = state.get("coins", {}).get(args.address)
+    with locked_state() as state:
+        coin = state.get("coins", {}).get(args.address)
+        if coin:
+            coin["set"] = args.set_name or None
     if not coin:
         print("not watched")
         return 1
-    coin["set"] = args.set_name or None
-    save_state(state)
     print(f"{coin.get('label')}: set={coin.get('set')}")
     return 0
 
