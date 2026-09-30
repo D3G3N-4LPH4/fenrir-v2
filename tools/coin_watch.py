@@ -26,7 +26,6 @@ State: <scout-goal>/hidden_files/coin_watch.json (outside the repo).
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
 import subprocess
@@ -39,6 +38,36 @@ STATE_PATH = os.path.expanduser("~/workspace/goals/token-scout-watch/hidden_file
 ALERT_MOVE_PCT = 50.0  # Telegram ping when |move vs prev tick| >= this
 MAX_POINTS = 5040  # ~7 days at 2-minute live cadence
 JUPITER_SEARCH = "https://lite-api.jup.ag/tokens/v2/search"
+
+
+# Cross-platform advisory file lock: fcntl (POSIX) is not available on Windows,
+# where d3g3n actually runs this, so fall back to msvcrt there.
+if sys.platform == "win32":
+    import msvcrt
+
+    def _lock_file(fh) -> None:
+        fh.write(" ")
+        fh.flush()
+        fh.seek(0)
+        try:
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+        except OSError:
+            pass  # best-effort — a single-user tool, not worth blocking on
+
+    def _unlock_file(fh) -> None:
+        try:
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+else:
+    import fcntl
+
+    def _lock_file(fh) -> None:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+
+    def _unlock_file(fh) -> None:
+        fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 def load_state(path: str = STATE_PATH) -> dict:
@@ -71,13 +100,13 @@ def locked_state(path: str = STATE_PATH):
     """
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path + ".lock", "w") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
+        _lock_file(lf)
         try:
             state = load_state(path)
             yield state
             save_state(state, path)
         finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+            _unlock_file(lf)
 
 
 def _aggregate_pairs(pairs: list[dict]) -> tuple[dict, int]:
