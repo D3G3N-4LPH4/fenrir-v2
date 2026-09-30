@@ -4,6 +4,7 @@
 Reads TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from the repo .env.
 Usage:
   python tools/telegram_notify.py "message text"
+  python tools/telegram_notify.py --parse-mode Markdown "formatted *text*"
   echo "message text" | python tools/telegram_notify.py
 """
 
@@ -30,7 +31,7 @@ def load_env(path: str) -> dict:
     return env
 
 
-def send_message(token: str, chat_id: str, text: str) -> dict:
+def send_message(token: str, chat_id: str, text: str, parse_mode: str = "") -> dict:
     """POST to sendMessage with a few quick retries on transport-level failures.
 
     The sandbox proxy occasionally drops connections mid-request ("Remote end closed
@@ -43,9 +44,10 @@ def send_message(token: str, chat_id: str, text: str) -> dict:
     import time
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = urllib.parse.urlencode(
-        {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
-    ).encode()
+    fields = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+    if parse_mode:
+        fields["parse_mode"] = parse_mode
+    payload = urllib.parse.urlencode(fields).encode()
     last_exc: Exception | None = None
     for attempt in range(3):
         try:
@@ -75,14 +77,22 @@ def main() -> int:
         print("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing from .env", file=sys.stderr)
         return 1
     if len(sys.argv) > 1:
-        text = " ".join(sys.argv[1:])
+        args = sys.argv[1:]
+        parse_mode = ""
+        if "--parse-mode" in args:
+            i = args.index("--parse-mode")
+            if i + 1 < len(args):
+                parse_mode = args[i + 1]
+            del args[i : i + 2]
+        text = " ".join(args)
     else:
+        parse_mode = ""
         text = sys.stdin.read().strip()
     if not text:
         print("no message text", file=sys.stderr)
         return 1
     try:
-        result = send_message(token, chat_id, text)
+        result = send_message(token, chat_id, text, parse_mode=parse_mode)
     except Exception as e:  # noqa: BLE001 - report API/transport errors plainly
         print(f"telegram send failed: {e}", file=sys.stderr)
         return 2

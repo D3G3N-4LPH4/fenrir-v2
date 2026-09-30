@@ -162,6 +162,8 @@ class TokenSnapshot:
 
     # ── Solana-specific launch extras (None off Solana) ───────────────
     bond_progress_pct: float | None = None  # pump.fun bonding-curve progress
+    bond_inflow_sol: float | None = None  # SOL into the curve since prev check (velocity)
+    bond_sol_remaining: float | None = None  # SOL still needed to hit 85 SOL graduation
     migrated: bool | None = None  # graduated off the curve to an AMM
     creator_pct: float | None = None
     sniper_pct: float | None = None  # % held by launch snipers

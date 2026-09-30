@@ -42,8 +42,14 @@ from tools.scout import hard_fail, safety_unknown  # noqa: E402
 from fenrir.discovery.playbooks import PlaybookTagger  # noqa: E402
 
 from fenrir.discovery.filters import FilterEngine, FilterName  # noqa: E402
+from fenrir.discovery.models import Chain  # noqa: E402
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider  # noqa: E402
 from fenrir.discovery.providers.goplus import GoPlusProvider  # noqa: E402
+from fenrir.discovery.providers.perceptor import (  # noqa: E402
+    ROBINHOOD_CHAIN_ID,
+    PerceptorProvider,
+    enrich_robinhood_safety,
+)
 from fenrir.discovery.scoring import ScoringEngine  # noqa: E402
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -127,7 +133,9 @@ async def poll_tg_api(session: aiohttp.ClientSession, token: str, offset: int):
     return data.get("result", [])
 
 
-async def evaluate(addr: str, ds, gp, engine, scorer, tagger, min_score):
+async def evaluate(
+    addr: str, ds, gp, engine, scorer, tagger, min_score, perceptor: PerceptorProvider | None = None
+):
     """Run one address through the pipeline; return candidate dict or None."""
     try:
         snap = await ds.fetch_snapshot(addr)  # chain=None: DexScreener resolves
@@ -139,11 +147,42 @@ async def evaluate(addr: str, ds, gp, engine, scorer, tagger, min_score):
         await enrich_safety(snap, gp)
     except Exception:
         pass
+    # Solana: live bonding-curve position (graduation_watch filter data).
+    if snap.chain is Chain.SOLANA:
+        try:
+            from fenrir.discovery.providers.pumpfun import annotate_bond_curve
+
+            await annotate_bond_curve(snap)
+        except Exception:
+            pass
     if hard_fail(snap):
         return None
     results = {fn.value: engine.evaluate(snap, fn) for fn in FilterName}
     passed = [k for k, r in results.items() if r.passed]
     score = scorer.score(snap)
+    # Robinhood safety net: Perceptor forensics when GoPlus has nothing.
+    # A landed verdict re-runs the score (safety_unknown cap may lift).
+    perceptor_info: dict | None = None
+    if perceptor is not None and snap.chain is Chain.ROBINHOOD and safety_unknown(snap):
+        try:
+            report = await enrich_robinhood_safety(snap, perceptor)
+        except Exception:  # noqa: BLE001 - fail-open
+            report = None
+        if report is not None:
+            if hard_fail(snap):
+                return None
+            score = scorer.score(snap)
+            perceptor_info = {
+                "status": "complete",
+                "band": report.band,
+                "band_label": report.band_label,
+                "headline": report.headline,
+                "investigation_id": report.investigation_id,
+            }
+        else:
+            inv_id = await perceptor.ensure_investigation(ROBINHOOD_CHAIN_ID, snap.token_address)
+            if inv_id:
+                perceptor_info = {"status": "pending", "investigation_id": inv_id}
     if not passed or score.overall < min_score:
         return None
     return {
@@ -162,9 +201,13 @@ async def evaluate(addr: str, ds, gp, engine, scorer, tagger, min_score):
         "sells_24h": snap.txns_24h_sells,
         "holder_count": snap.holder_count,
         "passed_filters": passed,
+        "bond_progress_pct": snap.bond_progress_pct,
+        "bond_inflow_sol": snap.bond_inflow_sol,
+        "bond_sol_remaining": snap.bond_sol_remaining,
         "playbooks": tagger.tag(snap).as_dict(),
         "score": score.as_dict(),
         "safety_unknown": safety_unknown(snap),
+        "perceptor": perceptor_info,
         "dexscreener": f"https://dexscreener.com/{snap.chain.value}/{snap.token_address}",
     }
 
@@ -248,6 +291,7 @@ async def amain() -> int:
 
     ds = DexScreenerProvider(timeout_seconds=15)
     gp = GoPlusProvider(timeout_seconds=10)
+    perceptor = PerceptorProvider()
     engine = FilterEngine()
     scorer = ScoringEngine()
     tagger = PlaybookTagger()
@@ -255,7 +299,7 @@ async def amain() -> int:
     scanned = 0
     try:
         for addr, src in uniq.items():
-            cand = await evaluate(addr, ds, gp, engine, scorer, tagger, args.min_score)
+            cand = await evaluate(addr, ds, gp, engine, scorer, tagger, args.min_score, perceptor)
             scanned += 1
             if cand:
                 cand["source"] = src
@@ -264,6 +308,7 @@ async def amain() -> int:
     finally:
         await ds.close()
         await gp.close()
+        await perceptor.close()
 
     candidates.sort(key=lambda c: -c["score"]["overall"])
     out = {"ts": time.time(), "scanned": scanned, "candidates": candidates}

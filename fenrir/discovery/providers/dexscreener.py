@@ -25,6 +25,31 @@ logger = logging.getLogger("FENRIR.DexScreener")
 
 DEXSCREENER_TOKENS = "https://api.dexscreener.com/latest/dex/tokens"
 DEXSCREENER_BOOSTS = "https://api.dexscreener.com/token-boosts/top/v1"
+DEXSCREENER_PROFILES = "https://api.dexscreener.com/token-profiles/latest/v1"
+
+
+def extract_profiled_addresses(payload: Any, chain: Chain) -> list[str]:
+    """Pure parser: token-profiles/latest payload -> addresses on ``chain``.
+
+    Latest-profile entries are teams that just paid for promotion — a paid
+    marketing signal. Split out for unit testing; never raises.
+    """
+    try:
+        items = payload if isinstance(payload, list) else []
+        seen: set[str] = set()
+        out: list[str] = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            if Chain.from_dexscreener(it.get("chainId")) is not chain:
+                continue
+            addr = it.get("tokenAddress")
+            if addr and addr not in seen:
+                seen.add(addr)
+                out.append(addr)
+        return out
+    except Exception:  # noqa: BLE001 - parser must never raise
+        return []
 
 
 def _f(value: Any) -> float:
@@ -125,6 +150,23 @@ class DexScreenerProvider:
         """Public accessor for a token's raw DexScreener pairs (used by the arbitrage
         monitor, which needs per-pool priceNative/quoteToken/liquidity). Fail-open."""
         return await self._fetch_pairs(token_address)
+
+    async def fetch_profiled_addresses(self, chain: Chain, limit: int = 20) -> list[str]:
+        """Return tokens with newly-updated DexScreener profiles on ``chain``.
+
+        A fresh paid profile is a promotion signal — teams promoting a launch.
+        Cross-chain feed, filtered locally. Fail-open.
+        """
+        try:
+            session = await self._get_session()
+            async with session.get(DEXSCREENER_PROFILES, timeout=self.timeout) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json()
+        except Exception as e:  # noqa: BLE001 - fail-open
+            logger.warning("DexScreener profiles fetch failed: %s", e)
+            return []
+        return extract_profiled_addresses(data, chain)[:limit]
 
     async def _fetch_pairs(self, token_address: str) -> list[dict[str, Any]]:
         try:
