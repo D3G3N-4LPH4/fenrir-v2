@@ -199,6 +199,9 @@ class DegenIgnitionStrategy(TradingStrategy):
             logger.debug("DegenIgnition reject %s...: %s", token_address[:8], " | ".join(failures))
             return None
 
+        # The failure guard above returns when either is None; safe to coerce now.
+        assert ratio is not None and share is not None
+
         signal = DegenIgnitionSignal(
             token_address=token_address,
             pair_address=pair_address,
@@ -222,7 +225,10 @@ class DegenIgnitionStrategy(TradingStrategy):
         )
         logger.info(
             "DegenIgnition SIGNAL %s... | age=%.0fm mcap=$%.0f b/s=%.1f buys1h=%d",
-            token_address[:8], age_minutes, mcap,
-            float(ratio) if ratio != float("inf") else 999.0, buys_1h,
+            token_address[:8],
+            age_minutes,
+            mcap,
+            float(ratio) if ratio != float("inf") else 999.0,
+            buys_1h,
         )
         return signal

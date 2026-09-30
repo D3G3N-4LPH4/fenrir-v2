@@ -1,9 +1,10 @@
 """Tests for the risk-on discovery tier: degen_launch / volatility_breakout
 filters plus the degen_ignition / volatility_breakout playbook strategies."""
+
 from __future__ import annotations
 
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -79,6 +80,7 @@ def _breakout() -> TokenSnapshot:
 
 # ── Filters ───────────────────────────────────────────────────────────
 
+
 def test_degen_launch_passes_ideal() -> None:
     r = FilterEngine().evaluate(_degen(), FilterName.DEGEN_LAUNCH)
     assert r.passed, r.failures
@@ -124,6 +126,7 @@ def test_new_filters_registered_in_defaults() -> None:
 
 
 # ── Strategies ────────────────────────────────────────────────────────
+
 
 def _active(cls):
     strat = cls(BotConfig())

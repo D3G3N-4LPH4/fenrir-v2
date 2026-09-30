@@ -57,8 +57,8 @@ class PumpFunProvider:
     """Live pump.fun bonding-curve reads over Solana JSON-RPC."""
 
     def __init__(self, rpc_url: str | None = None, timeout_seconds: float = 15.0) -> None:
-        self.rpc_url = rpc_url or os.getenv(
-            "SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com"
+        self.rpc_url = (
+            rpc_url or os.getenv("SOLANA_RPC_URL") or "https://api.mainnet-beta.solana.com"
         )
         self.timeout = timeout_seconds
         self.program = PumpFunProgram()
@@ -96,7 +96,8 @@ class PumpFunProvider:
             if "error" in payload:
                 logger.debug("pumpfun RPC %s error: %s", method, payload["error"])
                 return None
-            return payload.get("result")
+            result: dict | None = payload.get("result")
+            return result
         except Exception as e:  # noqa: BLE001 - discovery is fail-open
             logger.debug("pumpfun RPC %s failed: %s", method, e)
             return None
@@ -127,7 +128,7 @@ class PumpFunProvider:
             try:
                 pda, _ = self.program.derive_bonding_curve_address(Pubkey.from_string(mint))
                 pairs.append((mint, str(pda)))
-            except Exception:  # noqa: BLE001 - bad mint string, skip
+            except Exception:  # noqa: BLE001, S112 - bad mint string, skip
                 continue
         for i in range(0, len(pairs), _RPC_BATCH_SIZE):
             chunk = pairs[i : i + _RPC_BATCH_SIZE]
@@ -138,7 +139,7 @@ class PumpFunProvider:
             )
             if not result or not isinstance(result.get("value"), list):
                 continue
-            for (mint, _), value in zip(chunk, result["value"]):
+            for (mint, _), value in zip(chunk, result["value"], strict=False):
                 state = self._decode_account(value)
                 if state is not None:
                     out[mint] = state
@@ -201,7 +202,8 @@ class PumpFunProvider:
             return None
         if now - prev_check > _MAX_INFLOW_GAP_SECONDS:
             return None
-        return round(last_sol - prev_sol, 4)
+        inflow: float = round(last_sol - prev_sol, 4)
+        return inflow
 
     @staticmethod
     def prune_state(
@@ -226,8 +228,9 @@ class PumpFunProvider:
         return max(0.0, (MIGRATION_THRESHOLD_SOL - state.real_sol_reserves) / 1e9)
 
 
-async def annotate_bond_curve(snap, provider: PumpFunProvider | None = None,
-                             path: str = DEFAULT_STATE_PATH) -> bool:
+async def annotate_bond_curve(
+    snap, provider: PumpFunProvider | None = None, path: str = DEFAULT_STATE_PATH
+) -> bool:
     """Populate a Solana snapshot's bond fields from RPC + the state file.
 
     Reuses this run's source-sweep reading when fresh (<120s, no extra RPC);

@@ -1,8 +1,9 @@
 """Tests for the scout's newer discovery sources (GeckoTerminal, DS profiles)."""
+
 from __future__ import annotations
 
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -13,22 +14,32 @@ from tools.scout import dedupe_sources  # noqa: E402
 
 
 def _gt_pool(token_id: str) -> dict:
-    return {"relationships": {"base_token": {"data": {"id": token_id, "type": "token"}},
-                              "quote_token": {"data": {"id": "solana_So11111111111111111111111111111111111111112",
-                                                       "type": "token"}}},
-            "attributes": {"name": "X / SOL"}}
+    return {
+        "relationships": {
+            "base_token": {"data": {"id": token_id, "type": "token"}},
+            "quote_token": {
+                "data": {
+                    "id": "solana_So11111111111111111111111111111111111111112",
+                    "type": "token",
+                }
+            },
+        },
+        "attributes": {"name": "X / SOL"},
+    }
 
 
 def test_geckoterminal_parser_strips_prefix_and_dedupes() -> None:
-    payload = {"data": [
-        _gt_pool("solana_AAA111"),
-        _gt_pool("solana_BBB222"),
-        _gt_pool("solana_AAA111"),  # dup
-        _gt_pool("solana_So11111111111111111111111111111111111111112"),  # wSOL quote
-        _gt_pool("ethereum_CCC333"),  # wrong network prefix
-        {"relationships": {}},  # malformed
-        "not-a-dict",
-    ]}
+    payload = {
+        "data": [
+            _gt_pool("solana_AAA111"),
+            _gt_pool("solana_BBB222"),
+            _gt_pool("solana_AAA111"),  # dup
+            _gt_pool("solana_So11111111111111111111111111111111111111112"),  # wSOL quote
+            _gt_pool("ethereum_CCC333"),  # wrong network prefix
+            {"relationships": {}},  # malformed
+            "not-a-dict",
+        ]
+    }
     out = extract_pool_token_addresses(payload, "solana", Chain.SOLANA)
     assert out == ["AAA111", "BBB222"]
 
@@ -55,5 +66,9 @@ def test_ds_profiles_parser_filters_chain_and_dedupes() -> None:
 
 def test_dedupe_sources_first_source_keeps_credit() -> None:
     srcs = [("boosted", ["A", "B"]), ("gecko_new", ["B", "C"]), ("ds_profile", ["C", "D"])]
-    assert dedupe_sources(srcs) == [("boosted", "A"), ("boosted", "B"),
-                                    ("gecko_new", "C"), ("ds_profile", "D")]
+    assert dedupe_sources(srcs) == [
+        ("boosted", "A"),
+        ("boosted", "B"),
+        ("gecko_new", "C"),
+        ("ds_profile", "D"),
+    ]

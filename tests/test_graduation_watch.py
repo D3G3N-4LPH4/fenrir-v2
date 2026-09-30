@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import struct
 import time
+from typing import Any
 
 from fenrir.discovery.alerts import format_scout_alert
 from fenrir.discovery.filters import FilterEngine, FilterName
@@ -48,7 +49,7 @@ def _curve_bytes(real_sol_lamports: int, complete: bool = False) -> bytes:
 
 
 def _grad_snapshot(**kw) -> TokenSnapshot:
-    base = dict(
+    base: dict[str, Any] = dict(
         chain=Chain.SOLANA,
         token_address=TOKEN,
         market_cap_usd=40_000,
@@ -105,6 +106,7 @@ class TestCurveDecode:
     def test_sol_to_graduation(self):
         prog = PumpFunProgram()
         state = prog.decode_bonding_curve(_curve_bytes(42_500_000_000))
+        assert state is not None
         assert PumpFunProvider.sol_to_graduation(state) == 42.5
 
 
@@ -117,7 +119,9 @@ class TestVelocityState:
     def _state(self, sol: float):
         prog = PumpFunProgram()
         lamports = int(sol * 1e9)
-        return prog.decode_bonding_curve(_curve_bytes(lamports))
+        state = prog.decode_bonding_curve(_curve_bytes(lamports))
+        assert state is not None
+        return state
 
     def test_inflow_between_readings(self, tmp_path):
         path = str(tmp_path / "curves.json")
@@ -177,17 +181,13 @@ class TestGraduationWatch:
         assert any("Bond 30%" in f for f in r.failures)
 
     def test_fail_stalled_inflow(self):
-        r = self.engine.evaluate(
-            _grad_snapshot(bond_inflow_sol=0.1), FilterName.GRADUATION_WATCH
-        )
+        r = self.engine.evaluate(_grad_snapshot(bond_inflow_sol=0.1), FilterName.GRADUATION_WATCH)
         assert not r.passed
         assert any("inflow" in f for f in r.failures)
 
     def test_first_sighting_warns_not_fails_on_inflow(self):
         # inflow unknown (first sighting) -> warn only, can still pass
-        r = self.engine.evaluate(
-            _grad_snapshot(bond_inflow_sol=None), FilterName.GRADUATION_WATCH
-        )
+        r = self.engine.evaluate(_grad_snapshot(bond_inflow_sol=None), FilterName.GRADUATION_WATCH)
         assert r.passed
         assert any("inflow" in w for w in r.warnings)
 
@@ -202,16 +202,17 @@ class TestGraduationWatch:
 
     def test_fail_robinhood_token(self):
         # A Robinhood token has no curve data -> require_bond_data fails it
-        snap = _grad_snapshot(chain=Chain.ROBINHOOD,
-                              bond_progress_pct=None, bond_inflow_sol=None,
-                              bond_sol_remaining=None)
+        snap = _grad_snapshot(
+            chain=Chain.ROBINHOOD,
+            bond_progress_pct=None,
+            bond_inflow_sol=None,
+            bond_sol_remaining=None,
+        )
         r = self.engine.evaluate(snap, FilterName.GRADUATION_WATCH)
         assert not r.passed
 
     def test_fail_too_old(self):
-        r = self.engine.evaluate(
-            _grad_snapshot(age_minutes=300.0), FilterName.GRADUATION_WATCH
-        )
+        r = self.engine.evaluate(_grad_snapshot(age_minutes=300.0), FilterName.GRADUATION_WATCH)
         assert not r.passed
 
     def test_midcap_migrated_regression(self):
@@ -251,13 +252,22 @@ class TestGraduationWatch:
 class TestAlertCurveLine:
     def _cand(self, **kw):
         base = {
-            "symbol": "TEST", "name": "Test Token", "chain": "solana",
-            "source": "graduation", "address": TOKEN,
-            "score": {"overall": 72.5}, "passed_filters": ["graduation_watch"],
-            "market_cap_usd": 40000, "liquidity_usd": 8000,
-            "volume_24h_usd": 20000, "buys_1h": 60, "sells_1h": 40,
-            "price_change_1h_pct": 12.0, "age_minutes": 60,
-            "bond_progress_pct": 67.0, "bond_sol_remaining": 28.0,
+            "symbol": "TEST",
+            "name": "Test Token",
+            "chain": "solana",
+            "source": "graduation",
+            "address": TOKEN,
+            "score": {"overall": 72.5},
+            "passed_filters": ["graduation_watch"],
+            "market_cap_usd": 40000,
+            "liquidity_usd": 8000,
+            "volume_24h_usd": 20000,
+            "buys_1h": 60,
+            "sells_1h": 40,
+            "price_change_1h_pct": 12.0,
+            "age_minutes": 60,
+            "bond_progress_pct": 67.0,
+            "bond_sol_remaining": 28.0,
             "bond_inflow_sol": 2.5,
             "dexscreener": f"https://dexscreener.com/solana/{TOKEN}",
         }
@@ -270,7 +280,7 @@ class TestAlertCurveLine:
         assert "28 SOL to graduation" in text
 
     def test_no_curve_line_without_data(self):
-        text = format_scout_alert(self._cand(bond_progress_pct=None,
-                                            bond_sol_remaining=None,
-                                            bond_inflow_sol=None))
+        text = format_scout_alert(
+            self._cand(bond_progress_pct=None, bond_sol_remaining=None, bond_inflow_sol=None)
+        )
         assert "Bonding curve" not in text

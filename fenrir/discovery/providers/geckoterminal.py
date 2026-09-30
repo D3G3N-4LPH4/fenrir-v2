@@ -73,7 +73,7 @@ def extract_pool_token_addresses(payload: Any, network: str, chain: Chain) -> li
                 continue
             if not isinstance(token_id, str) or not token_id.startswith(prefix):
                 continue
-            addr = token_id[len(prefix):]
+            addr = token_id[len(prefix) :]
             if not addr or addr in deny or addr in seen:
                 continue
             seen.add(addr)
@@ -97,7 +97,9 @@ class GeckoTerminalProvider:
         if self._session is None or self._session.closed:
             import aiohttp
 
-            self._session = aiohttp.ClientSession(trust_env=True, headers={"User-Agent": "FENRIR/2.0 discovery"})
+            self._session = aiohttp.ClientSession(
+                trust_env=True, headers={"User-Agent": "FENRIR/2.0 discovery"}
+            )
         return self._session
 
     async def close(self) -> None:

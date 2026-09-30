@@ -1,4 +1,5 @@
 """Tests for fenrir.discovery.alerts — the Telegram scout alert formatter."""
+
 from fenrir.discovery.alerts import escape_md, fmt_usd, format_scout_alert
 
 
@@ -44,7 +45,10 @@ def test_full_alert_structure():
     assert "1h 11 buys / 0 sells · +112% 1h" in msg
     assert "2m old" in msg
     assert "`0x9d45b233408e22cab2eead09782aec3ece263a0f`" in msg
-    assert "[DexScreener](https://dexscreener.com/robinhood/0x9d45b233408e22cab2eead09782aec3ece263a0f)" in msg
+    assert (
+        "[DexScreener](https://dexscreener.com/robinhood/0x9d45b233408e22cab2eead09782aec3ece263a0f)"
+        in msg
+    )
     assert "⚠️ safety not verifiable on this chain" in msg
 
 
@@ -61,7 +65,12 @@ def test_no_playbooks_omits_playbook_line():
 
 def test_confluent_flag_appended():
     msg = format_scout_alert(
-        _cand(playbooks={"playbooks": [{"display_name": "Momentum", "strength": 0.5}], "confluent": True})
+        _cand(
+            playbooks={
+                "playbooks": [{"display_name": "Momentum", "strength": 0.5}],
+                "confluent": True,
+            }
+        )
     )
     assert "⚡confluent" in msg
 

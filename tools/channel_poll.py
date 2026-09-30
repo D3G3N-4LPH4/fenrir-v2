@@ -133,8 +133,9 @@ async def poll_tg_api(session: aiohttp.ClientSession, token: str, offset: int):
     return data.get("result", [])
 
 
-async def evaluate(addr: str, ds, gp, engine, scorer, tagger, min_score,
-                   perceptor: PerceptorProvider | None = None):
+async def evaluate(
+    addr: str, ds, gp, engine, scorer, tagger, min_score, perceptor: PerceptorProvider | None = None
+):
     """Run one address through the pipeline; return candidate dict or None."""
     try:
         snap = await ds.fetch_snapshot(addr)  # chain=None: DexScreener resolves
@@ -150,6 +151,7 @@ async def evaluate(addr: str, ds, gp, engine, scorer, tagger, min_score,
     if snap.chain is Chain.SOLANA:
         try:
             from fenrir.discovery.providers.pumpfun import annotate_bond_curve
+
             await annotate_bond_curve(snap)
         except Exception:
             pass
@@ -297,8 +299,7 @@ async def amain() -> int:
     scanned = 0
     try:
         for addr, src in uniq.items():
-            cand = await evaluate(addr, ds, gp, engine, scorer, tagger, args.min_score,
-                                  perceptor)
+            cand = await evaluate(addr, ds, gp, engine, scorer, tagger, args.min_score, perceptor)
             scanned += 1
             if cand:
                 cand["source"] = src

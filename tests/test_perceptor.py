@@ -26,7 +26,8 @@ FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "perceptor_oxp.jso
 
 def load_fixture() -> dict:
     with open(FIXTURE) as f:
-        return json.load(f)
+        data: dict = json.load(f)
+        return data
 
 
 def test_parse_oxp_verdict() -> None:
@@ -39,7 +40,9 @@ def test_parse_oxp_verdict() -> None:
 
 
 def test_parse_oxp_safety_signals() -> None:
-    s = parse_perceptor(load_fixture()).safety
+    r = parse_perceptor(load_fixture())
+    assert r is not None
+    s = r.safety
     assert s.lp_locked_or_burned is True
     assert s.lp_locked_pct == 100.0
     assert s.ownership_renounced is True
@@ -114,7 +117,8 @@ async def test_ensure_investigation_posts_once(tmp_path) -> None:
     class FakeSession:
         closed = False
 
-        def post(self, url, json=None, timeout=None):
+        def post(self, url, json: dict | None = None, timeout=None):
+            assert json is not None
             posts.append(json)
             return FakeResp()
 
@@ -161,10 +165,18 @@ async def test_refresh_report_completes_pending(tmp_path) -> None:
             pass
 
     cache = tmp_path / "c.json"
-    cache.write_text(json.dumps({"0xabc": {
-        "investigation_id": "d69cff1d27574161b11fef9b28a561a1",
-        "status": "pending", "report": None, "checked_at": 0,
-    }}))
+    cache.write_text(
+        json.dumps(
+            {
+                "0xabc": {
+                    "investigation_id": "d69cff1d27574161b11fef9b28a561a1",
+                    "status": "pending",
+                    "report": None,
+                    "checked_at": 0,
+                }
+            }
+        )
+    )
     p = PerceptorProvider(cache_path=str(cache))
 
     async def fake_session():
@@ -177,7 +189,9 @@ async def test_refresh_report_completes_pending(tmp_path) -> None:
     assert report.safety.lp_locked_or_burned is True
     # persisted: a second provider reading the same cache needs no network
     p2 = PerceptorProvider(cache_path=str(cache))
-    assert p2.cached_report("0xabc").band == "medium"
+    r2 = p2.cached_report("0xabc")
+    assert r2 is not None
+    assert r2.band == "medium"
     await p.close()
     await p2.close()
 
@@ -186,10 +200,18 @@ async def test_refresh_report_completes_pending(tmp_path) -> None:
 async def test_enrich_merges_completed_report(tmp_path) -> None:
     data = load_fixture()
     cache = tmp_path / "c.json"
-    cache.write_text(json.dumps({"0x32dae312abe8f6fdb782907b85edbc90d2e74b02": {
-        "investigation_id": "d69cff1d27574161b11fef9b28a561a1",
-        "status": "complete", "report": data, "checked_at": 0,
-    }}))
+    cache.write_text(
+        json.dumps(
+            {
+                "0x32dae312abe8f6fdb782907b85edbc90d2e74b02": {
+                    "investigation_id": "d69cff1d27574161b11fef9b28a561a1",
+                    "status": "complete",
+                    "report": data,
+                    "checked_at": 0,
+                }
+            }
+        )
+    )
     p = PerceptorProvider(cache_path=str(cache))
     snap = _snap()
     assert snap.safety.is_empty

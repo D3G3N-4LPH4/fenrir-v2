@@ -19,6 +19,7 @@ Usage:
   python tools/scout.py [--chains solana robinhood] [--limit 25]
       [--extra-limit 12] [--min-score 60] [--sources boosted gecko ds_profile]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -75,8 +76,9 @@ def hard_fail(snap) -> str | None:
     return None
 
 
-async def fetch_graduation_addresses(gt: GeckoTerminalProvider, chain: Chain,
-                                     limit: int) -> list[str]:
+async def fetch_graduation_addresses(
+    gt: GeckoTerminalProvider, chain: Chain, limit: int
+) -> list[str]:
     """Solana tokens sitting at 50-85% of the pump.fun bonding curve.
 
     The base universe is GeckoTerminal's fresh pools; each address gets one
@@ -84,6 +86,7 @@ async def fetch_graduation_addresses(gt: GeckoTerminalProvider, chain: Chain,
     is the pre-DexScreener-momentum discovery the other sources can't see.
     """
     from fenrir.discovery.providers.pumpfun import PumpFunProvider
+
     provider = PumpFunProvider()
     try:
         base = await gt.fetch_new_pool_addresses(chain, limit * 2)
@@ -105,39 +108,63 @@ async def fetch_graduation_addresses(gt: GeckoTerminalProvider, chain: Chain,
         await provider.close()
 
 
-async def fetch_source_addresses(chain: Chain, ds: DexScreenerProvider,
-                                gt: GeckoTerminalProvider, sources: list[str],
-                                limit: int, extra_limit: int) -> list[tuple[str, list[str]]]:
+async def fetch_source_addresses(
+    chain: Chain,
+    ds: DexScreenerProvider,
+    gt: GeckoTerminalProvider,
+    sources: list[str],
+    limit: int,
+    extra_limit: int,
+) -> list[tuple[str, list[str]]]:
     """Pull addresses per source for one chain. Fail-open per source."""
     out: list[tuple[str, list[str]]] = []
 
     async def safe(coro, name: str) -> list[str]:
         try:
-            return await coro
+            result: list[str] = await coro
+            return result
         except Exception:
             return []
 
     if "boosted" in sources:
-        out.append((SOURCE_BOOSTED,
-                    await safe(ds.fetch_boosted_addresses(chain), SOURCE_BOOSTED)))
+        out.append((SOURCE_BOOSTED, await safe(ds.fetch_boosted_addresses(chain), SOURCE_BOOSTED)))
     if "gecko" in sources:
-        out.append((SOURCE_GECKO_NEW,
-                    await safe(gt.fetch_new_pool_addresses(chain, extra_limit), SOURCE_GECKO_NEW)))
-        out.append((SOURCE_GECKO_TRENDING,
-                    await safe(gt.fetch_trending_addresses(chain, extra_limit), SOURCE_GECKO_TRENDING)))
+        out.append(
+            (
+                SOURCE_GECKO_NEW,
+                await safe(gt.fetch_new_pool_addresses(chain, extra_limit), SOURCE_GECKO_NEW),
+            )
+        )
+        out.append(
+            (
+                SOURCE_GECKO_TRENDING,
+                await safe(gt.fetch_trending_addresses(chain, extra_limit), SOURCE_GECKO_TRENDING),
+            )
+        )
     if "ds_profile" in sources:
-        out.append((SOURCE_DS_PROFILE,
-                    await safe(ds.fetch_profiled_addresses(chain, extra_limit), SOURCE_DS_PROFILE)))
+        out.append(
+            (
+                SOURCE_DS_PROFILE,
+                await safe(ds.fetch_profiled_addresses(chain, extra_limit), SOURCE_DS_PROFILE),
+            )
+        )
     if "graduation" in sources and chain is Chain.SOLANA:
-        out.append((SOURCE_GRADUATION,
-                    await safe(fetch_graduation_addresses(gt, chain, extra_limit),
-                               SOURCE_GRADUATION)))
+        out.append(
+            (
+                SOURCE_GRADUATION,
+                await safe(fetch_graduation_addresses(gt, chain, extra_limit), SOURCE_GRADUATION),
+            )
+        )
 
     # Per-source caps (boosted uses --limit; extras use --extra-limit).
-    caps = {SOURCE_BOOSTED: limit, SOURCE_GECKO_NEW: extra_limit,
-            SOURCE_GECKO_TRENDING: extra_limit, SOURCE_DS_PROFILE: extra_limit,
-            SOURCE_GRADUATION: extra_limit}
-    return [(name, addrs[:caps[name]]) for name, addrs in out]
+    caps = {
+        SOURCE_BOOSTED: limit,
+        SOURCE_GECKO_NEW: extra_limit,
+        SOURCE_GECKO_TRENDING: extra_limit,
+        SOURCE_DS_PROFILE: extra_limit,
+        SOURCE_GRADUATION: extra_limit,
+    }
+    return [(name, addrs[: caps[name]]) for name, addrs in out]
 
 
 def dedupe_sources(source_addrs: list[tuple[str, list[str]]]) -> list[tuple[str, str]]:
@@ -156,11 +183,18 @@ def dedupe_sources(source_addrs: list[tuple[str, list[str]]]) -> list[tuple[str,
     return out
 
 
-async def evaluate_address(source: str, addr: str, chain: Chain, ds: DexScreenerProvider,
-                           gp: GoPlusProvider, engine: FilterEngine,
-                           scorer: ScoringEngine, tagger: PlaybookTagger,
-                           min_score: float,
-                           perceptor: PerceptorProvider | None = None) -> dict | None:
+async def evaluate_address(
+    source: str,
+    addr: str,
+    chain: Chain,
+    ds: DexScreenerProvider,
+    gp: GoPlusProvider,
+    engine: FilterEngine,
+    scorer: ScoringEngine,
+    tagger: PlaybookTagger,
+    min_score: float,
+    perceptor: PerceptorProvider | None = None,
+) -> dict | None:
     """Run one address through snapshot + safety + filters + scoring.
 
     Returns the candidate dict, or None when it doesn't clear the bar.
@@ -179,6 +213,7 @@ async def evaluate_address(source: str, addr: str, chain: Chain, ds: DexScreener
     if snap.chain is Chain.SOLANA:
         try:
             from fenrir.discovery.providers.pumpfun import annotate_bond_curve
+
             await annotate_bond_curve(snap)
         except Exception:
             pass
@@ -224,17 +259,15 @@ async def evaluate_address(source: str, addr: str, chain: Chain, ds: DexScreener
         "liquidity_usd": round(snap.liquidity_usd, 2),
         "volume_24h_usd": round(snap.volume_24h_usd, 2),
         "age_minutes": round(snap.age_minutes or 0),
-        "buys_1h": snap.txns_1h_buys, "sells_1h": snap.txns_1h_sells,
-        "buys_24h": snap.txns_24h_buys, "sells_24h": snap.txns_24h_sells,
+        "buys_1h": snap.txns_1h_buys,
+        "sells_1h": snap.txns_1h_sells,
+        "buys_24h": snap.txns_24h_buys,
+        "sells_24h": snap.txns_24h_sells,
         "buy_sell_ratio_1h": (
-            round(ratio_1h, 2)
-            if ratio_1h is not None and ratio_1h != float("inf")
-            else None
+            round(ratio_1h, 2) if ratio_1h is not None and ratio_1h != float("inf") else None
         ),
         "volume_1h_share_pct": (
-            round(snap.volume_1h_share * 100, 1)
-            if snap.volume_1h_share is not None
-            else None
+            round(snap.volume_1h_share * 100, 1) if snap.volume_1h_share is not None else None
         ),
         "turnover_24h": round(snap.turnover_24h, 2) if snap.turnover_24h else None,
         "price_change_1h_pct": snap.price_change_1h_pct,
@@ -255,18 +288,27 @@ async def evaluate_address(source: str, addr: str, chain: Chain, ds: DexScreener
     }
 
 
-async def scout_chain(chain: Chain, ds: DexScreenerProvider, gt: GeckoTerminalProvider,
-                      gp: GoPlusProvider, engine: FilterEngine, scorer: ScoringEngine,
-                      tagger: PlaybookTagger, sources: list[str],
-                      limit: int, extra_limit: int,
-                      min_score: float,
-                      perceptor: PerceptorProvider | None = None) -> tuple[list[dict], dict[str, int]]:
+async def scout_chain(
+    chain: Chain,
+    ds: DexScreenerProvider,
+    gt: GeckoTerminalProvider,
+    gp: GoPlusProvider,
+    engine: FilterEngine,
+    scorer: ScoringEngine,
+    tagger: PlaybookTagger,
+    sources: list[str],
+    limit: int,
+    extra_limit: int,
+    min_score: float,
+    perceptor: PerceptorProvider | None = None,
+) -> tuple[list[dict], dict[str, int]]:
     candidates: list[dict] = []
     by_source: dict[str, int] = {}
     source_addrs = await fetch_source_addresses(chain, ds, gt, sources, limit, extra_limit)
     for source, addr in dedupe_sources(source_addrs):
-        cand = await evaluate_address(source, addr, chain, ds, gp, engine,
-                                      scorer, tagger, min_score, perceptor)
+        cand = await evaluate_address(
+            source, addr, chain, ds, gp, engine, scorer, tagger, min_score, perceptor
+        )
         by_source[source] = by_source.get(source, 0) + 1
         if cand is None:
             await asyncio.sleep(0.4)
@@ -278,15 +320,23 @@ async def scout_chain(chain: Chain, ds: DexScreenerProvider, gt: GeckoTerminalPr
 
 async def amain() -> int:
     ap = argparse.ArgumentParser(description="FENRIR market scout")
-    ap.add_argument("--chains", nargs="+", default=["solana", "robinhood"],
-                    choices=[c.value for c in Chain])
-    ap.add_argument("--limit", type=int, default=25,
-                    help="max boosted tokens per chain")
-    ap.add_argument("--extra-limit", type=int, default=12,
-                    help="max tokens per extra source per chain (gecko_new, gecko_trending, ds_profile)")
-    ap.add_argument("--sources", nargs="+", default=list(SOURCE_GROUPS),
-                    choices=list(SOURCE_GROUPS),
-                    help="source groups to poll")
+    ap.add_argument(
+        "--chains", nargs="+", default=["solana", "robinhood"], choices=[c.value for c in Chain]
+    )
+    ap.add_argument("--limit", type=int, default=25, help="max boosted tokens per chain")
+    ap.add_argument(
+        "--extra-limit",
+        type=int,
+        default=12,
+        help="max tokens per extra source per chain (gecko_new, gecko_trending, ds_profile)",
+    )
+    ap.add_argument(
+        "--sources",
+        nargs="+",
+        default=list(SOURCE_GROUPS),
+        choices=list(SOURCE_GROUPS),
+        help="source groups to poll",
+    )
     ap.add_argument("--min-score", type=float, default=60.0)
     args = ap.parse_args()
 
@@ -301,9 +351,20 @@ async def amain() -> int:
     by_source: dict[str, int] = {}
     try:
         for c in args.chains:
-            cands, bs = await scout_chain(Chain(c), ds, gt, gp, engine, scorer, tagger,
-                                          args.sources, args.limit, args.extra_limit,
-                                          args.min_score, perceptor)
+            cands, bs = await scout_chain(
+                Chain(c),
+                ds,
+                gt,
+                gp,
+                engine,
+                scorer,
+                tagger,
+                args.sources,
+                args.limit,
+                args.extra_limit,
+                args.min_score,
+                perceptor,
+            )
             all_cands.extend(cands)
             for k, v in bs.items():
                 by_source[k] = by_source.get(k, 0) + v
@@ -314,12 +375,16 @@ async def amain() -> int:
         await perceptor.close()
 
     all_cands.sort(key=lambda c: -c["score"]["overall"])
-    print(json.dumps({
-        "ts": time.time(),
-        "scanned": sum(by_source.values()),
-        "by_source": by_source,
-        "candidates": all_cands,
-    }))
+    print(
+        json.dumps(
+            {
+                "ts": time.time(),
+                "scanned": sum(by_source.values()),
+                "by_source": by_source,
+                "candidates": all_cands,
+            }
+        )
+    )
     return 0
 
 

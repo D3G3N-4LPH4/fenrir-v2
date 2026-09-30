@@ -11,6 +11,7 @@ Usage:
 verdict or the pending investigation id. ``sweep`` is for cron follow-ups:
 it re-checks every pending scan and prints the ones that completed.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -37,10 +38,14 @@ def print_report(report, address: str) -> None:
         if str(tone).lower() in ("medium", "high"):
             print(f"  ! {label}")
     print(f"  honeypot: {s.honeypot} | buy tax: {s.buy_tax_pct}% | sell tax: {s.sell_tax_pct}%")
-    print(f"  mint disabled: {s.mint_disabled} | blacklist: {s.blacklist_present} | "
-          f"ownership renounced: {s.ownership_renounced}")
-    print(f"  LP locked/burned: {s.lp_locked_or_burned}"
-          + (f" ({s.lp_locked_pct:.0f}%)" if s.lp_locked_pct is not None else ""))
+    print(
+        f"  mint disabled: {s.mint_disabled} | blacklist: {s.blacklist_present} | "
+        f"ownership renounced: {s.ownership_renounced}"
+    )
+    print(
+        f"  LP locked/burned: {s.lp_locked_or_burned}"
+        + (f" ({s.lp_locked_pct:.0f}%)" if s.lp_locked_pct is not None else "")
+    )
     if s.risk_flags:
         print(f"  risk flags: {'; '.join(s.risk_flags[:6])}")
     print(f"  https://www.perceptor.info/?investigation={report.investigation_id}")
@@ -58,8 +63,7 @@ async def cmd_investigate(args) -> int:
             print("Re-run with --wait or `status` to fetch the verdict.")
             return 0
         print(f"Scan running ({inv_id}) — waiting up to {args.wait:.0f}s…", flush=True)
-        report = await p.investigate(args.chain_id, args.address,
-                                     timeout_seconds=args.wait)
+        report = await p.investigate(args.chain_id, args.address, timeout_seconds=args.wait)
         if report is None:
             print("Scan did not complete in time. Re-run `status` later.")
             return 2
@@ -99,18 +103,20 @@ async def cmd_sweep(_args) -> int:
         for addr in pending:
             report = await p.refresh_report(addr)
             if report is not None:
-                completed.append({
-                    "address": addr,
-                    "band": report.band,
-                    "band_label": report.band_label,
-                    "headline": report.headline,
-                    "investigation_id": report.investigation_id,
-                    "honeypot": report.safety.honeypot,
-                    "buy_tax_pct": report.safety.buy_tax_pct,
-                    "sell_tax_pct": report.safety.sell_tax_pct,
-                    "mint_disabled": report.safety.mint_disabled,
-                    "lp_locked_or_burned": report.safety.lp_locked_or_burned,
-                })
+                completed.append(
+                    {
+                        "address": addr,
+                        "band": report.band,
+                        "band_label": report.band_label,
+                        "headline": report.headline,
+                        "investigation_id": report.investigation_id,
+                        "honeypot": report.safety.honeypot,
+                        "buy_tax_pct": report.safety.buy_tax_pct,
+                        "sell_tax_pct": report.safety.sell_tax_pct,
+                        "mint_disabled": report.safety.mint_disabled,
+                        "lp_locked_or_burned": report.safety.lp_locked_or_burned,
+                    }
+                )
         print(json.dumps({"checked": len(pending), "completed": completed}, indent=1))
         return 0
     finally:
@@ -124,8 +130,9 @@ def main() -> int:
     inv = sub.add_parser("investigate", help="start (or reuse) a scan")
     inv.add_argument("address")
     inv.add_argument("--chain-id", type=int, default=ROBINHOOD_CHAIN_ID)
-    inv.add_argument("--wait", type=float, default=300.0,
-                     help="seconds to wait for the verdict (0 = just start)")
+    inv.add_argument(
+        "--wait", type=float, default=300.0, help="seconds to wait for the verdict (0 = just start)"
+    )
     inv.set_defaults(func=cmd_investigate)
 
     st = sub.add_parser("status", help="cached verdict or pending id")
@@ -136,7 +143,8 @@ def main() -> int:
     sw.set_defaults(func=cmd_sweep)
 
     args = ap.parse_args()
-    return asyncio.run(args.func(args))
+    code: int = asyncio.run(args.func(args))
+    return code
 
 
 if __name__ == "__main__":

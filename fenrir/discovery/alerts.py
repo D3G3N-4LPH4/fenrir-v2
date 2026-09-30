@@ -5,6 +5,7 @@ contract address is wrapped in a code span so it is tap-to-copy on mobile.
 All user-derived text (symbol, name, source) is escaped for Telegram's
 legacy Markdown parse mode; the address itself is hex and needs no escaping.
 """
+
 from __future__ import annotations
 
 from typing import Any

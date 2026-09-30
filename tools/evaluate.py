@@ -123,8 +123,14 @@ def report_text(sym, snap, results, breakdown, notes, tags=None) -> str:
         "",
         "FENRIR FILTERS",
     ]
-    for name in ("low_cap_alpha", "mid_cap_momentum", "high_cap",
-                 "degen_launch", "volatility_breakout", "graduation_watch"):
+    for name in (
+        "low_cap_alpha",
+        "mid_cap_momentum",
+        "high_cap",
+        "degen_launch",
+        "volatility_breakout",
+        "graduation_watch",
+    ):
         r = results[name]
         status = "PASS" if r.passed else "FAIL"
         detail = "" if r.passed else " — " + "; ".join(r.failures[:3])
@@ -132,10 +138,14 @@ def report_text(sym, snap, results, breakdown, notes, tags=None) -> str:
         for w in r.warnings[:2]:
             lines.append(f"         warn: {w}")
     if snap.bond_progress_pct is not None:
-        inflow = (f" · inflow {snap.bond_inflow_sol:+.1f} SOL"
-                  if snap.bond_inflow_sol is not None else "")
-        remaining = (f" · {snap.bond_sol_remaining:.1f} SOL to graduation"
-                     if snap.bond_sol_remaining is not None else "")
+        inflow = (
+            f" · inflow {snap.bond_inflow_sol:+.1f} SOL" if snap.bond_inflow_sol is not None else ""
+        )
+        remaining = (
+            f" · {snap.bond_sol_remaining:.1f} SOL to graduation"
+            if snap.bond_sol_remaining is not None
+            else ""
+        )
         lines.append(f"  🌊 Bonding curve {snap.bond_progress_pct:.0f}%{inflow}{remaining}")
     b = breakdown
     lines += [
@@ -184,10 +194,17 @@ async def amain() -> int:
     ap.add_argument("address", help="token contract/mint address")
     ap.add_argument("--chain", choices=[c.value for c in Chain], default=None)
     ap.add_argument("--json", action="store_true", help="emit machine-readable JSON")
-    ap.add_argument("--no-perceptor", action="store_true",
-                    help="skip the Perceptor on-chain scan for Robinhood tokens")
-    ap.add_argument("--perceptor-timeout", type=float, default=300.0,
-                    help="seconds to wait for a Perceptor verdict (default 300)")
+    ap.add_argument(
+        "--no-perceptor",
+        action="store_true",
+        help="skip the Perceptor on-chain scan for Robinhood tokens",
+    )
+    ap.add_argument(
+        "--perceptor-timeout",
+        type=float,
+        default=300.0,
+        help="seconds to wait for a Perceptor verdict (default 300)",
+    )
     args = ap.parse_args()
 
     chain = Chain(args.chain) if args.chain else None
@@ -210,6 +227,7 @@ async def amain() -> int:
     if snap.chain is Chain.SOLANA:
         try:
             from fenrir.discovery.providers.pumpfun import annotate_bond_curve
+
             await annotate_bond_curve(snap)
         except Exception:  # noqa: BLE001 - fail-open
             pass
@@ -217,21 +235,25 @@ async def amain() -> int:
     # Robinhood safety net: when GoPlus has nothing, Perceptor's on-chain
     # forensics scan can still verify safety. Manual tool => wait for it.
     perceptor_info: dict | None = None
-    if (not args.no_perceptor and snap.chain is Chain.ROBINHOOD
-            and snap.safety.is_empty):
+    if not args.no_perceptor and snap.chain is Chain.ROBINHOOD and snap.safety.is_empty:
         pp = PerceptorProvider()
         try:
             if not args.json:
-                print("Perceptor: scanning on-chain history (up to "
-                      f"{args.perceptor_timeout:.0f}s)…", flush=True)
-            report = await pp.investigate(ROBINHOOD_CHAIN_ID, snap.token_address,
-                                          timeout_seconds=args.perceptor_timeout)
+                print(
+                    "Perceptor: scanning on-chain history (up to "
+                    f"{args.perceptor_timeout:.0f}s)…",
+                    flush=True,
+                )
+            report = await pp.investigate(
+                ROBINHOOD_CHAIN_ID, snap.token_address, timeout_seconds=args.perceptor_timeout
+            )
         finally:
             await pp.close()
         if report is not None:
             snap.safety = report.safety
             perceptor_info = {
-                "band": report.band, "band_label": report.band_label,
+                "band": report.band,
+                "band_label": report.band_label,
                 "headline": report.headline,
                 "investigation_id": report.investigation_id,
             }

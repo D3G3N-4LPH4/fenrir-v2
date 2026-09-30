@@ -182,7 +182,9 @@ class VolatilityBreakoutStrategy(TradingStrategy):
         pair_address = getattr(market_data, "pair_address", "") or ""
 
         failures = []
-        if not (self.params.min_price_change_1h_pct <= change_1h <= self.params.max_price_change_1h_pct):
+        if not (
+            self.params.min_price_change_1h_pct <= change_1h <= self.params.max_price_change_1h_pct
+        ):
             failures.append(
                 f"1h {change_1h:+.0f}% outside breakout window "
                 f"(+{self.params.min_price_change_1h_pct:.0f}%..+{self.params.max_price_change_1h_pct:.0f}%)"
@@ -193,7 +195,9 @@ class VolatilityBreakoutStrategy(TradingStrategy):
             failures.append("1h buy/sell unavailable")
         elif ratio < self.params.min_buy_sell_ratio_1h:
             r = f"{ratio:.2f}" if ratio != float("inf") else "all-buys"
-            failures.append(f"1h buy/sell {r} < {self.params.min_buy_sell_ratio_1h}x (not buy-driven)")
+            failures.append(
+                f"1h buy/sell {r} < {self.params.min_buy_sell_ratio_1h}x (not buy-driven)"
+            )
         if self.params.require_buys_exceed_sells_24h and buys_24h <= sells_24h:
             failures.append(f"24h buys {buys_24h} <= sells {sells_24h}")
         if share is None:
@@ -208,9 +212,13 @@ class VolatilityBreakoutStrategy(TradingStrategy):
             failures.append(f"age {age_minutes:.0f}m > {self.params.max_age_minutes:.0f}m")
 
         if failures:
-            logger.debug("VolatilityBreakout reject %s...: %s",
-                         token_address[:8], " | ".join(failures))
+            logger.debug(
+                "VolatilityBreakout reject %s...: %s", token_address[:8], " | ".join(failures)
+            )
             return None
+
+        # The failure guard above returns when either is None; safe to coerce now.
+        assert ratio is not None and share is not None
 
         signal = VolatilityBreakoutSignal(
             token_address=token_address,
@@ -234,7 +242,9 @@ class VolatilityBreakoutStrategy(TradingStrategy):
         )
         logger.info(
             "VolatilityBreakout SIGNAL %s... | 1h=%+.0f%% 5m=%+.1f%% b/s=%.1f",
-            token_address[:8], change_1h, change_5m,
+            token_address[:8],
+            change_1h,
+            change_5m,
             float(ratio) if ratio != float("inf") else 999.0,
         )
         return signal

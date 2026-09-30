@@ -63,8 +63,12 @@ def _f(value: Any) -> float | None:
         return None
 
 
-def parse_perceptor(data: dict[str, Any]) -> PerceptorReport | None:
-    """Map a full Perceptor investigation result to safety signals (pure)."""
+def parse_perceptor(data: Any) -> PerceptorReport | None:
+    """Map a full Perceptor investigation result to safety signals (pure).
+
+    Accepts arbitrary input and returns None for anything that isn't a
+    well-formed investigation dict (the API is external and untrusted).
+    """
     if not isinstance(data, dict):
         return None
     verdict = data.get("verdict")
@@ -105,7 +109,11 @@ def parse_perceptor(data: dict[str, Any]) -> PerceptorReport | None:
         safety.sell_tax_pct = _f(tax.get("sell"))
 
     # "Selling works" check or observed non-dev sellers => not a honeypot.
-    checks = [(c.get("label"), c.get("value")) for c in (verdict.get("checks") or []) if isinstance(c, dict)]
+    checks = [
+        (c.get("label"), c.get("value"))
+        for c in (verdict.get("checks") or [])
+        if isinstance(c, dict)
+    ]
     trading = verdict.get("trading_now") or {}
     sellers = _f(trading.get("sellers_not_dev")) or _f(trading.get("sellers"))
     if any(label == "Selling" and str(value).lower() == "works" for label, value in checks):
@@ -164,13 +172,16 @@ class PerceptorProvider:
 
     # -- cache -----------------------------------------------------------
     def _load_cache(self) -> dict[str, Any]:
-        if self._cache is None:
+        cache = self._cache
+        if cache is None:
             try:
                 with open(self.cache_path) as f:
-                    self._cache = json.load(f)
+                    loaded = json.load(f)
+                cache = loaded if isinstance(loaded, dict) else {}
             except (OSError, ValueError):
-                self._cache = {}
-        return self._cache
+                cache = {}
+            self._cache = cache
+        return cache
 
     def _save_cache(self) -> None:
         try:
@@ -197,7 +208,8 @@ class PerceptorProvider:
         addr = address.lower()
         entry = self._load_cache().get(addr)
         if entry and entry.get("investigation_id"):
-            return entry["investigation_id"]
+            cached_id: str = entry["investigation_id"]
+            return cached_id
         try:
             session = await self._get_session()
             async with session.post(
@@ -209,7 +221,9 @@ class PerceptorProvider:
                     logger.warning("Perceptor POST HTTP %d for %s…", resp.status, addr[:10])
                     return None
                 data = await resp.json()
-            inv_id = data.get("investigation_id") or data.get("public_id") or data.get("id")
+            inv_id: str | None = (
+                data.get("investigation_id") or data.get("public_id") or data.get("id")
+            )
             if not inv_id:
                 return None
             self._load_cache()[addr] = {
@@ -254,7 +268,10 @@ class PerceptorProvider:
             return None
 
     async def investigate(
-        self, chain_id: int, address: str, timeout_seconds: float = 300.0,
+        self,
+        chain_id: int,
+        address: str,
+        timeout_seconds: float = 300.0,
         poll_interval: float = 8.0,
     ) -> PerceptorReport | None:
         """Start (or reuse) an investigation and block until it completes."""
