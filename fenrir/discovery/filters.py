@@ -111,6 +111,12 @@ class FilterThresholds:
     require_migrated_or_bond: bool = False  # migrated OR bond >= min_bond_progress_pct
     require_verified: bool = False  # soft: warn when unverifiable
     require_lp_locked: bool = False
+    # LP-lock hardening (ATM lesson, 2026-09-30): for young launches an UNKNOWN
+    # LP lock is where LP-pull rugs hide. When set, a coin younger than this
+    # many minutes with unknown LP lock FAILS instead of warning. Pre-migration
+    # (liquidity still in the bonding curve — nothing lockable yet) keeps the
+    # old warn behavior. None = keep the legacy warn-on-unknown behavior.
+    require_lp_lock_known_max_age_m: float | None = None
 
 
 # ── Filter defaults (exact spec values) ───────────────────────────────
@@ -136,6 +142,9 @@ LOW_CAP_ALPHA = FilterThresholds(
     max_sniper_pct=20.0,
     max_bundle_pct=15.0,
     require_verified=True,
+    # ATM (2026-09-30): passed with unknown LP lock, rugged -92.5% on an LP
+    # pull 30m later. Young + migrated + unknown lock now fails closed.
+    require_lp_lock_known_max_age_m=120.0,
 )
 
 MID_CAP_MOMENTUM = FilterThresholds(
@@ -212,6 +221,8 @@ DEGEN_LAUNCH = FilterThresholds(
     max_bundle_pct=25.0,
     # No chase guard: vertical IS the degen thesis.
     # require_verified off: trench launches are never on curated lists.
+    # Young + unknown LP lock fails closed (ATM lesson, 2026-09-30).
+    require_lp_lock_known_max_age_m=120.0,
 )
 
 VOLATILITY_BREAKOUT = FilterThresholds(
@@ -234,6 +245,8 @@ VOLATILITY_BREAKOUT = FilterThresholds(
     min_price_change_1h_pct=40.0,
     max_price_change_1h_pct=400.0,  # beyond this it's one wick, not a trend
     require_buys_exceed_sells=True,
+    # Young + unknown LP lock fails closed (ATM lesson, 2026-09-30).
+    require_lp_lock_known_max_age_m=120.0,
 )
 
 VOLUME_SURGE = FilterThresholds(
@@ -329,6 +342,8 @@ MOMENTUM_TRANSITION = FilterThresholds(
     min_txn_accel_1h=1.5,  # 1h activity up 50%+ since the last poll
     min_holder_growth=1.4,  # holders up 40%+ since the last poll
     min_buy_edge_delta=0.02,  # buy pressure improving, not just high
+    # Young + unknown LP lock fails closed (ATM lesson, 2026-09-30).
+    require_lp_lock_known_max_age_m=120.0,
 )
 
 
@@ -355,6 +370,9 @@ CURVE_IGNITION = FilterThresholds(
     max_sniper_pct=25.0,
     max_bundle_pct=20.0,
     require_verified=False,  # pump.fun launches are never on curated lists
+    # Young + unknown LP lock fails closed (ATM lesson, 2026-09-30).
+    # (Mostly moot here: curve tokens are pre-migration → warn path.)
+    require_lp_lock_known_max_age_m=120.0,
 )
 
 
@@ -687,7 +705,24 @@ class FilterEngine:
                 warns.append("contract verification unknown")
             elif snap.safety.contract_verified is False:
                 fails.append("contract not verified")
-        if thr.require_lp_locked:
+        if thr.require_lp_lock_known_max_age_m is not None:
+            # ATM lesson (2026-09-30): a young migrated launch with UNKNOWN LP
+            # lock is where LP-pull rugs hide — fail closed instead of
+            # warn-and-pass. Pre-migration (liquidity still in the bonding
+            # curve; nothing lockable yet) keeps the old warn behavior.
+            if _is_pre_migration(snap):
+                warns.append("pre-migration: no LP to lock yet")
+            elif snap.safety.lp_locked_or_burned is None:
+                if snap.age_minutes < thr.require_lp_lock_known_max_age_m:
+                    fails.append(
+                        f"LP lock status unknown on {snap.age_minutes:.0f}m-old coin "
+                        "(young-coin LP-pull risk)"
+                    )
+                else:
+                    warns.append("LP lock status unknown")
+            elif snap.safety.lp_locked_or_burned is False:
+                fails.append("LP not locked/burned")
+        elif thr.require_lp_locked:
             if snap.migrated is False:
                 warns.append("pre-migration: no LP to lock yet")
             elif snap.safety.lp_locked_or_burned is None:
@@ -746,6 +781,18 @@ class FilterEngine:
 
 
 # ── Small check helpers ───────────────────────────────────────────────
+
+
+def _is_pre_migration(snap: TokenSnapshot) -> bool:
+    """True when liquidity still sits in a bonding curve (no lockable LP yet).
+
+    ``migrated=False`` is the explicit signal (DexScreener sets it for pump.fun
+    curve venues); a sub-100% bond progress means the same thing when the
+    migrated flag is absent.
+    """
+    if snap.migrated is False:
+        return True
+    return snap.bond_progress_pct is not None and snap.bond_progress_pct < 100.0
 
 
 def _cap(
