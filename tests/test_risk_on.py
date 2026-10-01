@@ -119,6 +119,61 @@ def test_volatility_breakout_rejects_sell_driven_wick() -> None:
     assert not r.passed
 
 
+# ── volatility_breakout hardening (2026-10-01: SIC/HIHI/JANE/s/acc died,
+# Janes +122% lived, SuperCali fading) ──────────────────────────────────
+
+
+def _janes_like() -> TokenSnapshot:
+    """Janes clearance shape: +60.1% 1h, 5.75x edge → passed, +122%."""
+    s = _breakout()
+    s.price_change_1h_pct = 60.1
+    s.txns_1h_buys, s.txns_1h_sells = 575, 100  # ratio 5.75
+    return s
+
+
+def test_volatility_breakout_keeps_janes_shape() -> None:
+    r = FilterEngine().evaluate(_janes_like(), FilterName.VOLATILITY_BREAKOUT)
+    assert r.passed, r.failures
+
+
+def test_volatility_breakout_rejects_blowoff_top() -> None:
+    """JANE +144%/1h and SuperCali +243%/1h: past ~+120% the move is the exit."""
+    for chg in (144.0, 243.0):
+        s = _janes_like()
+        s.price_change_1h_pct = chg
+        r = FilterEngine().evaluate(s, FilterName.VOLATILITY_BREAKOUT)
+        assert not r.passed, chg
+        assert any("vertical" in f for f in r.failures)
+
+
+def test_volatility_breakout_rejects_noise_edge() -> None:
+    """HIHI 1.54x: 1.3–1.5x is tape noise, not a buy-driven move."""
+    s = _janes_like()
+    s.txns_1h_buys, s.txns_1h_sells = 154, 100  # ratio 1.54
+    r = FilterEngine().evaluate(s, FilterName.VOLATILITY_BREAKOUT)
+    assert not r.passed
+
+
+def test_volatility_breakout_rejects_one_sided_edge() -> None:
+    """SIC 11.67x / JANE 9.35x: extreme edge on a vertical move is painted."""
+    for buys, sells in ((1167, 100), (935, 100), (200, 0)):  # 11.67, 9.35, inf
+        s = _janes_like()
+        s.txns_1h_buys, s.txns_1h_sells = buys, sells
+        r = FilterEngine().evaluate(s, FilterName.VOLATILITY_BREAKOUT)
+        assert not r.passed, (buys, sells)
+        assert any("one-sided" in f for f in r.failures)
+
+
+def test_buy_edge_ceiling_off_by_default() -> None:
+    """No other filter sets the ceiling — only volatility_breakout uses it."""
+    eng = FilterEngine()
+    for name, thr in eng.thresholds.items():
+        if name == FilterName.VOLATILITY_BREAKOUT:
+            assert thr.max_buy_sell_ratio_1h == 8.0
+        else:
+            assert thr.max_buy_sell_ratio_1h is None
+
+
 def test_new_filters_registered_in_defaults() -> None:
     eng = FilterEngine()
     assert FilterName.DEGEN_LAUNCH in eng.thresholds
