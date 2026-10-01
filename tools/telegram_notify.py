@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Send a Telegram message via the Fenrir Scout bot.
 
-Reads TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from the repo .env.
+Reads TELEGRAM_BOT_TOKEN and the destination chat(s) from the repo .env:
+  TELEGRAM_CHAT_IDS="-100111,-100222"  (comma-separated, preferred)
+  TELEGRAM_CHAT_ID="-100111"           (legacy single-chat fallback)
 Usage:
   python tools/telegram_notify.py "message text"
   python tools/telegram_notify.py --parse-mode Markdown "formatted *text*"
@@ -72,9 +74,10 @@ def send_message(token: str, chat_id: str, text: str, parse_mode: str = "") -> d
 def main() -> int:
     env = load_env(os.path.join(REPO_ROOT, ".env"))
     token = env.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = env.get("TELEGRAM_CHAT_ID", "")
-    if not token or not chat_id:
-        print("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing from .env", file=sys.stderr)
+    raw_ids = env.get("TELEGRAM_CHAT_IDS", "") or env.get("TELEGRAM_CHAT_ID", "")
+    chat_ids = [c.strip() for c in raw_ids.split(",") if c.strip()]
+    if not token or not chat_ids:
+        print("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_IDS missing from .env", file=sys.stderr)
         return 1
     if len(sys.argv) > 1:
         args = sys.argv[1:]
@@ -91,16 +94,20 @@ def main() -> int:
     if not text:
         print("no message text", file=sys.stderr)
         return 1
-    try:
-        result = send_message(token, chat_id, text, parse_mode=parse_mode)
-    except Exception as e:  # noqa: BLE001 - report API/transport errors plainly
-        print(f"telegram send failed: {e}", file=sys.stderr)
-        return 2
-    if not result.get("ok"):
-        print(f"telegram API error: {result}", file=sys.stderr)
-        return 3
-    print(f"sent message_id={result['result']['message_id']}")
-    return 0
+    failures = 0
+    for chat_id in chat_ids:
+        try:
+            result = send_message(token, chat_id, text, parse_mode=parse_mode)
+        except Exception as e:  # noqa: BLE001 - report API/transport errors plainly
+            print(f"telegram send failed for {chat_id}: {e}", file=sys.stderr)
+            failures += 1
+            continue
+        if not result.get("ok"):
+            print(f"telegram API error for {chat_id}: {result}", file=sys.stderr)
+            failures += 1
+            continue
+        print(f"sent message_id={result['result']['message_id']} to {chat_id}")
+    return 3 if failures else 0
 
 
 if __name__ == "__main__":
