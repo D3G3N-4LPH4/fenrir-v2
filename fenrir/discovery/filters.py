@@ -106,6 +106,14 @@ class FilterThresholds:
     # supply that flowed through deployer-linked wallets exceeds this.
     # None = dimension not checked. Set on the risk-on filters only.
     max_deployer_cluster_pct: float | None = None
+    # Fail closed when no distribution data exists at all (no top-holder /
+    # top-10 / bundle / sniper figures). The 2026-10-01 volatility_breakout
+    # blowups (s/acc, SIC, JANE) all cleared while every distribution field
+    # was "unavailable", so the concentration caps were dead code. Set on
+    # volatility_breakout only: a vertical move with invisible holders is
+    # exactly the shape that just rugged four times. Every other filter keeps
+    # the historical warn-and-pass behavior.
+    require_distribution_known: bool = False
     # Acceleration (poll-over-poll, attached by the scout's AccelTracker).
     # None = dimension not checked. require_accel_history fails the filter when
     # there is no prior poll — the filter only fires from the second sighting,
@@ -262,6 +270,12 @@ VOLATILITY_BREAKOUT = FilterThresholds(
     require_buys_exceed_sells=True,
     max_bundle_pct=30.0,  # bundle/deployer check (2026-09-30)
     max_deployer_cluster_pct=30.0,
+    # 2026-10-01: the blowups (s/acc, SIC, JANE) all cleared with every
+    # distribution field "unavailable". Fail closed — a vertical Solana move
+    # with invisible holders is the exact shape that rugged. The Solana
+    # forensics leg (solana_forensics.py) supplies top-10 from direct RPC, so
+    # this only bites when the chain read itself fails.
+    require_distribution_known=True,
     # Young + unknown LP lock fails closed (ATM lesson, 2026-09-30).
     require_lp_lock_known_max_age_m=120.0,
 )
@@ -531,6 +545,16 @@ class FilterEngine:
         _cap(snap.top_holder_pct, thr.max_top_holder_pct, "Top holder", fails, warns)
         _cap(snap.top10_holder_pct, thr.max_top10_holder_pct, "Top-10 holders", fails, warns)
         _cap(snap.dev_wallet_pct, thr.max_dev_wallet_pct, "Dev wallet", fails, warns)
+        if thr.require_distribution_known:
+            known = (
+                snap.top_holder_pct is not None
+                or snap.top10_holder_pct is not None
+                or snap.bundle_pct is not None
+                or snap.safety.bundled_supply_pct is not None
+                or snap.sniper_pct is not None
+            )
+            if not known:
+                fails.append("distribution unknown — no holder/bundle/sniper data (fail closed)")
 
     # Minimum 1h txn sample before the buy/sell ratio is treated as signal.
     _MIN_1H_TXN_SAMPLE = 10

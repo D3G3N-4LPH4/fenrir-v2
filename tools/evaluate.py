@@ -40,6 +40,13 @@ from fenrir.discovery.bundle_check import (
     get_cached_bundle_report,
     save_cached_bundle_report,
 )
+from fenrir.discovery.solana_forensics import (  # noqa: E402
+    INCONCLUSIVE_TTL_S as SOLANA_FORENSICS_INCONCLUSIVE_TTL_S,
+    SolanaForensicsReport,
+    check_solana_distribution,
+    get_cached_forensics,
+    save_cached_forensics,
+)
 from fenrir.discovery.playbooks import PLAYBOOK_STRATEGY_IDS, PlaybookTagger
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider
 from fenrir.discovery.providers.goplus import GoPlusProvider, distribution_metrics
@@ -59,6 +66,60 @@ LP_VAULT_CHECK_TIMEOUT_SECONDS = 45.0
 # backstop inside the 90s per-token budget (they run concurrently).
 V4_LOCK_TIMEOUT_SECONDS = 40.0
 BUNDLE_CHECK_TIMEOUT_SECONDS = 60.0
+# Solana distribution forensics (direct RPC holder read): cheap enough for a
+# tight deadline; the volatility_breakout filter fails closed without it.
+SOLANA_FORENSICS_TIMEOUT_SECONDS = 25.0
+
+
+async def _solana_forensics_notes(snap) -> list[str]:
+    """Direct-RPC holder distribution for a Solana snapshot.
+
+    Jupiter's holder enrichment misses many young tokens (the 2026-10-01
+    volatility_breakout blowups all cleared with "Top-10 holders %
+    unavailable"). This fills snap.top_holder_pct / snap.top10_holder_pct
+    from chain data so the concentration caps can bite. Cached 24h per
+    token; inconclusive results back off 1h. Mutates snap holders.
+    """
+    notes: list[str] = []
+    if snap.chain is not Chain.SOLANA:
+        return notes
+    try:
+        report: SolanaForensicsReport | None
+        cached = get_cached_forensics(snap.token_address)
+        if cached is not None:
+            if cached.get("_inconclusive"):
+                notes.append("holder forensics: recently inconclusive — skipping re-check")
+                return notes
+            report = SolanaForensicsReport.from_dict(cached)
+            notes.append(f"holder forensics: cached — {report.detail}")
+        else:
+            try:
+                report = await asyncio.wait_for(
+                    check_solana_distribution(snap.token_address),
+                    timeout=SOLANA_FORENSICS_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                report = None
+            if report is not None:
+                save_cached_forensics(snap.token_address, report.as_dict())
+                notes.append(f"holder forensics: {report.detail}")
+            else:
+                # Back off: don't burn RPC budget on this token every tick.
+                save_cached_forensics(
+                    snap.token_address,
+                    {"_inconclusive": True},
+                    ttl_seconds=SOLANA_FORENSICS_INCONCLUSIVE_TTL_S,
+                )
+                notes.append("holder forensics inconclusive — distribution unknown")
+        if report is not None:
+            # Fill what Jupiter missed; never override provider data we have.
+            if snap.top_holder_pct is None:
+                snap.top_holder_pct = report.top_holder_pct
+            if snap.top10_holder_pct is None:
+                snap.top10_holder_pct = report.top10_holder_pct
+    except Exception:  # noqa: BLE001 - fail-open
+        notes.append("holder forensics failed — distribution unknown")
+    return notes
 
 
 async def _v4_lock_notes(snap) -> list[str]:
@@ -220,15 +281,18 @@ async def enrich_safety(snap, goplus: GoPlusProvider | None) -> list[str]:
     """Attach contract-safety signals. Returns notes about coverage gaps."""
     notes: list[str] = []
     if snap.chain is Chain.SOLANA:
-        # RugCheck, Jupiter holders, and the platform-vault LP walk are
-        # independent — run them concurrently instead of sequentially.
+        # RugCheck, Jupiter holders, the platform-vault LP walk, and the
+        # direct-RPC holder forensics are independent — run them concurrently
+        # instead of sequentially.
         # The vault result is applied after RugCheck: it only matters when
         # RugCheck left LP as unlocked (same condition as before).
         rug_task = asyncio.create_task(_enrich_rugcheck(snap))
         jup_task = asyncio.create_task(_enrich_jupiter_notes(snap))
         vault_task = asyncio.create_task(_check_lp_vault(snap))
+        forensics_task = asyncio.create_task(_solana_forensics_notes(snap))
         notes.extend(await rug_task)
         notes.extend(await jup_task)
+        notes.extend(await forensics_task)
         vault_check = await vault_task
         if (
             snap.safety.lp_locked_or_burned is False
