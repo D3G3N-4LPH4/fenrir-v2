@@ -60,7 +60,7 @@ try:  # EIP-55 checksums for cross-source dedup consistency
     def _keccak256(data: bytes) -> bytes:
         k = _keccak.new(digest_bits=256)
         k.update(data)
-        return k.digest()
+        return cast(bytes, k.digest())
 
     _HAS_KECCAK = True
 except ImportError:  # pragma: no cover - requirements pin pycryptodome

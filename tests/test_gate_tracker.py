@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 
@@ -136,11 +137,23 @@ def test_record_cli_end_to_end(tmp_path):
     cands_file = tmp_path / "cands.json"
     cands_file.write_text(json.dumps({"candidates": [_cand(addr="0xcli")]}))
     state_file = str(tmp_path / "tracked.json")
-    rc = os.system(
-        f"cd {os.path.join(os.path.dirname(__file__), '..')} && "
-        f"python3 tools/gate_tracker.py --state {state_file} record "
-        f"--candidates {cands_file} --ts 1234.0 >/dev/null"
+    repo_root = os.path.join(os.path.dirname(__file__), "..")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "tools/gate_tracker.py",
+            "--state",
+            state_file,
+            "record",
+            "--candidates",
+            str(cands_file),
+            "--ts",
+            "1234.0",
+        ],
+        cwd=repo_root,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
-    assert rc == 0
+    assert proc.returncode == 0
     state = json.loads(open(state_file).read())
     assert state["0xcli"]["cleared_at"] == 1234.0
