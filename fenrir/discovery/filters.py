@@ -69,6 +69,10 @@ class FilterThresholds:
     # Flow freshness (1h window): buy/sell ratio + share of 24h volume in the last hour.
     # The ratio is only enforced when the 1h txn sample is big enough to mean something.
     min_buy_sell_ratio_1h: float | None = None
+    # Buy-edge ceiling: an extreme ratio on a vertical move is one-sided flow —
+    # painters in, no profit-takers yet — which reads as distribution, not
+    # accumulation. None = dimension not checked.
+    max_buy_sell_ratio_1h: float | None = None
     min_volume_1h_share: float | None = None
     # Turnover: 24h volume / market cap. Too high = churn/wash; too low = dead tape.
     min_turnover_24h: float | None = None
@@ -243,13 +247,18 @@ VOLATILITY_BREAKOUT = FilterThresholds(
     max_turnover_24h=15.0,
     min_holder_count=100,
     min_buys_24h=50,
-    min_buy_sell_ratio_1h=1.3,  # buy-driven move, not a short-squeeze wick
+    min_buy_sell_ratio_1h=2.0,  # 2026-10-01: 1.3x is tape noise, not a buy-driven
+    # move (HIHI 1.54x died). Real vertical demand shows a clear edge.
+    max_buy_sell_ratio_1h=8.0,  # 2026-10-01: >8x buys on a vertical move is
+    # one-sided flow — painters in, no profit-takers yet (SIC 11.67x, JANE
+    # 9.35x both died). The marginal buyer is already in: distribution shape.
     max_top_holder_pct=15.0,
     max_top10_holder_pct=70.0,
     max_dev_wallet_pct=10.0,
     # The inverted chase guard: REQUIRE the vertical move other filters reject.
     min_price_change_1h_pct=40.0,
-    max_price_change_1h_pct=400.0,  # beyond this it's one wick, not a trend
+    max_price_change_1h_pct=120.0,  # 2026-10-01: was 400. Past ~+120%/1h the
+    # move is the exit, not the entry (JANE +144%, SuperCali +243% both topped).
     require_buys_exceed_sells=True,
     max_bundle_pct=30.0,  # bundle/deployer check (2026-09-30)
     max_deployer_cluster_pct=30.0,
@@ -544,6 +553,23 @@ class FilterEngine:
                 elif ratio < thr.min_buy_sell_ratio_1h:
                     r = f"{ratio:.2f}" if ratio != float("inf") else "all-buys"
                     fails.append(f"1h buy/sell {r} < {thr.min_buy_sell_ratio_1h}")
+        # Buy-edge ceiling (same sample gating as the floor): an extreme ratio
+        # on a vertical move means one-sided flow — the marginal buyer is
+        # already in, which is the shape of a painted top, not a breakout.
+        if thr.max_buy_sell_ratio_1h is not None:
+            total_1h = snap.txns_1h_buys + snap.txns_1h_sells
+            if total_1h < FilterEngine._MIN_1H_TXN_SAMPLE:
+                warns.append(f"1h txn sample too small ({total_1h})")
+            else:
+                ratio = snap.buy_sell_ratio_1h  # inf when sells==0 and buys>0
+                if ratio is None:
+                    warns.append("1h buy/sell data unavailable")
+                elif ratio == float("inf"):
+                    fails.append("1h buy/sell all-buys (no sells) — one-sided flow")
+                elif ratio > thr.max_buy_sell_ratio_1h:
+                    fails.append(
+                        f"1h buy/sell {ratio:.2f} > {thr.max_buy_sell_ratio_1h} (one-sided)"
+                    )
         # Live tape: share of 24h volume printed in the last hour.
         if thr.min_volume_1h_share is not None:
             share = snap.volume_1h_share
