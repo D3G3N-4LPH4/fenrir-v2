@@ -150,6 +150,17 @@ class ScoringEngine:
         score -= {True: 0.0, False: 15.0, None: 5.0}[s.contract_verified]
         if s.blacklist_present is True:
             score -= 25.0
+        # Bundle / deployer-cluster penalties (2026-09-30, Bubblemaps bands):
+        # 15-30% is serious but not filter-fatal on every profile; >30% fails
+        # the risk-on filters outright. Total bundle/deployer penalty ≤ 25.
+        bundle_penalty = 0.0
+        if s.bundled_supply_pct is not None and s.bundled_supply_pct >= 15.0:
+            bundle_penalty += 15.0
+        if s.deployer_cluster_pct is not None and s.deployer_cluster_pct >= 15.0:
+            bundle_penalty += 10.0
+        if s.deployer_holding_pct is not None and s.deployer_holding_pct > 5.0:
+            bundle_penalty += 10.0
+        score -= min(25.0, bundle_penalty)
         if s.ownership_renounced is True:
             score += 5.0  # bonus
         for tax in (s.buy_tax_pct, s.sell_tax_pct):

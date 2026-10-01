@@ -74,6 +74,18 @@ class SafetySignals:
     ownership_renounced: bool | None = None
     blacklist_present: bool | None = None  # contract can blacklist wallets
 
+    # Bundle / deployer-cluster signals (on-chain, Robinhood chain).
+    # Populated by fenrir.discovery.bundle_check; None = not checked/unknown.
+    bundled_supply_pct: float | None = None  # % of supply in linked launch-window buys
+    largest_cluster_pct: float | None = None  # % of supply in the largest linked cluster
+    cluster_count: int | None = None  # linked buyer clusters found
+    deployer_cluster_pct: float | None = None  # % of supply flowed through deployer-linked wallets
+    deployer_holding_pct: float | None = None  # % of supply still held by the deployer
+    deployer_distributed_wallets: int | None = None  # distinct wallets the deployer sent tokens to
+    deployer_funder_is_serial_launcher: bool | None = (
+        None  # deployer/funder is a known serial launcher
+    )
+
     # Provider risk score (RugCheck score_normalised / GoPlus-derived), lower=safer.
     risk_score: float | None = None
     # Free-form risk labels surfaced by the provider (e.g. "mint live").
@@ -184,6 +196,10 @@ class TokenSnapshot:
 
     # ── Safety ────────────────────────────────────────────────────────
     safety: SafetySignals = field(default_factory=SafetySignals)
+
+    # Bundle/deployer report dict (fenrir.discovery.bundle_check), attached by
+    # evaluate.py enrichment for the report section; None when not checked.
+    bundle_report: dict[str, Any] | None = None
 
     # Raw provider payloads for debugging / downstream context.
     raw: dict[str, Any] = field(default_factory=dict)

@@ -38,6 +38,12 @@ from fenrir.discovery.lp_vault import (
 )
 from fenrir.discovery.models import Chain
 from fenrir.discovery.lp_lock_v4 import inspect_v4_lp_lock
+from fenrir.discovery.bundle_check import (
+    BundleDeployerReport,
+    check_bundle_and_deployer,
+    get_cached_bundle_report,
+    save_cached_bundle_report,
+)
 from fenrir.discovery.playbooks import PLAYBOOK_STRATEGY_IDS, PlaybookTagger
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider
 from fenrir.discovery.providers.goplus import GoPlusProvider, distribution_metrics
@@ -151,6 +157,43 @@ async def enrich_safety(snap, goplus: GoPlusProvider | None) -> list[str]:
                     notes.append(f"v4 LP lock: {v4lock.detail}")
             except Exception:  # noqa: BLE001 - fail-open
                 pass
+        # Bundle + deployer-cluster check (2026-09-30, Bubblemaps bands):
+        # coordinated launch buys and deployer-linked supply, verified
+        # on-chain. Runs after the LP check; cached 24h per token.
+        if snap.chain is Chain.ROBINHOOD and snap.pair_address and len(snap.pair_address) == 66:
+            try:
+                report: BundleDeployerReport | None
+                cached = get_cached_bundle_report(snap.token_address)
+                if cached is not None:
+                    report = BundleDeployerReport.from_dict(cached)
+                    notes.append(f"bundle/deployer: cached — {report.detail}")
+                else:
+                    report = await check_bundle_and_deployer(
+                        snap.token_address,
+                        snap.pair_address,
+                        age_minutes=snap.age_minutes,
+                    )
+                    if report is not None:
+                        save_cached_bundle_report(snap.token_address, report.as_dict())
+                        notes.append(f"bundle/deployer: {report.detail}")
+                    else:
+                        notes.append("bundle/deployer check inconclusive — metrics unknown")
+                if report is not None:
+                    s = snap.safety
+                    s.bundled_supply_pct = report.bundled_supply_pct
+                    s.largest_cluster_pct = report.largest_cluster_pct
+                    s.cluster_count = report.cluster_count
+                    s.deployer_cluster_pct = report.deployer_cluster_pct
+                    s.deployer_holding_pct = report.deployer_holding_pct
+                    s.deployer_distributed_wallets = report.deployer_distributed_wallets
+                    s.deployer_funder_is_serial_launcher = report.deployer_funder_is_serial_launcher
+                    if snap.bundle_pct is None:
+                        snap.bundle_pct = report.bundled_supply_pct
+                    if snap.insider_pct is None:
+                        snap.insider_pct = report.deployer_cluster_pct
+                    snap.bundle_report = report.as_dict()
+            except Exception:  # noqa: BLE001 - fail-open
+                notes.append("bundle/deployer check failed — metrics unknown")
     return notes
 
 
@@ -254,6 +297,31 @@ def report_text(sym, snap, results, breakdown, notes, tags=None) -> str:
         lines.append(f"  risk flags: {', '.join(s.risk_flags[:5])}")
     for n in notes:
         lines.append(f"  note: {n}")
+    br = snap.bundle_report or {}
+    if br.get("bundled_supply_pct") is not None or br.get("deployer_address"):
+        lines += ["", "BUNDLE / DEPLOYER"]
+
+        def pct(v):
+            return "?" if v is None else f"{v:.1f}%"
+
+        lines.append(
+            f"  bundled supply: {pct(br.get('bundled_supply_pct'))} | "
+            f"clusters: {br.get('cluster_count', 0)} | "
+            f"largest cluster: {pct(br.get('largest_cluster_pct'))}"
+        )
+        if br.get("launch_window_partial"):
+            lines.append(
+                "  launch window partial: metrics may understate (Initialize predates scan range)"
+            )
+        dep = br.get("deployer_address")
+        if dep:
+            serial = br.get("deployer_funder_is_serial_launcher")
+            lines.append(
+                f"  deployer: {dep[:10]}… | holding: {pct(br.get('deployer_holding_pct'))} | "
+                f"distributed to {br.get('deployer_distributed_wallets', '?')} wallets | "
+                f"serial launcher: {yn(serial)}"
+            )
+            lines.append(f"  deployer-linked supply: {pct(br.get('deployer_cluster_pct'))}")
     label, reason = verdict(b.overall, results, snap)
     lines += ["", f"VERDICT: {label} — {reason}"]
     if tags is not None:
@@ -302,6 +370,13 @@ async def amain() -> int:
         print("No DexScreener pair found for this address.")
         return 1
 
+    if (
+        not args.json
+        and snap.chain is Chain.ROBINHOOD
+        and snap.pair_address
+        and len(snap.pair_address) == 66
+    ):
+        print("Bundle/deployer: checking on-chain distribution (up to ~60s)…", flush=True)
     notes = await enrich_safety(snap, gp)
     await gp.close()
 
@@ -376,6 +451,7 @@ async def amain() -> int:
                     "score": breakdown.as_dict(),
                     "verdict": verdict(breakdown.overall, results, snap),
                     "perceptor": perceptor_info,
+                    "bundle": snap.bundle_report,
                     "notes": notes,
                 },
                 indent=1,

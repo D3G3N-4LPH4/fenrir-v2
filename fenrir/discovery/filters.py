@@ -98,6 +98,10 @@ class FilterThresholds:
     require_bond_data: bool = False  # fail (not warn) when bond progress unknown
     max_sniper_pct: float | None = None
     max_bundle_pct: float | None = None
+    # Deployer-cluster cap (bundle_check, 2026-09-30): fail when the share of
+    # supply that flowed through deployer-linked wallets exceeds this.
+    # None = dimension not checked. Set on the risk-on filters only.
+    max_deployer_cluster_pct: float | None = None
     # Acceleration (poll-over-poll, attached by the scout's AccelTracker).
     # None = dimension not checked. require_accel_history fails the filter when
     # there is no prior poll — the filter only fires from the second sighting,
@@ -141,6 +145,7 @@ LOW_CAP_ALPHA = FilterThresholds(
     max_bond_progress_pct=40.0,
     max_sniper_pct=20.0,
     max_bundle_pct=15.0,
+    max_deployer_cluster_pct=30.0,  # bundle/deployer check (2026-09-30)
     require_verified=True,
     # ATM (2026-09-30): passed with unknown LP lock, rugged -92.5% on an LP
     # pull 30m later. Young + migrated + unknown lock now fails closed.
@@ -219,6 +224,7 @@ DEGEN_LAUNCH = FilterThresholds(
     max_bond_progress_pct=60.0,
     max_sniper_pct=30.0,
     max_bundle_pct=25.0,
+    max_deployer_cluster_pct=30.0,  # bundle/deployer check (2026-09-30)
     # No chase guard: vertical IS the degen thesis.
     # require_verified off: trench launches are never on curated lists.
     # Young + unknown LP lock fails closed (ATM lesson, 2026-09-30).
@@ -245,6 +251,8 @@ VOLATILITY_BREAKOUT = FilterThresholds(
     min_price_change_1h_pct=40.0,
     max_price_change_1h_pct=400.0,  # beyond this it's one wick, not a trend
     require_buys_exceed_sells=True,
+    max_bundle_pct=30.0,  # bundle/deployer check (2026-09-30)
+    max_deployer_cluster_pct=30.0,
     # Young + unknown LP lock fails closed (ATM lesson, 2026-09-30).
     require_lp_lock_known_max_age_m=120.0,
 )
@@ -342,6 +350,8 @@ MOMENTUM_TRANSITION = FilterThresholds(
     min_txn_accel_1h=1.5,  # 1h activity up 50%+ since the last poll
     min_holder_growth=1.4,  # holders up 40%+ since the last poll
     min_buy_edge_delta=0.02,  # buy pressure improving, not just high
+    max_bundle_pct=30.0,  # bundle/deployer check (2026-09-30)
+    max_deployer_cluster_pct=30.0,
     # Young + unknown LP lock fails closed (ATM lesson, 2026-09-30).
     require_lp_lock_known_max_age_m=120.0,
 )
@@ -369,6 +379,7 @@ CURVE_IGNITION = FilterThresholds(
     max_top_holder_pct=25.0,  # raw early distribution
     max_sniper_pct=25.0,
     max_bundle_pct=20.0,
+    max_deployer_cluster_pct=30.0,  # bundle/deployer check (2026-09-30)
     require_verified=False,  # pump.fun launches are never on curated lists
     # Young + unknown LP lock fails closed (ATM lesson, 2026-09-30).
     # (Mostly moot here: curve tokens are pre-migration → warn path.)
@@ -722,6 +733,27 @@ class FilterEngine:
                     warns.append("LP lock status unknown")
             elif snap.safety.lp_locked_or_burned is False:
                 fails.append("LP not locked/burned")
+        # Bundle / deployer-cluster check (2026-09-30, Bubblemaps bands):
+        # >30% coordinated supply fails the risk-on filters; 5-15% bundled is
+        # a moderate warn; unknown stays fail-open (warn only).
+        _cap(
+            snap.safety.deployer_cluster_pct,
+            thr.max_deployer_cluster_pct,
+            "Deployer cluster",
+            fails,
+            warns,
+        )
+        bundled = snap.safety.bundled_supply_pct
+        if bundled is not None and 5.0 <= bundled < 15.0:
+            warns.append(f"Bundled launch buys {bundled:.1f}% of supply (moderate)")
+        dcluster = snap.safety.deployer_cluster_pct
+        if dcluster is not None and 15.0 <= dcluster < 30.0:
+            warns.append(f"Deployer-linked wallets moved {dcluster:.1f}% of supply (elevated)")
+        dhold = snap.safety.deployer_holding_pct
+        if dhold is not None and 1.0 <= dhold <= 5.0:
+            warns.append(f"Deployer still holds {dhold:.1f}% (overhang)")
+        if snap.safety.deployer_funder_is_serial_launcher:
+            warns.append("Deployer/funder is a known serial launcher (behavior risk)")
         elif thr.require_lp_locked:
             if snap.migrated is False:
                 warns.append("pre-migration: no LP to lock yet")
