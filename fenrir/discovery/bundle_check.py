@@ -227,16 +227,29 @@ def get_cached_bundle_report(token_address: str) -> dict[str, Any] | None:
     entry = _load_cache().get(token_address.lower())
     if not isinstance(entry, dict):
         return None
-    if time.time() - float(entry.get("cached_at", 0)) > _CACHE_TTL_S:
+    ttl = float(entry.get("ttl", _CACHE_TTL_S))
+    if time.time() - float(entry.get("cached_at", 0)) > ttl:
         return None
     report = entry.get("report")
     return report if isinstance(report, dict) else None
 
 
-def save_cached_bundle_report(token_address: str, report: dict[str, Any]) -> None:
+def save_cached_bundle_report(
+    token_address: str, report: dict[str, Any], ttl_seconds: float = _CACHE_TTL_S
+) -> None:
     cache = _load_cache()
-    cache[token_address.lower()] = {"cached_at": time.time(), "report": report}
+    cache[token_address.lower()] = {
+        "cached_at": time.time(),
+        "ttl": ttl_seconds,
+        "report": report,
+    }
     _save_cache(cache)
+
+
+#: Backoff for inconclusive bundle checks (timed out / no chain data yet).
+#: A fraction of the 24h conclusive TTL — the token may become checkable as
+#: chain data settles, but we don't want to burn a 60s RPC walk every tick.
+INCONCLUSIVE_TTL_S = 3600
 
 
 # ── Clustering ──────────────────────────────────────────────────────────

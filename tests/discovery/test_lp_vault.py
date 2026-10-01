@@ -133,3 +133,88 @@ def test_rpc_failure_fails_open(monkeypatch):
     monkeypatch.setattr(aiohttp, "ClientSession", boom)
     chk = run(check_lp_platform_vault("LPmint", "http://x", set()))
     assert chk.is_platform_vault is False
+
+
+def test_account_scan_uses_count_only_slice(monkeypatch):
+    """getTokenAccountsByOwner must request a dataSlice, not full account data."""
+    import aiohttp
+
+    seen_params: list = []
+
+    def handlers():
+        h = _handlers(vault=True)
+        orig = h["getTokenAccountsByOwner"]
+
+        def wrapped(*a):
+            seen_params.append(a)
+            return orig(*a)
+
+        h["getTokenAccountsByOwner"] = wrapped
+        return h
+
+    monkeypatch.setattr(
+        aiohttp,
+        "ClientSession",
+        lambda trust_env=True: FakeSession(handlers()),
+    )
+    run(check_lp_platform_vault("LPmint", "http://x", set()))
+    assert len(seen_params) == 1
+    assert seen_params[0][2]["dataSlice"] == {"offset": 0, "length": 0}
+
+
+def test_pool_check_caches_positive_result(monkeypatch, tmp_path):
+    """Second check_pool_lp_vault call for a pool must not touch the network."""
+    import aiohttp
+
+    from fenrir.discovery import lp_vault
+
+    monkeypatch.setattr(lp_vault, "DEFAULT_CHECK_CACHE_PATH", tmp_path / "checks.json")
+    monkeypatch.setattr(lp_vault, "load_known_vaults", lambda: set())
+    monkeypatch.setattr(lp_vault, "save_known_vaults", lambda v: None)
+
+    async def _fake_resolve(pool):
+        return "LPmint"
+
+    monkeypatch.setattr(lp_vault, "resolve_lp_mint", _fake_resolve)
+    monkeypatch.setattr(
+        aiohttp,
+        "ClientSession",
+        lambda trust_env=True: FakeSession(_handlers(vault=True)),
+    )
+    first = run(lp_vault.check_pool_lp_vault("PoolA", "http://x"))
+    assert first.is_platform_vault is True
+    assert first.cached is False
+
+    def boom(trust_env=True):
+        raise AssertionError("network should not be touched on cache hit")
+
+    async def _boom_resolve(pool):
+        raise AssertionError("resolve should not be touched on cache hit")
+
+    monkeypatch.setattr(aiohttp, "ClientSession", boom)
+    monkeypatch.setattr(lp_vault, "resolve_lp_mint", _boom_resolve)
+    second = run(lp_vault.check_pool_lp_vault("PoolA", "http://x"))
+    assert second.is_platform_vault is True
+    assert second.cached is True
+    assert second.holder == first.holder
+
+
+def test_pool_check_caches_raydium_miss(monkeypatch, tmp_path):
+    """A pool with no LP mint (pre-graduation) resolves Raydium only once."""
+    from fenrir.discovery import lp_vault
+
+    monkeypatch.setattr(lp_vault, "DEFAULT_CHECK_CACHE_PATH", tmp_path / "checks.json")
+
+    calls: list = []
+
+    async def _no_mint(pool):
+        calls.append(pool)
+        return None
+
+    monkeypatch.setattr(lp_vault, "resolve_lp_mint", _no_mint)
+    first = run(lp_vault.check_pool_lp_vault("PoolB", "http://x"))
+    assert first.is_platform_vault is False
+    second = run(lp_vault.check_pool_lp_vault("PoolB", "http://x"))
+    assert second.is_platform_vault is False
+    assert second.cached is True
+    assert calls == ["PoolB"]

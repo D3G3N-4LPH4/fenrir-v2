@@ -276,13 +276,15 @@ class PerceptorProvider:
                 if resp.status != 200:
                     return None
                 data = await resp.json()
-            entry["checked_at"] = time.time()
             if data.get("status") == "complete" and isinstance(data.get("verdict"), dict):
                 entry["status"] = "complete"
                 entry["report"] = data
+                entry["checked_at"] = time.time()
+                # Save only on a real state change: the cache carries full
+                # verdict payloads and rewriting it on every no-op refresh
+                # blocks the event loop for nothing.
                 self._save_cache()
                 return parse_perceptor(data)
-            self._save_cache()
             return None
         except Exception as e:  # noqa: BLE001 - fail-open
             logger.debug("Perceptor refresh failed for %s…: %s", addr[:10], e)

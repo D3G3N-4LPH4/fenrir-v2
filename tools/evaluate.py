@@ -30,16 +30,12 @@ from fenrir.discovery.chains.solana import (
     map_rugcheck_summary,
 )
 from fenrir.discovery.filters import FilterEngine, FilterName
-from fenrir.discovery.lp_vault import (
-    check_lp_platform_vault,
-    load_known_vaults,
-    resolve_lp_mint,
-    save_known_vaults,
-)
+from fenrir.discovery.lp_vault import VaultCheck, check_pool_lp_vault
 from fenrir.discovery.models import Chain
 from fenrir.discovery.lp_lock_v4 import inspect_v4_lp_lock
 from fenrir.discovery.bundle_check import (
     BundleDeployerReport,
+    INCONCLUSIVE_TTL_S,
     check_bundle_and_deployer,
     get_cached_bundle_report,
     save_cached_bundle_report,
@@ -55,30 +51,129 @@ from fenrir.discovery.providers.perceptor import (
 from fenrir.discovery.scoring import ScoringEngine
 import os
 
+# Outer deadline for the whole platform-vault LP walk (Raydium resolve + RPCs).
+# Per-RPC timeouts live inside check_pool_lp_vault; this is the backstop.
+LP_VAULT_CHECK_TIMEOUT_SECONDS = 45.0
 
-async def _check_lp_vault(snap) -> str | None:
+# Deadlines for the heavy Robinhood-chain safety legs. Each gets its own
+# backstop inside the 90s per-token budget (they run concurrently).
+V4_LOCK_TIMEOUT_SECONDS = 40.0
+BUNDLE_CHECK_TIMEOUT_SECONDS = 60.0
+
+
+async def _v4_lock_notes(snap) -> list[str]:
+    """Robinhood v4 LP-lock verification (ATM lesson, 2026-09-30).
+
+    GoPlus rarely reports LP lock state on this chain, so an unknown lock
+    used to sail through the young-coin filters straight into an LP pull.
+    Verify on-chain via the v4 PositionManager: burned/locker-held position
+    NFTs = locked; EOA-held = pullable. Mutates snap.safety.
+    """
+    notes: list[str] = []
+    if not (
+        snap.chain is Chain.ROBINHOOD
+        and snap.safety.lp_locked_or_burned is None
+        and snap.pair_address
+        and len(snap.pair_address) == 66
+    ):
+        return notes
+    try:
+        v4lock = await asyncio.wait_for(
+            inspect_v4_lp_lock(snap.pair_address, age_minutes=snap.age_minutes),
+            timeout=V4_LOCK_TIMEOUT_SECONDS,
+        )
+    except Exception:  # noqa: BLE001 - fail-open (includes TimeoutError)
+        return notes
+    if v4lock.locked is not None:
+        snap.safety.lp_locked_or_burned = v4lock.locked
+        notes.append(f"v4 LP lock: {v4lock.detail}")
+    return notes
+
+
+async def _bundle_notes(snap) -> list[str]:
+    """Bundle + deployer-cluster check (2026-09-30, Bubblemaps bands).
+
+    Coordinated launch buys and deployer-linked supply, verified on-chain.
+    Cached 24h per token. Mutates snap.safety / snap.bundle_* fields.
+    """
+    notes: list[str] = []
+    if not (snap.chain is Chain.ROBINHOOD and snap.pair_address and len(snap.pair_address) == 66):
+        return notes
+    try:
+        report: BundleDeployerReport | None
+        cached = get_cached_bundle_report(snap.token_address)
+        if cached is not None:
+            if cached.get("_inconclusive"):
+                notes.append("bundle/deployer: recently inconclusive — skipping re-check")
+                return notes
+            report = BundleDeployerReport.from_dict(cached)
+            notes.append(f"bundle/deployer: cached — {report.detail}")
+        else:
+            try:
+                report = await asyncio.wait_for(
+                    check_bundle_and_deployer(
+                        snap.token_address,
+                        snap.pair_address,
+                        age_minutes=snap.age_minutes,
+                    ),
+                    timeout=BUNDLE_CHECK_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                report = None
+            if report is not None:
+                save_cached_bundle_report(snap.token_address, report.as_dict())
+                notes.append(f"bundle/deployer: {report.detail}")
+            else:
+                # Back off: don't burn a 60s RPC walk on this token every tick.
+                save_cached_bundle_report(
+                    snap.token_address,
+                    {"_inconclusive": True},
+                    ttl_seconds=INCONCLUSIVE_TTL_S,
+                )
+                notes.append("bundle/deployer check inconclusive — metrics unknown")
+        if report is not None:
+            s = snap.safety
+            s.bundled_supply_pct = report.bundled_supply_pct
+            s.largest_cluster_pct = report.largest_cluster_pct
+            s.cluster_count = report.cluster_count
+            s.deployer_cluster_pct = report.deployer_cluster_pct
+            s.deployer_holding_pct = report.deployer_holding_pct
+            s.deployer_distributed_wallets = report.deployer_distributed_wallets
+            s.deployer_funder_is_serial_launcher = report.deployer_funder_is_serial_launcher
+            if snap.bundle_pct is None:
+                snap.bundle_pct = report.bundled_supply_pct
+            if snap.insider_pct is None:
+                snap.insider_pct = report.deployer_cluster_pct
+            snap.bundle_report = report.as_dict()
+    except Exception:  # noqa: BLE001 - fail-open
+        notes.append("bundle/deployer check failed — metrics unknown")
+    return notes
+
+
+async def _check_lp_vault(snap) -> VaultCheck | None:
     """Platform-vault LP check.
 
     Launchpads like StonkFun keep graduated LP in a platform vault instead of
-    a recognised locker, so RugCheck reads 0% locked. If the LP mint is
-    concentrated in a platform vault wallet, treat LP as locked. Returns a
-    note for the report, or None.
+    a recognised locker, so RugCheck reads 0% locked. Returns the VaultCheck
+    (or None when it can't run); the caller applies it to ``snap.safety``
+    only when RugCheck left LP as unlocked. Pure: never mutates the snapshot.
     """
     rpc_url = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
     if not snap.pair_address:
         return None
-    lp_mint = await resolve_lp_mint(snap.pair_address)
-    if not lp_mint:
+    try:
+        # Outer deadline on top of the per-RPC timeouts inside: the vault walk
+        # must never eat a large slice of the token's 90s budget.
+        check = await asyncio.wait_for(
+            check_pool_lp_vault(snap.pair_address, rpc_url),
+            timeout=LP_VAULT_CHECK_TIMEOUT_SECONDS,
+        )
+    except Exception:  # noqa: BLE001 - fail-open (includes TimeoutError)
         return None
-    known = load_known_vaults()
-    check = await check_lp_platform_vault(lp_mint, rpc_url, known)
-    if check.is_platform_vault and check.holder and check.holder not in known:
-        known.add(check.holder)
-        save_known_vaults(known)
-    if not check.is_platform_vault:
-        return None
-    snap.safety.lp_locked_or_burned = True
-    snap.safety.lp_locked_pct = 100.0
+    return check
+
+
+def _vault_note(check: VaultCheck) -> str:
     detail = f"{check.holder_share_pct:.0f}% of LP" if check.holder_share_pct else "LP"
     accts = f", {check.token_account_count} token accounts" if check.token_account_count else ""
     cached = " (cached vault)" if check.cached else ""
@@ -88,40 +183,61 @@ async def _check_lp_vault(snap) -> str | None:
     )
 
 
+async def _enrich_rugcheck(snap) -> list[str]:
+    """RugCheck safety summary for a Solana snapshot. Mutates snap.safety."""
+    notes: list[str] = []
+    try:
+        import aiohttp
+
+        async with aiohttp.ClientSession(trust_env=True) as s:
+            async with s.get(
+                RUGCHECK_SUMMARY.format(mint=snap.token_address),
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                if r.status == 200:
+                    snap.safety = map_rugcheck_summary(await r.json())
+                else:
+                    notes.append(f"RugCheck HTTP {r.status} — safety unknown")
+    except Exception as e:  # noqa: BLE001 - fail-open
+        notes.append(f"RugCheck unreachable ({type(e).__name__}) — safety unknown")
+    return notes
+
+
+async def _enrich_jupiter_notes(snap) -> list[str]:
+    """Jupiter holder data for a Solana snapshot. Mutates snap holders."""
+    notes: list[str] = []
+    try:
+        # DexScreener snapshots carry no holder info, so without this the
+        # holder/distribution filter checks warn-and-pass forever.
+        if not await enrich_jupiter_holders(snap):
+            notes.append("Jupiter holder data unavailable — holder checks skipped")
+    except Exception:  # noqa: BLE001 - fail-open
+        notes.append("Jupiter holder lookup failed — holder checks skipped")
+    return notes
+
+
 async def enrich_safety(snap, goplus: GoPlusProvider | None) -> list[str]:
     """Attach contract-safety signals. Returns notes about coverage gaps."""
     notes: list[str] = []
     if snap.chain is Chain.SOLANA:
-        try:
-            import aiohttp
-
-            async with aiohttp.ClientSession(trust_env=True) as s:
-                async with s.get(
-                    RUGCHECK_SUMMARY.format(mint=snap.token_address),
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as r:
-                    if r.status == 200:
-                        snap.safety = map_rugcheck_summary(await r.json())
-                    else:
-                        notes.append(f"RugCheck HTTP {r.status} — safety unknown")
-        except Exception as e:  # noqa: BLE001 - fail-open
-            notes.append(f"RugCheck unreachable ({type(e).__name__}) — safety unknown")
-        # Jupiter holder data: DexScreener snapshots carry no holder info, so
-        # without this the holder/distribution filter checks warn-and-pass forever.
-        try:
-            if not await enrich_jupiter_holders(snap):
-                notes.append("Jupiter holder data unavailable — holder checks skipped")
-        except Exception:  # noqa: BLE001 - fail-open
-            notes.append("Jupiter holder lookup failed — holder checks skipped")
-        # Platform-vault LP (e.g. StonkFun graduates): RugCheck reads 0% locked
-        # when the platform custodies the LP instead of a known locker.
-        try:
-            if snap.safety.lp_locked_or_burned is False:
-                vault_note = await _check_lp_vault(snap)
-                if vault_note:
-                    notes.append(vault_note)
-        except Exception:  # noqa: BLE001 - fail-open
-            pass
+        # RugCheck, Jupiter holders, and the platform-vault LP walk are
+        # independent — run them concurrently instead of sequentially.
+        # The vault result is applied after RugCheck: it only matters when
+        # RugCheck left LP as unlocked (same condition as before).
+        rug_task = asyncio.create_task(_enrich_rugcheck(snap))
+        jup_task = asyncio.create_task(_enrich_jupiter_notes(snap))
+        vault_task = asyncio.create_task(_check_lp_vault(snap))
+        notes.extend(await rug_task)
+        notes.extend(await jup_task)
+        vault_check = await vault_task
+        if (
+            snap.safety.lp_locked_or_burned is False
+            and vault_check is not None
+            and vault_check.is_platform_vault
+        ):
+            snap.safety.lp_locked_or_burned = True
+            snap.safety.lp_locked_pct = 100.0
+            notes.append(_vault_note(vault_check))
     elif snap.chain.is_evm:
         assert goplus is not None, "GoPlusProvider required for EVM safety enrichment"
         sec = await goplus.token_security(snap.chain, snap.token_address)
@@ -139,61 +255,12 @@ async def enrich_safety(snap, goplus: GoPlusProvider | None) -> list[str]:
             snap.top_holder_pct = top if top is not None else sec.top_holder_pct
             snap.top10_holder_pct = top10
             snap.dev_wallet_pct = sec.dev_wallet_pct
-        # Robinhood v4 LP-lock verification (ATM lesson, 2026-09-30): GoPlus
-        # rarely reports LP lock state on this chain, so an unknown lock used
-        # to sail through the young-coin filters straight into an LP pull.
-        # Verify on-chain via the v4 PositionManager: burned/locker-held
-        # position NFTs = locked; EOA-held = pullable.
-        if (
-            snap.chain is Chain.ROBINHOOD
-            and snap.safety.lp_locked_or_burned is None
-            and snap.pair_address
-            and len(snap.pair_address) == 66
-        ):
-            try:
-                v4lock = await inspect_v4_lp_lock(snap.pair_address, age_minutes=snap.age_minutes)
-                if v4lock.locked is not None:
-                    snap.safety.lp_locked_or_burned = v4lock.locked
-                    notes.append(f"v4 LP lock: {v4lock.detail}")
-            except Exception:  # noqa: BLE001 - fail-open
-                pass
-        # Bundle + deployer-cluster check (2026-09-30, Bubblemaps bands):
-        # coordinated launch buys and deployer-linked supply, verified
-        # on-chain. Runs after the LP check; cached 24h per token.
-        if snap.chain is Chain.ROBINHOOD and snap.pair_address and len(snap.pair_address) == 66:
-            try:
-                report: BundleDeployerReport | None
-                cached = get_cached_bundle_report(snap.token_address)
-                if cached is not None:
-                    report = BundleDeployerReport.from_dict(cached)
-                    notes.append(f"bundle/deployer: cached — {report.detail}")
-                else:
-                    report = await check_bundle_and_deployer(
-                        snap.token_address,
-                        snap.pair_address,
-                        age_minutes=snap.age_minutes,
-                    )
-                    if report is not None:
-                        save_cached_bundle_report(snap.token_address, report.as_dict())
-                        notes.append(f"bundle/deployer: {report.detail}")
-                    else:
-                        notes.append("bundle/deployer check inconclusive — metrics unknown")
-                if report is not None:
-                    s = snap.safety
-                    s.bundled_supply_pct = report.bundled_supply_pct
-                    s.largest_cluster_pct = report.largest_cluster_pct
-                    s.cluster_count = report.cluster_count
-                    s.deployer_cluster_pct = report.deployer_cluster_pct
-                    s.deployer_holding_pct = report.deployer_holding_pct
-                    s.deployer_distributed_wallets = report.deployer_distributed_wallets
-                    s.deployer_funder_is_serial_launcher = report.deployer_funder_is_serial_launcher
-                    if snap.bundle_pct is None:
-                        snap.bundle_pct = report.bundled_supply_pct
-                    if snap.insider_pct is None:
-                        snap.insider_pct = report.deployer_cluster_pct
-                    snap.bundle_report = report.as_dict()
-            except Exception:  # noqa: BLE001 - fail-open
-                notes.append("bundle/deployer check failed — metrics unknown")
+        # Robinhood v4 LP-lock verification + bundle/deployer check are
+        # independent — run them concurrently instead of sequentially.
+        v4_task = asyncio.create_task(_v4_lock_notes(snap))
+        bundle_task = asyncio.create_task(_bundle_notes(snap))
+        notes.extend(await v4_task)
+        notes.extend(await bundle_task)
     return notes
 
 
@@ -453,6 +520,19 @@ async def amain() -> int:
                     "perceptor": perceptor_info,
                     "bundle": snap.bundle_report,
                     "notes": notes,
+                    "flow_1h": {"buys": snap.txns_1h_buys, "sells": snap.txns_1h_sells},
+                    "flow_24h": {"buys": snap.txns_24h_buys, "sells": snap.txns_24h_sells},
+                    "safety": {
+                        "honeypot": snap.safety.honeypot,
+                        "buy_tax_pct": snap.safety.buy_tax_pct,
+                        "sell_tax_pct": snap.safety.sell_tax_pct,
+                        "mint_disabled": snap.safety.mint_disabled,
+                        "blacklist_present": snap.safety.blacklist_present,
+                        "lp_locked_pct": snap.safety.lp_locked_pct,
+                    },
+                    "dexscreener_url": (
+                        f"https://dexscreener.com/{snap.chain.value}/{snap.token_address}"
+                    ),
                 },
                 indent=1,
             )
