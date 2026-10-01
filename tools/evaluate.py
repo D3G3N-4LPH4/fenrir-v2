@@ -37,6 +37,7 @@ from fenrir.discovery.lp_vault import (
     save_known_vaults,
 )
 from fenrir.discovery.models import Chain
+from fenrir.discovery.lp_lock_v4 import inspect_v4_lp_lock
 from fenrir.discovery.playbooks import PLAYBOOK_STRATEGY_IDS, PlaybookTagger
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider
 from fenrir.discovery.providers.goplus import GoPlusProvider, distribution_metrics
@@ -132,6 +133,24 @@ async def enrich_safety(snap, goplus: GoPlusProvider | None) -> list[str]:
             snap.top_holder_pct = top if top is not None else sec.top_holder_pct
             snap.top10_holder_pct = top10
             snap.dev_wallet_pct = sec.dev_wallet_pct
+        # Robinhood v4 LP-lock verification (ATM lesson, 2026-09-30): GoPlus
+        # rarely reports LP lock state on this chain, so an unknown lock used
+        # to sail through the young-coin filters straight into an LP pull.
+        # Verify on-chain via the v4 PositionManager: burned/locker-held
+        # position NFTs = locked; EOA-held = pullable.
+        if (
+            snap.chain is Chain.ROBINHOOD
+            and snap.safety.lp_locked_or_burned is None
+            and snap.pair_address
+            and len(snap.pair_address) == 66
+        ):
+            try:
+                v4lock = await inspect_v4_lp_lock(snap.pair_address, age_minutes=snap.age_minutes)
+                if v4lock.locked is not None:
+                    snap.safety.lp_locked_or_burned = v4lock.locked
+                    notes.append(f"v4 LP lock: {v4lock.detail}")
+            except Exception:  # noqa: BLE001 - fail-open
+                pass
     return notes
 
 

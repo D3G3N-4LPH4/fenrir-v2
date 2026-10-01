@@ -239,6 +239,93 @@ class TestFilters:
         assert engine.evaluate(snap, FilterName.LOW_CAP_ALPHA).passed
 
 
+def _robinhood_young(lp_locked: bool | None, **kw) -> TokenSnapshot:
+    """Robinhood-chain young launch: migrated=None (no curve concept), like ATM."""
+    snap = _low_cap_pass()
+    snap.chain = Chain.ROBINHOOD
+    snap.migrated = None
+    snap.bond_progress_pct = None
+    snap.safety.lp_locked_or_burned = lp_locked
+    for k, v in kw.items():
+        setattr(snap, k, v)
+    return snap
+
+
+class TestYoungCoinLpLockHardening:
+    """ATM lesson (2026-09-30): young + migrated + unknown LP lock fails closed
+    on the risk-on filters instead of warn-and-pass. Pre-migration and older
+    coins keep the old behavior."""
+
+    def setup_method(self) -> None:
+        self.engine = FilterEngine()
+
+    def test_young_unknown_lp_lock_fails_low_cap_alpha(self) -> None:
+        # ATM-style: 21m old, Robinhood, LP lock unknown → hard fail.
+        res = self.engine.evaluate(_robinhood_young(None), FilterName.LOW_CAP_ALPHA)
+        assert not res.passed
+        assert any("LP lock status unknown" in f for f in res.failures)
+
+    def test_young_unknown_lp_lock_fails_degen_launch(self) -> None:
+        snap = _robinhood_young(None)
+        snap.market_cap_usd = 20_000
+        snap.age_minutes = 30
+        res = self.engine.evaluate(snap, FilterName.DEGEN_LAUNCH)
+        assert not res.passed
+        assert any("LP lock status unknown" in f for f in res.failures)
+
+    def test_young_locked_lp_passes_lp_gate(self) -> None:
+        # Same coin, but the on-chain check confirmed the lock → no LP failure.
+        res = self.engine.evaluate(_robinhood_young(True), FilterName.LOW_CAP_ALPHA)
+        assert not any("LP lock" in f or "LP not locked" in f for f in res.failures)
+
+    def test_young_explicitly_unlocked_lp_fails(self) -> None:
+        res = self.engine.evaluate(_robinhood_young(False), FilterName.LOW_CAP_ALPHA)
+        assert not res.passed
+        assert any("LP not locked/burned" in f for f in res.failures)
+
+    def test_pre_migration_warns_not_fails(self) -> None:
+        # Bonding curve still holds the liquidity — nothing lockable yet.
+        snap = _robinhood_young(None, migrated=False)
+        res = self.engine.evaluate(snap, FilterName.LOW_CAP_ALPHA)
+        assert res.passed
+        assert any("pre-migration" in w for w in res.warnings)
+
+    def test_pre_migration_via_bond_warns_not_fails(self) -> None:
+        # Solana-style: migrated flag absent but bond < 100% = still on curve.
+        snap = _low_cap_pass()  # bond_progress_pct=20, migrated=None
+        snap.safety.lp_locked_or_burned = None
+        res = self.engine.evaluate(snap, FilterName.LOW_CAP_ALPHA)
+        assert res.passed
+
+    def test_old_coin_unknown_lp_warns_not_fails(self) -> None:
+        # Past the young window → the old informational warn, not a fail.
+        snap = _robinhood_young(
+            None,
+            age_minutes=200,
+            market_cap_usd=50_000,
+            liquidity_usd=18_000,
+            volume_24h_usd=100_000,
+            volume_1h_usd=20_000,
+            price_change_1h_pct=50.0,
+        )
+        res = self.engine.evaluate(snap, FilterName.VOLATILITY_BREAKOUT)
+        assert res.passed
+        assert any("LP lock status unknown" in w for w in res.warnings)
+
+    def test_mid_cap_legacy_behavior_unchanged(self) -> None:
+        # MID_CAP_MOMENTUM still uses require_lp_locked (warn on unknown).
+        mid = _mid_cap_pass()
+        mid.safety.lp_locked_or_burned = None
+        res = self.engine.evaluate(mid, FilterName.MID_CAP_MOMENTUM)
+        assert res.passed
+        assert any("LP lock status unknown" in w for w in res.warnings)
+
+    def test_high_cap_ignores_lp_lock(self) -> None:
+        snap = _high_cap_pass()
+        snap.safety.lp_locked_or_burned = None
+        assert self.engine.evaluate(snap, FilterName.HIGH_CAP).passed
+
+
 class TestFlowChecks:
     """The 2026-09 filter hardening: 1h edge, turnover, chase guard, depth, concentration."""
 
