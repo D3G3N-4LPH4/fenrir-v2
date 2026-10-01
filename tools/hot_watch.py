@@ -43,11 +43,13 @@ from fenrir.discovery.providers.geckoterminal import GeckoTerminalProvider  # no
 from fenrir.discovery.providers.goplus import GoPlusProvider  # noqa: E402
 from fenrir.discovery.providers.perceptor import PerceptorProvider  # noqa: E402
 from fenrir.discovery.scoring import ScoringEngine  # noqa: E402
+from fenrir.discovery.seen import load as load_seen  # noqa: E402
+from fenrir.discovery.seen import record_alert, save as save_seen  # noqa: E402
+from fenrir.discovery.seen import should_alert
 
 GOAL_HIDDEN = os.path.expanduser("~/workspace/goals/token-scout-watch/hidden_files")
 SEEN_PATH = os.path.join(GOAL_HIDDEN, "seen.json")
 CONFLUENCE_PATH = os.path.join(GOAL_HIDDEN, "confluence.json")
-REALERT_SECONDS = 86400  # same 24h re-alert window as the scout
 
 
 def _send_telegram(text: str) -> bool:
@@ -125,7 +127,7 @@ async def amain() -> int:
     engine = FilterEngine()
     scorer = ScoringEngine()
     tagger = PlaybookTagger()
-    seen = _load_json(args.seen, {})
+    seen = load_seen(args.seen)
     now = time.time()
     new_cands: list[dict] = []
     try:
@@ -150,9 +152,7 @@ async def amain() -> int:
             if cand is None:
                 await asyncio.sleep(0.4)
                 continue
-            entry = seen.get(addr, {})
-            last_alerted = float(entry.get("last_alerted", 0))
-            if now - last_alerted <= REALERT_SECONDS:
+            if not should_alert(seen, addr, now=now):
                 await asyncio.sleep(0.4)
                 continue  # already flagged within 24h — the scout owns it
             text = format_scout_alert(cand)
@@ -160,12 +160,13 @@ async def amain() -> int:
             if not args.dry_run:
                 sent = _send_telegram(text)
             if sent:
-                seen[addr] = {
-                    "symbol": cand.get("symbol"),
-                    "first_seen": entry.get("first_seen", now),
-                    "last_alerted": now,
-                    "score": (cand.get("score") or {}).get("overall"),
-                }
+                record_alert(
+                    seen,
+                    addr,
+                    symbol=cand.get("symbol"),
+                    score=(cand.get("score") or {}).get("overall"),
+                    now=now,
+                )
                 new_cands.append(cand)
                 summary["alerted"].append(cand.get("symbol"))
             else:
@@ -178,7 +179,7 @@ async def amain() -> int:
         await perceptor.close()
         accel.save()
 
-    _save_json(args.seen, seen)
+    save_seen(args.seen, seen)
     if new_cands:
         _save_json("/tmp/hot_new_candidates.json", new_cands)
     print(json.dumps(summary))
