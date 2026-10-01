@@ -25,8 +25,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fenrir.discovery.providers.perceptor import (  # noqa: E402
     ROBINHOOD_CHAIN_ID,
     PerceptorProvider,
+    PerceptorReport,
 )
 from fenrir.discovery.alerts import format_perceptor_verdict  # noqa: E402
+
+# Per-entry deadline for `sweep` refreshes (the provider's own request
+# timeout is 15s; this is the backstop for a wedged coroutine).
+SWEEP_ENTRY_TIMEOUT_SECONDS = 30.0
 
 
 def print_report(report, address: str) -> None:
@@ -96,14 +101,37 @@ async def cmd_sweep(args) -> int:
     p = PerceptorProvider()
     try:
         cache = p._load_cache()
-        pending = [a for a, e in cache.items() if e.get("status") == "pending"]
+        # Revisit pending scans AND completed scans that were never notified:
+        # when --notify is skipped (alerts paused), a completed entry would
+        # otherwise never be picked up again once its status flips to
+        # "complete".
+        pending = [
+            a
+            for a, e in cache.items()
+            if e.get("status") == "pending"
+            or (e.get("status") == "complete" and not e.get("followup_sent"))
+        ]
         if not pending:
             print(json.dumps({"checked": 0, "completed": [], "notified": []}))
             return 0
+        # Bounded concurrency + per-entry deadline: a wedged refresh must not
+        # stall the sweep (it runs inside the 10-minute scout cron).
+        sem = asyncio.Semaphore(4)
+
+        async def _refresh(addr: str) -> tuple[str, PerceptorReport | None]:
+            async with sem:
+                try:
+                    report = await asyncio.wait_for(
+                        p.refresh_report(addr), timeout=SWEEP_ENTRY_TIMEOUT_SECONDS
+                    )
+                except Exception:  # noqa: BLE001 - fail-open
+                    report = None
+                return addr, report
+
+        refreshed = await asyncio.gather(*(_refresh(a) for a in pending))
         completed = []
         notified = []
-        for addr in pending:
-            report = await p.refresh_report(addr)
+        for addr, report in refreshed:
             if report is None:
                 continue
             entry = cache[addr]

@@ -384,3 +384,59 @@ async def test_sweep_notify_sends_once(tmp_path, monkeypatch) -> None:
     assert rc == 0
     assert len(sent) == 1
     await p.close()
+
+
+@pytest.mark.asyncio
+async def test_sweep_revisits_completed_unsent_not_sent(tmp_path, monkeypatch, capsys) -> None:
+    """Sweep selects pending AND completed-but-unsent entries; skips sent ones.
+
+    Regression test for the delivery bug where completed scans flipped to
+    status=="complete" without followup_sent and were never revisited.
+    """
+    import importlib.util
+    import sys
+    from types import SimpleNamespace
+
+    spec = importlib.util.spec_from_file_location(
+        "perceptor_tool2",
+        os.path.join(os.path.dirname(__file__), "..", "tools", "perceptor.py"),
+    )
+    assert spec is not None
+    tool = importlib.util.module_from_spec(spec)
+    sys.modules["perceptor_tool2"] = tool
+    assert spec.loader is not None
+    spec.loader.exec_module(tool)
+
+    def entry(status, sent):
+        return {
+            "investigation_id": f"id-{status}-{sent}",
+            "status": status,
+            "report": load_fixture(),
+            "checked_at": 0.0,
+            "followup_sent": sent,
+            "context": {"symbol": "T", "chain": "robinhood"},
+        }
+
+    p = PerceptorProvider(cache_path=str(tmp_path / "c.json"))
+    p._load_cache()["0xaaa"] = entry("pending", False)
+    p._load_cache()["0xbbb"] = entry("complete", False)  # must be revisited
+    p._load_cache()["0xccc"] = entry("complete", True)  # must be skipped
+    p._save_cache()
+
+    refreshed: list[str] = []
+
+    async def fake_refresh(a):
+        refreshed.append(a)
+        return _oxp_report()
+
+    monkeypatch.setattr(p, "refresh_report", fake_refresh)
+    monkeypatch.setattr(tool, "PerceptorProvider", lambda *a, **k: p)
+
+    rc = await tool.cmd_sweep(SimpleNamespace(notify=False))
+    assert rc == 0
+    assert set(refreshed) == {"0xaaa", "0xbbb"}
+    out = json.loads(capsys.readouterr().out)
+    assert out["checked"] == 2
+    assert {c["address"] for c in out["completed"]} == {"0xaaa", "0xbbb"}
+    assert out["notified"] == []  # no --notify: nothing marked sent
+    await p.close()

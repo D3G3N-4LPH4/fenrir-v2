@@ -61,6 +61,14 @@ SOURCE_ONCHAIN = "rh_onchain"
 
 SOURCE_GROUPS = ("boosted", "gecko", "ds_profile", "graduation", "onchain")
 
+# Hard deadlines. Every provider already carries a per-request timeout, but a
+# single wedged coroutine (or a provider whose timeout never fires) must not
+# be able to stall the batch — the scout runs on a 10-minute cadence.
+TOKEN_TIMEOUT_SECONDS = 90.0  # one address, snapshot -> verdict
+PERCEPTOR_TIMEOUT_SECONDS = 45.0  # the Perceptor enrichment leg of one token
+SOURCE_TIMEOUT_SECONDS = 60.0  # one discovery source fetch
+RUN_TIMEOUT_SECONDS = 420.0  # the whole run; emits partial results on breach
+
 
 def safety_unknown(snap) -> bool:
     """True when no safety provider supplied any meaningful signal.
@@ -147,7 +155,8 @@ async def fetch_source_addresses(
 
     async def safe(coro, name: str) -> list[str]:
         try:
-            result: list[str] = await coro
+            # Hard deadline per source: a wedged feed must not stall discovery.
+            result: list[str] = await asyncio.wait_for(coro, timeout=SOURCE_TIMEOUT_SECONDS)
             return result
         except Exception:
             return []
@@ -231,29 +240,45 @@ async def evaluate_address(
     min_score: float,
     perceptor: PerceptorProvider | None = None,
     accel: AccelTracker | None = None,
+    timings: list[dict] | None = None,
 ) -> dict | None:
     """Run one address through snapshot + safety + filters + scoring.
 
     Returns the candidate dict, or None when it doesn't clear the bar.
+    When ``timings`` is given, per-phase seconds are appended as
+    {"addr", "phase", "seconds"} dicts for run-level diagnostics.
     """
+
+    def _phase(name: str, t0: float) -> None:
+        if timings is not None:
+            timings.append(
+                {"addr": addr, "phase": name, "seconds": round(time.perf_counter() - t0, 3)}
+            )
+
     try:
+        t0 = time.perf_counter()
         snap = await ds.fetch_snapshot(addr, chain=chain)
+        _phase("snapshot", t0)
     except Exception:
         return None
     if snap is None:
         return None
     try:
+        t0 = time.perf_counter()
         await enrich_safety(snap, gp)
+        _phase("safety", t0)
     except Exception:
         pass
     # Solana: live bonding-curve position (graduation_watch filter data).
     if snap.chain is Chain.SOLANA:
+        t0 = time.perf_counter()
         try:
             from fenrir.discovery.providers.pumpfun import annotate_bond_curve
 
             await annotate_bond_curve(snap)
         except Exception:
             pass
+        _phase("bond", t0)
     # Acceleration: seed this poll's observation and attach poll-over-poll
     # growth before the filters run (momentum_transition fails closed without
     # a prior sighting).
@@ -263,19 +288,28 @@ async def evaluate_address(
         except Exception:
             pass
     fail = hard_fail(snap)
+    t0 = time.perf_counter()
     results = {fn.value: engine.evaluate(snap, fn) for fn in FilterName}
     passed = [k for k, r in results.items() if r.passed]
     score = scorer.score(snap)
+    _phase("score", t0)
     # Robinhood safety net: when GoPlus has nothing, Perceptor's on-chain
     # forensics can still clear (or kill) the candidate. A landed verdict
     # re-runs the hard-fail check and the score — the safety_unknown score
     # cap lifts when safety becomes verifiable.
     perceptor_info: dict | None = None
     if perceptor is not None and snap.chain is Chain.ROBINHOOD and safety_unknown(snap):
+        t0 = time.perf_counter()
         try:
-            report = await enrich_robinhood_safety(snap, perceptor)
-        except Exception:  # noqa: BLE001 - fail-open
+            # Hard deadline on top of the provider's own request timeouts: a
+            # wedged Perceptor call must not eat this token's whole budget.
+            report = await asyncio.wait_for(
+                enrich_robinhood_safety(snap, perceptor),
+                timeout=PERCEPTOR_TIMEOUT_SECONDS,
+            )
+        except Exception:  # noqa: BLE001 - fail-open (includes TimeoutError)
             report = None
+        _phase("perceptor", t0)
         if report is not None:
             fail = hard_fail(snap)
             score = scorer.score(snap)
@@ -349,21 +383,99 @@ async def scout_chain(
     min_score: float,
     perceptor: PerceptorProvider | None = None,
     accel: AccelTracker | None = None,
+    timings: list[dict] | None = None,
 ) -> tuple[list[dict], dict[str, int]]:
     candidates: list[dict] = []
     by_source: dict[str, int] = {}
     source_addrs = await fetch_source_addresses(chain, ds, gt, sources, limit, extra_limit)
-    for source, addr in dedupe_sources(source_addrs):
-        cand = await evaluate_address(
-            source, addr, chain, ds, gp, engine, scorer, tagger, min_score, perceptor, accel
-        )
+    addrs = list(dedupe_sources(source_addrs))
+    # Bounded concurrency: serial evaluation turns provider latency into
+    # total runtime (102 tokens x ~20s = 33+ min, blowing the 10-min cadence).
+    # asyncio.gather preserves input order, so candidate ordering is unchanged.
+    # 8-wide: the work is network-IO-bound, and each token already carries a
+    # 90s hard deadline, so a slow token can't hog the batch.
+    sem = asyncio.Semaphore(8)
+
+    async def _one(source: str, addr: str, stagger: float) -> tuple[str, str, dict | None]:
+        async with sem:
+            if stagger:
+                await asyncio.sleep(stagger)
+            try:
+                # Per-token hard deadline: no single address may stall the
+                # batch, no matter which provider call wedges underneath.
+                cand = await asyncio.wait_for(
+                    evaluate_address(
+                        source,
+                        addr,
+                        chain,
+                        ds,
+                        gp,
+                        engine,
+                        scorer,
+                        tagger,
+                        min_score,
+                        perceptor,
+                        accel,
+                        timings,
+                    ),
+                    timeout=TOKEN_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                if timings is not None:
+                    # Record how far the token got before the deadline fired —
+                    # the last completed phase is where it was stuck.
+                    done = [e["phase"] for e in timings if e["addr"] == addr]
+                    timings.append(
+                        {
+                            "addr": addr,
+                            "phase": "timeout",
+                            "seconds": TOKEN_TIMEOUT_SECONDS,
+                            "after": done[-1] if done else None,
+                        }
+                    )
+                cand = None
+            except Exception:  # noqa: BLE001 - one bad token must not kill the batch
+                cand = None
+            return source, addr, cand
+
+    results = await asyncio.gather(
+        *[_one(source, addr, (i % 8) * 0.3) for i, (source, addr) in enumerate(addrs)]
+    )
+    for source, addr, cand in results:
         by_source[source] = by_source.get(source, 0) + 1
-        if cand is None:
-            await asyncio.sleep(0.4)
-            continue
-        candidates.append(cand)
-        await asyncio.sleep(0.4)
+        if cand is not None:
+            candidates.append(cand)
     return candidates, by_source
+
+
+def summarize_timings(timings: list[dict]) -> dict:
+    """Aggregate per-phase/per-token timings into a compact run diagnostic."""
+    by_phase: dict[str, float] = {}
+    by_addr: dict[str, float] = {}
+    timeouts = 0
+    timeout_after: dict[str, int] = {}
+    for t in timings:
+        phase = str(t.get("phase"))
+        secs = float(t.get("seconds") or 0.0)
+        by_phase[phase] = by_phase.get(phase, 0.0) + secs
+        if phase == "timeout":
+            timeouts += 1
+            after = t.get("after")
+            key = str(after) if after else "snapshot"
+            timeout_after[key] = timeout_after.get(key, 0) + 1
+        else:
+            addr = str(t.get("addr"))
+            by_addr[addr] = by_addr.get(addr, 0.0) + secs
+    slowest = sorted(by_addr.items(), key=lambda kv: -kv[1])[:10]
+    return {
+        "phase_seconds": {
+            k: round(v, 1) for k, v in sorted(by_phase.items(), key=lambda kv: -kv[1])
+        },
+        "slowest_tokens": [{"addr": a, "seconds": round(s, 1)} for a, s in slowest],
+        "token_timeouts": timeouts,
+        "timeout_after_phase": timeout_after,
+        "tokens_timed": len(by_addr),
+    }
 
 
 async def amain() -> int:
@@ -398,26 +510,34 @@ async def amain() -> int:
     tagger = PlaybookTagger()
     all_cands: list[dict] = []
     by_source: dict[str, int] = {}
+    timings: list[dict] = []
+    degraded: str | None = None
     try:
-        for c in args.chains:
-            cands, bs = await scout_chain(
-                Chain(c),
-                ds,
-                gt,
-                gp,
-                engine,
-                scorer,
-                tagger,
-                args.sources,
-                args.limit,
-                args.extra_limit,
-                args.min_score,
-                perceptor,
-                accel,
-            )
-            all_cands.extend(cands)
-            for k, v in bs.items():
-                by_source[k] = by_source.get(k, 0) + v
+        # Run-level deadline: the cron cadence is 10 minutes, so a wedged run
+        # must emit partial results instead of hanging until it gets killed.
+        async with asyncio.timeout(RUN_TIMEOUT_SECONDS):
+            for c in args.chains:
+                cands, bs = await scout_chain(
+                    Chain(c),
+                    ds,
+                    gt,
+                    gp,
+                    engine,
+                    scorer,
+                    tagger,
+                    args.sources,
+                    args.limit,
+                    args.extra_limit,
+                    args.min_score,
+                    perceptor,
+                    accel,
+                    timings,
+                )
+                all_cands.extend(cands)
+                for k, v in bs.items():
+                    by_source[k] = by_source.get(k, 0) + v
+    except TimeoutError:
+        degraded = f"run deadline {RUN_TIMEOUT_SECONDS:.0f}s exceeded — partial results"
     finally:
         await ds.close()
         await gt.close()
@@ -426,16 +546,24 @@ async def amain() -> int:
         accel.save()
 
     all_cands.sort(key=lambda c: -c["score"]["overall"])
+    timing = summarize_timings(timings)
     print(
-        json.dumps(
-            {
-                "ts": time.time(),
-                "scanned": sum(by_source.values()),
-                "by_source": by_source,
-                "candidates": all_cands,
-            }
-        )
+        f"scout timing: scanned={sum(by_source.values())} "
+        f"phases={timing['phase_seconds']} timeouts={timing['token_timeouts']} "
+        f"timeout_after={timing['timeout_after_phase']} "
+        f"slowest={[t['addr'][:10] + '=' + str(t['seconds']) + 's' for t in timing['slowest_tokens'][:5]]}",
+        file=sys.stderr,
     )
+    out: dict = {
+        "ts": time.time(),
+        "scanned": sum(by_source.values()),
+        "by_source": by_source,
+        "candidates": all_cands,
+        "timing": timing,
+    }
+    if degraded:
+        out["degraded"] = degraded
+    print(json.dumps(out))
     return 0
 
 

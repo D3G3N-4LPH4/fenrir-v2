@@ -350,3 +350,35 @@ class TestBundleScoring:
         assert ScoringEngine().score(snap).safety == pytest.approx(
             ScoringEngine().score(base).safety
         )
+
+
+class TestBundleCacheTTL:
+    def test_inconclusive_uses_short_ttl(self, tmp_path, monkeypatch) -> None:
+        import fenrir.discovery.bundle_check as bc
+
+        monkeypatch.setattr(bc, "_CACHE_PATH", str(tmp_path / "bundle.json"))
+        bc.save_cached_bundle_report(
+            "0xabc", {"_inconclusive": True}, ttl_seconds=bc.INCONCLUSIVE_TTL_S
+        )
+        entry = bc._load_cache()["0xabc"]
+        assert entry["ttl"] == bc.INCONCLUSIVE_TTL_S
+        assert bc.get_cached_bundle_report("0xABC") == {"_inconclusive": True}
+
+    def test_short_ttl_expires(self, tmp_path, monkeypatch) -> None:
+        import time
+
+        import fenrir.discovery.bundle_check as bc
+
+        monkeypatch.setattr(bc, "_CACHE_PATH", str(tmp_path / "bundle.json"))
+        bc.save_cached_bundle_report("0xabc", {"_inconclusive": True}, ttl_seconds=0.01)
+        assert bc.get_cached_bundle_report("0xabc") == {"_inconclusive": True}
+        time.sleep(0.02)
+        assert bc.get_cached_bundle_report("0xabc") is None
+
+    def test_default_ttl_stays_24h(self, tmp_path, monkeypatch) -> None:
+        import fenrir.discovery.bundle_check as bc
+
+        monkeypatch.setattr(bc, "_CACHE_PATH", str(tmp_path / "bundle.json"))
+        bc.save_cached_bundle_report("0xdef", {"bundled_supply_pct": 3.0})
+        entry = bc._load_cache()["0xdef"]
+        assert entry["ttl"] == 24 * 3600
