@@ -5,6 +5,7 @@ Usage:
   tools/perceptor.py investigate <address> [--chain-id 4663] [--wait 300]
   tools/perceptor.py status <address>
   tools/perceptor.py sweep            # refresh all pending scans, print verdicts
+  tools/perceptor.py deepcheck <address>  # on-chain pool-topology check
 
 ``investigate`` starts a scan (one POST per address, ever — cached) and, with
 ``--wait``, blocks until the verdict lands. ``status`` prints the cached
@@ -28,10 +29,24 @@ from fenrir.discovery.providers.perceptor import (  # noqa: E402
     PerceptorReport,
 )
 from fenrir.discovery.alerts import format_perceptor_verdict  # noqa: E402
+from fenrir.discovery.pool_deepcheck import (  # noqa: E402
+    PoolDeepCheck,
+    deepcheck_pools,
+    format_deepcheck,
+    verdict_needs_deepcheck,
+)
 
 # Per-entry deadline for `sweep` refreshes (the provider's own request
 # timeout is 15s; this is the backstop for a wedged coroutine).
 SWEEP_ENTRY_TIMEOUT_SECONDS = 30.0
+
+# Budget for one pool deep check at verdict-delivery time. The check runs
+# only when a verdict is actually about to be delivered (notify path) or on
+# explicit `deepcheck` CLI runs — never inside the completion scan, so the
+# 10-minute scout cron never pays for it.
+DEEPCHECK_BUDGET_SECONDS = 120.0
+# Re-run the deep check when the cached one is older than this.
+DEEPCHECK_STALE_SECONDS = 3600.0
 
 
 def print_report(report, address: str) -> None:
@@ -135,6 +150,17 @@ async def cmd_sweep(args) -> int:
             if report is None:
                 continue
             entry = cache[addr]
+            if args.notify and not entry.get("followup_sent"):
+                msg = format_perceptor_verdict(addr, entry.get("context"), report)
+                dc_line = await _maybe_deepcheck(addr, entry, report)
+                if dc_line:
+                    msg = msg.rstrip() + "\n\n" + dc_line
+                    p._save_cache()  # persist the deepcheck even if send fails
+                if _send_telegram(msg):
+                    entry["followup_sent"] = True
+                    p._save_cache()
+                    notified.append(addr)
+                # else: leave followup_sent unset so the next sweep retries
             completed.append(
                 {
                     "address": addr,
@@ -148,15 +174,10 @@ async def cmd_sweep(args) -> int:
                     "sell_tax_pct": report.safety.sell_tax_pct,
                     "mint_disabled": report.safety.mint_disabled,
                     "lp_locked_or_burned": report.safety.lp_locked_or_burned,
+                    "deepcheck_qualified": verdict_needs_deepcheck(report),
+                    "deepcheck": (entry.get("deepcheck") or {}).get("qualification"),
                 }
             )
-            if args.notify and not entry.get("followup_sent"):
-                msg = format_perceptor_verdict(addr, entry.get("context"), report)
-                if _send_telegram(msg):
-                    entry["followup_sent"] = True
-                    p._save_cache()
-                    notified.append(addr)
-                # else: leave followup_sent unset so the next sweep retries
         print(
             json.dumps(
                 {"checked": len(pending), "completed": completed, "notified": notified},
@@ -166,6 +187,44 @@ async def cmd_sweep(args) -> int:
         return 0
     finally:
         await p.close()
+
+
+async def _maybe_deepcheck(addr: str, entry: dict, report: PerceptorReport) -> str:
+    """Run the pool deep check when a main-pool verdict qualifies for one.
+
+    Runs at delivery time only (notify path): the verdict card carries
+    on-chain ground truth instead of the aggregator's "main pool" claim.
+    Fail-open — any error returns "" and the verdict goes out unchanged.
+    """
+    import time
+
+    try:
+        if not verdict_needs_deepcheck(report):
+            return ""
+        cached = entry.get("deepcheck") or {}
+        ts = float(cached.get("ts", 0) or 0)
+        if (
+            cached.get("qualification") not in (None, "UNKNOWN")
+            and (time.time() - ts) < DEEPCHECK_STALE_SECONDS
+        ):
+            dc = PoolDeepCheck(
+                token_address=addr,
+                qualification=cached.get("qualification", "UNKNOWN"),
+                detail=cached.get("detail", ""),
+            )
+            return format_deepcheck(dc)
+        dc = await deepcheck_pools(addr, budget_seconds=DEEPCHECK_BUDGET_SECONDS)
+        entry["deepcheck"] = {
+            "ts": time.time(),
+            "qualification": dc.qualification,
+            "detail": dc.detail,
+            "pools": len(dc.pools),
+            "yanked": len(dc.yanked_pool_ids),
+            "pullable": len(dc.pullable_pool_ids),
+        }
+        return format_deepcheck(dc)
+    except Exception:  # noqa: BLE001 - fail-open
+        return ""
 
 
 def _send_telegram(text: str) -> bool:
@@ -186,6 +245,14 @@ def _send_telegram(text: str) -> bool:
     except Exception as e:  # noqa: BLE001 - fail-open
         print(f"telegram follow-up failed: {e}", file=sys.stderr)
         return False
+
+
+async def cmd_deepcheck(args) -> int:
+    """Standalone pool deep check: prints JSON + the verdict-card section."""
+    dc = await deepcheck_pools(args.address, budget_seconds=args.budget)
+    print(json.dumps(dc.to_dict(), indent=1))
+    print(format_deepcheck(dc))
+    return 0
 
 
 def main() -> int:
@@ -211,6 +278,16 @@ def main() -> int:
         help="send a Telegram follow-up for each newly completed verdict",
     )
     sw.set_defaults(func=cmd_sweep)
+
+    dc = sub.add_parser("deepcheck", help="on-chain pool-topology check for one token")
+    dc.add_argument("address")
+    dc.add_argument(
+        "--budget",
+        type=float,
+        default=DEEPCHECK_BUDGET_SECONDS,
+        help="max seconds for the check (best-effort)",
+    )
+    dc.set_defaults(func=cmd_deepcheck)
 
     args = ap.parse_args()
     code: int = asyncio.run(args.func(args))
