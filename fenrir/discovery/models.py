@@ -194,6 +194,13 @@ class TokenSnapshot:
     accel_edge_delta: float | None = None  # 1h buy-pressure delta vs previous poll
     accel_polls_seen: int = 0  # observations in history, including this one
 
+    # ── Second-life baseline (trailing price/volume history, attached on demand
+    # by fenrir.discovery.second_life) ──
+    base_floor_price_usd: float | None = None  # median of daily lows — the defended base
+    base_max_price_usd: float | None = None  # trailing window high (death check)
+    base_median_1h_volume_usd: float | None = None  # median daily volume / 24
+    base_lookback_days: float | None = None  # candles behind the baseline
+
     # ── Safety ────────────────────────────────────────────────────────
     safety: SafetySignals = field(default_factory=SafetySignals)
 
