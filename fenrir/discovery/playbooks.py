@@ -153,6 +153,18 @@ class PlaybookTagger:
             tags.sources = conf.sources
             tags.combined_strength = conf.combined_strength
             tags.confluent = conf.is_confluent(min_sources=2)
+        # Chart patterns (hourly candles, attached by evaluate.py): bullish
+        # patterns join the tag set; bearish ones are caution tags only —
+        # they never feed LONG confluence.
+        for pat in getattr(snapshot, "chart_patterns", None) or []:
+            tags.matches.append(
+                PlaybookMatch(
+                    strategy_id=pat.pattern_id,
+                    display_name=pat.display_name,
+                    strength=pat.strength,
+                    rationale=f"[chart:{pat.direction}] {pat.rationale}",
+                )
+            )
         # Strongest conviction first.
         tags.matches.sort(key=lambda m: -m.strength)
         return tags
