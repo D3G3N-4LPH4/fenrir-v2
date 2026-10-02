@@ -18,6 +18,8 @@ Filters (spec):
   - MOMENTUM_TRANSITION — pre-run acceleration (txn/holder/buy-edge growth).
   - CURVE_IGNITION    — earliest on-chain entry, curve at 10-50% with inflow.
   - FLUSH_RECOVERY    — post -60%..-95% flush, stabilized, buyers returning.
+  - SECOND_LIFE       — the SAPLING model: a coin that survived days with its
+    floor intact, now re-igniting (volume/edge/price lifting off its own base).
 
 Policy:
   - Numeric market fields (mcap/liquidity/volume) come from DexScreener and are
@@ -47,6 +49,7 @@ class FilterName(str, Enum):
     MOMENTUM_TRANSITION = "momentum_transition"
     CURVE_IGNITION = "curve_ignition"
     FLUSH_RECOVERY = "flush_recovery"
+    SECOND_LIFE = "second_life"
 
 
 @dataclass
@@ -133,6 +136,15 @@ class FilterThresholds:
     # (liquidity still in the bonding curve — nothing lockable yet) keeps the
     # old warn behavior. None = keep the legacy warn-on-unknown behavior.
     require_lp_lock_known_max_age_m: float | None = None
+    # Second-life (SAPLING model, 2026-10-01): re-ignition off a survived base.
+    # Baseline fields are attached by fenrir.discovery.second_life from trailing
+    # GeckoTerminal candles. require_second_life_baseline fails closed when the
+    # baseline is missing — without the coin's own history there is no base to
+    # measure the breakout against.
+    require_second_life_baseline: bool = False
+    min_reignition_volume_x: float | None = None  # 1h volume vs median 1h baseline
+    min_price_vs_floor_x: float | None = None  # price vs trailing floor
+    min_floor_vs_max_pct: float | None = None  # floor >= x% of trailing max (survival)
 
 
 # ── Filter defaults (exact spec values) ───────────────────────────────
@@ -434,6 +446,32 @@ FLUSH_RECOVERY = FilterThresholds(
 )
 
 
+SECOND_LIFE = FilterThresholds(
+    # The SAPLING model (2026-10-01): d3g3n's 20x. At his $183k entry it looked
+    # identical to every dead launch; the discriminating information was time —
+    # it held a floor for 5+ days and kept its holders, then re-ignited. This
+    # filter buys the base breakout, not the launch: old enough to have a
+    # history, floor intact, and 1h tape violently above its own baseline.
+    min_age_minutes=3 * 24 * 60.0,  # survived — the actual discriminator
+    min_liquidity_usd=20_000.0,  # still a real pool
+    min_holder_count=200,  # community didn't evaporate
+    min_buys_24h=50,
+    min_buy_sell_ratio_1h=1.5,  # buyers back in control…
+    max_buy_sell_ratio_1h=8.0,  # …but not one-sided painter flow (vb lesson)
+    min_price_change_1h_pct=15.0,  # the re-ignition is real
+    max_price_change_1h_pct=400.0,  # base breakout, not the top
+    max_top_holder_pct=30.0,
+    max_top10_holder_pct=80.0,
+    require_buys_exceed_sells=True,
+    # Baseline from trailing candles (second_life.py). Fail closed without it:
+    # no history, no base, no breakout to measure.
+    require_second_life_baseline=True,
+    min_floor_vs_max_pct=5.0,  # never went to zero vs its own range
+    min_price_vs_floor_x=1.5,  # lifting off the defended base
+    min_reignition_volume_x=3.0,  # 1h volume 3x its own median
+)
+
+
 DEFAULT_THRESHOLDS: dict[FilterName, FilterThresholds] = {
     FilterName.LOW_CAP_ALPHA: LOW_CAP_ALPHA,
     FilterName.MID_CAP_MOMENTUM: MID_CAP_MOMENTUM,
@@ -445,6 +483,7 @@ DEFAULT_THRESHOLDS: dict[FilterName, FilterThresholds] = {
     FilterName.MOMENTUM_TRANSITION: MOMENTUM_TRANSITION,
     FilterName.CURVE_IGNITION: CURVE_IGNITION,
     FilterName.FLUSH_RECOVERY: FLUSH_RECOVERY,
+    FilterName.SECOND_LIFE: SECOND_LIFE,
 }
 
 
@@ -491,6 +530,7 @@ class FilterEngine:
         self._check_holders(snap, thr, failures, warnings)
         self._check_flow(snap, thr, failures, warnings)
         self._check_acceleration(snap, thr, failures, warnings)
+        self._check_second_life(snap, thr, failures, warnings)
         self._check_distribution(snap, thr, failures, warnings)
         self._check_solana_extras(snap, thr, failures, warnings)
         self._check_booleans(snap, thr, failures, warnings)
@@ -703,6 +743,56 @@ class FilterEngine:
                 warns.append("buy-edge delta unavailable")
             elif d < thr.min_buy_edge_delta:
                 fails.append(f"buy-edge delta {d:+.3f} < {thr.min_buy_edge_delta:+.3f}")
+
+    @staticmethod
+    def _check_second_life(
+        snap: TokenSnapshot, thr: FilterThresholds, fails: list[str], warns: list[str]
+    ) -> None:
+        """Second-life re-ignition: the SAPLING model.
+
+        Baseline (floor price, trailing max, median 1h volume) is attached by
+        fenrir.discovery.second_life from trailing GeckoTerminal candles. The
+        filter fails closed when the baseline is missing — without the coin's
+        own history there is no base to measure the breakout against.
+        """
+        if (
+            not thr.require_second_life_baseline
+            and thr.min_reignition_volume_x is None
+            and thr.min_price_vs_floor_x is None
+            and thr.min_floor_vs_max_pct is None
+        ):
+            return
+        floor = snap.base_floor_price_usd
+        base_max = snap.base_max_price_usd
+        base_vol = snap.base_median_1h_volume_usd
+        if thr.require_second_life_baseline and (
+            floor is None or base_max is None or base_vol is None
+        ):
+            fails.append("second-life baseline unknown (no trailing history)")
+            return
+        if floor is None or base_max is None or base_vol is None:
+            return
+        if thr.min_floor_vs_max_pct is not None and base_max > 0:
+            ratio = floor / base_max * 100.0
+            if ratio < thr.min_floor_vs_max_pct:
+                fails.append(
+                    f"floor broken: floor ${floor:.6f} < {thr.min_floor_vs_max_pct:.0f}% "
+                    f"of trailing max ${base_max:.6f}"
+                )
+        if thr.min_price_vs_floor_x is not None and floor > 0:
+            mult = snap.price_usd / floor
+            if mult < thr.min_price_vs_floor_x:
+                fails.append(
+                    f"price ${snap.price_usd:.6f} only {mult:.2f}x floor ${floor:.6f} "
+                    f"(need {thr.min_price_vs_floor_x:.1f}x)"
+                )
+        if thr.min_reignition_volume_x is not None and base_vol > 0:
+            mult = snap.volume_1h_usd / base_vol
+            if mult < thr.min_reignition_volume_x:
+                fails.append(
+                    f"1h volume ${snap.volume_1h_usd:,.0f} only {mult:.2f}x "
+                    f"baseline ${base_vol:,.0f} (need {thr.min_reignition_volume_x:.1f}x)"
+                )
 
     @staticmethod
     def _check_solana_extras(

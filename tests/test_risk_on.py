@@ -165,10 +165,12 @@ def test_volatility_breakout_rejects_one_sided_edge() -> None:
 
 
 def test_buy_edge_ceiling_off_by_default() -> None:
-    """No other filter sets the ceiling — only volatility_breakout uses it."""
+    """Only the vertical-move filters set the ceiling — volatility_breakout and
+    second_life (both read extreme buy edges as one-sided painter flow)."""
     eng = FilterEngine()
+    ceiling_filters = {FilterName.VOLATILITY_BREAKOUT, FilterName.SECOND_LIFE}
     for name, thr in eng.thresholds.items():
-        if name == FilterName.VOLATILITY_BREAKOUT:
+        if name in ceiling_filters:
             assert thr.max_buy_sell_ratio_1h == 8.0
         else:
             assert thr.max_buy_sell_ratio_1h is None

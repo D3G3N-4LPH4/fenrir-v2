@@ -567,6 +567,8 @@ async def amain() -> int:
                     "name": snap.name,
                     "chain": snap.chain.value,
                     "address": snap.token_address,
+                    "pair_address": snap.pair_address,
+                    "dex_id": snap.dex_id,
                     "price_usd": snap.price_usd,
                     "market_cap_usd": snap.market_cap_usd,
                     "liquidity_usd": snap.liquidity_usd,
