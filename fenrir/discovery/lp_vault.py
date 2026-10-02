@@ -29,6 +29,13 @@ log = logging.getLogger(__name__)
 RAYDIUM_POOL_INFO = "https://api-v3.raydium.io/pools/info/ids?ids={pool}"
 TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"  # noqa: S105 - public Solana program ID, not a secret
 
+#: PumpSwap AMM program (pump.fun's own AMM for graduated tokens).
+PUMPSWAP_PROGRAM = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"  # noqa: S105 - Solana program ID, not a secret
+#: Byte offset of lp_mint in a PumpSwap Pool account. Layout verified
+#: 2026-10-01 against a live pool: discriminator(8) + pool_bump(1) +
+#: index(2) + creator(32) + base_mint(32) + quote_mint(32) + lp_mint(32).
+PUMPSWAP_LP_MINT_OFFSET = 8 + 1 + 2 + 32 + 32 + 32
+
 # Share of LP supply in one holder that counts as "concentrated".
 VAULT_MIN_SHARE = 0.95
 # Token-account count above which a holder is treated as platform infrastructure.
@@ -59,6 +66,9 @@ class VaultCheck:
     holder_share_pct: float | None = None
     token_account_count: int | None = None
     cached: bool = False
+    #: LP mint supply is zero — every LP token was burned, so the LP cannot
+    #: be pulled by anyone. Stronger than a vault; treated as locked.
+    burned: bool = False
 
 
 async def resolve_lp_mint(pool_address: str, timeout_seconds: float = 10.0) -> str | None:
@@ -76,9 +86,54 @@ async def resolve_lp_mint(pool_address: str, timeout_seconds: float = 10.0) -> s
         log.debug("raydium pool info failed for %s: %s", pool_address, e)
         return None
     pools = data.get("data") or []
-    if not pools:
+    if not pools or not isinstance(pools[0], dict):
         return None
     return (pools[0].get("lpMint") or {}).get("address")
+
+
+def _b58encode(raw: bytes) -> str:
+    n = int.from_bytes(raw, "big")
+    alpha = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    out = ""
+    while n > 0:
+        n, r = divmod(n, 58)
+        out = alpha[r] + out
+    pad = len(raw) - len(raw.lstrip(b"\x00"))
+    return "1" * pad + out if out else "1" * pad
+
+
+async def resolve_pumpswap_lp_mint(
+    pool_address: str,
+    rpc_url: str,
+    session: aiohttp.ClientSession,
+    timeout_seconds: float = 10.0,
+) -> str | None:
+    """Return the LP mint for a PumpSwap pool, parsed from the pool account.
+
+    Raydium's pool API doesn't index PumpSwap pools, so the LP mint is read
+    on-chain: the pool account is owned by the PumpSwap program and carries
+    lp_mint at ``PUMPSWAP_LP_MINT_OFFSET``.
+    """
+    import base64
+
+    try:
+        acct = await _rpc(
+            session,
+            rpc_url,
+            "getAccountInfo",
+            [pool_address, {"encoding": "base64"}],
+            timeout_seconds,
+        )
+        value = (acct or {}).get("value") or {}
+        if value.get("owner") != PUMPSWAP_PROGRAM:
+            return None
+        raw = base64.b64decode(value["data"][0])
+        if len(raw) < PUMPSWAP_LP_MINT_OFFSET + 32:
+            return None
+        return _b58encode(raw[PUMPSWAP_LP_MINT_OFFSET : PUMPSWAP_LP_MINT_OFFSET + 32])
+    except Exception as e:  # noqa: BLE001 - fail-open
+        log.debug("pumpswap lp resolve failed for %s: %s", pool_address, e)
+        return None
 
 
 async def _rpc(
@@ -121,6 +176,10 @@ async def check_lp_platform_vault(
                 _rpc(s, rpc_url, "getTokenSupply", [lp_mint], timeout_seconds),
             )
             largest = largest["value"]
+            supply = float(supply["value"]["amount"])
+            if supply == 0:
+                # Every LP token was burned — nobody can pull the liquidity.
+                return VaultCheck(False, burned=True)
             if not largest:
                 return VaultCheck(False)
             top = largest[0]
@@ -128,7 +187,6 @@ async def check_lp_platform_vault(
             top_amt = float(top.get("amount") or 0)
             if top_addr in known_vaults:
                 return VaultCheck(True, holder=top_addr, cached=True)
-            supply = float(supply["value"]["amount"])
             share = (top_amt / supply) if supply else 0.0
             if share < VAULT_MIN_SHARE:
                 return VaultCheck(False, holder=top_addr, holder_share_pct=share * 100)
@@ -225,10 +283,24 @@ async def check_pool_lp_vault(
             holder_share_pct=hit.get("holder_share_pct"),
             token_account_count=hit.get("token_account_count"),
             cached=True,
+            burned=bool(hit.get("burned")),
         )
     lp_mint = await resolve_lp_mint(pool_address)
     if not lp_mint:
-        # Cache the miss too: a pre-graduation pool has no Raydium LP mint yet.
+        # Raydium's API doesn't index PumpSwap pools — resolve on-chain.
+        try:
+            async with aiohttp.ClientSession(trust_env=True) as s:
+                lp_mint = await resolve_pumpswap_lp_mint(
+                    pool_address,
+                    rpc_url,
+                    s,
+                    timeout_seconds,
+                )
+        except Exception as e:  # noqa: BLE001 - fail-open
+            log.debug("pumpswap fallback failed for %s: %s", pool_address, e)
+            lp_mint = None
+    if not lp_mint:
+        # Cache the miss too: a pre-graduation pool has no LP mint yet.
         store[pool_address] = {"is_vault": False, "lp_mint": None, "checked_at": time.time()}
         _save_check_cache(store)
         return VaultCheck(False)
@@ -244,6 +316,7 @@ async def check_pool_lp_vault(
         "holder": check.holder,
         "holder_share_pct": check.holder_share_pct,
         "token_account_count": check.token_account_count,
+        "burned": check.burned,
         "checked_at": time.time(),
     }
     _save_check_cache(store)
