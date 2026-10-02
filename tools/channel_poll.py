@@ -111,12 +111,22 @@ def clean_html(raw: str) -> str:
 async def fetch_web_posts(session: aiohttp.ClientSession, channel: str) -> list[tuple[int, str]]:
     """Return [(post_id, text)] newest-last from the channel's public preview."""
     url = f"https://t.me/s/{channel}"
-    async with session.get(
-        url, headers={"User-Agent": UA}, timeout=aiohttp.ClientTimeout(total=30)
-    ) as resp:
-        if resp.status != 200:
-            raise RuntimeError(f"t.me/s/{channel} -> HTTP {resp.status}")
-        page = await resp.text()
+    page: str | None = None
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            async with session.get(
+                url, headers={"User-Agent": UA}, timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"t.me/s/{channel} -> HTTP {resp.status}")
+                page = await resp.text()
+            break
+        except Exception as e:  # noqa: BLE001 - sandbox proxy drops t.me reads; retry
+            last_err = e
+            await asyncio.sleep(1.5 * (attempt + 1))
+    if page is None:
+        raise RuntimeError(f"t.me/s/{channel} -> {last_err} (3 attempts)")
     # Split the page into per-post chunks on data-post="channel/<id>"
     marker = re.compile(r'data-post="' + re.escape(channel) + r"/(\d+)\"")
     parts = marker.split(page)
