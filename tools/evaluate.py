@@ -294,14 +294,15 @@ async def enrich_safety(snap, goplus: GoPlusProvider | None) -> list[str]:
         notes.extend(await jup_task)
         notes.extend(await forensics_task)
         vault_check = await vault_task
-        if (
-            snap.safety.lp_locked_or_burned is False
-            and vault_check is not None
-            and vault_check.is_platform_vault
-        ):
-            snap.safety.lp_locked_or_burned = True
-            snap.safety.lp_locked_pct = 100.0
-            notes.append(_vault_note(vault_check))
+        if snap.safety.lp_locked_or_burned is False and vault_check is not None:
+            if vault_check.burned:
+                snap.safety.lp_locked_or_burned = True
+                snap.safety.lp_locked_pct = 100.0
+                notes.append("LP supply fully burned (0 outstanding) — treated as locked")
+            elif vault_check.is_platform_vault:
+                snap.safety.lp_locked_or_burned = True
+                snap.safety.lp_locked_pct = 100.0
+                notes.append(_vault_note(vault_check))
     elif snap.chain.is_evm:
         assert goplus is not None, "GoPlusProvider required for EVM safety enrichment"
         sec = await goplus.token_security(snap.chain, snap.token_address)

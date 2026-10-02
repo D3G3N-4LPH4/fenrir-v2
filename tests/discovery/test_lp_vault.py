@@ -218,3 +218,113 @@ def test_pool_check_caches_raydium_miss(monkeypatch, tmp_path):
     assert second.is_platform_vault is False
     assert second.cached is True
     assert calls == ["PoolB"]
+
+
+def test_burned_lp_supply_zero(monkeypatch):
+    """LP mint with zero supply => burned => treated as locked."""
+    import aiohttp
+
+    handlers = dict(_handlers(vault=False))
+    handlers["getTokenSupply"] = lambda mint: {"value": {"amount": "0"}}
+    monkeypatch.setattr(
+        aiohttp,
+        "ClientSession",
+        lambda trust_env=True: FakeSession(handlers),
+    )
+    chk = run(check_lp_platform_vault("LPmint", "http://x", set()))
+    assert chk.burned is True
+    assert chk.is_platform_vault is False
+
+
+def test_resolve_lp_mint_guards_none_pool(monkeypatch):
+    """Raydium API returning data:[None] must not crash (live bug 2026-10-01)."""
+    import aiohttp
+
+    from fenrir.discovery import lp_vault
+
+    class _Resp:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def json(self):
+            return {"data": [None]}
+
+    class _Session:
+        def get(self, *a, **k):
+            return _Resp()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda trust_env=True: _Session())
+    assert run(lp_vault.resolve_lp_mint("PoolX")) is None
+
+
+def test_resolve_pumpswap_lp_mint(monkeypatch):
+    """PumpSwap pool account parses to its lp_mint (offset verified live)."""
+    import base64
+
+    import aiohttp
+
+    from fenrir.discovery import lp_vault
+
+    # Build a synthetic PumpSwap Pool account: discriminator(8) + bump(1) +
+    # index(2) + creator(32) + base(32) + quote(32) + lp_mint(32).
+    want = bytes(range(32))
+    raw = b"\x00" * 8 + b"\x01" + b"\x02\x03" + b"\x11" * 32 + b"\x22" * 32 + b"\x33" * 32 + want
+    assert len(raw) >= lp_vault.PUMPSWAP_LP_MINT_OFFSET + 32
+
+    acct = {
+        "value": {
+            "owner": lp_vault.PUMPSWAP_PROGRAM,
+            "data": [base64.b64encode(raw).decode(), "base64"],
+        }
+    }
+    handlers = {"getAccountInfo": lambda *a: acct}
+    monkeypatch.setattr(
+        aiohttp,
+        "ClientSession",
+        lambda trust_env=True: FakeSession(handlers),
+    )
+
+    async def _go():
+        async with aiohttp.ClientSession(trust_env=True) as s:
+            return await lp_vault.resolve_pumpswap_lp_mint("PoolP", "http://x", s)
+
+    assert run(_go()) == lp_vault._b58encode(want)
+
+
+def test_resolve_pumpswap_rejects_non_pumpswap_owner(monkeypatch):
+    import base64
+
+    import aiohttp
+
+    from fenrir.discovery import lp_vault
+
+    raw = b"\x00" * (lp_vault.PUMPSWAP_LP_MINT_OFFSET + 32)
+    acct = {
+        "value": {
+            "owner": "SomeOtherProgram111111111111111111111111111",
+            "data": [base64.b64encode(raw).decode(), "base64"],
+        }
+    }
+    handlers = {"getAccountInfo": lambda *a: acct}
+    monkeypatch.setattr(
+        aiohttp,
+        "ClientSession",
+        lambda trust_env=True: FakeSession(handlers),
+    )
+
+    async def _go():
+        async with aiohttp.ClientSession(trust_env=True) as s:
+            return await lp_vault.resolve_pumpswap_lp_mint("PoolP", "http://x", s)
+
+    assert run(_go()) is None
