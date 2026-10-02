@@ -326,6 +326,29 @@ async def enrich_safety(snap, goplus: GoPlusProvider | None) -> list[str]:
         bundle_task = asyncio.create_task(_bundle_notes(snap))
         notes.extend(await v4_task)
         notes.extend(await bundle_task)
+    # Chart patterns (both chains): hourly GeckoTerminal candles -> tags.
+    # Independent of the safety legs above — runs for every snapshot.
+    notes.extend(await _chart_pattern_notes(snap))
+    return notes
+
+
+async def _chart_pattern_notes(snap) -> list[str]:
+    """Detect chart patterns from hourly candles; attach tags to the snapshot.
+
+    Bullish patterns join the playbook tags as entry confluence. Bearish
+    patterns are caution notes only — they never auto-fail a gate (hit rates
+    get quantified in the user_cases loop first).
+    """
+    notes: list[str] = []
+    try:
+        from fenrir.discovery.chart_patterns import attach_chart_patterns
+
+        pats = await asyncio.wait_for(attach_chart_patterns(snap), timeout=30.0)
+    except Exception:  # noqa: BLE001 - fail-open
+        return notes
+    for p in pats:
+        if p.direction == "bearish":
+            notes.append(f"chart caution: {p.display_name} ({p.strength:.0%}) — {p.rationale}")
     return notes
 
 
