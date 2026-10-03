@@ -2,9 +2,9 @@
 
 Address keys are normalized to lowercase on both read and write so a
 checksummed EVM address and its lowercase form can never create two
-entries and slip past the 24h re-alert window (bug found 2026-09-30:
-ROBINPEPE re-alerted inside 24h because one writer used a checksummed
-key while the lookup used a lowercase one).
+entries and let a repeat alert slip past the 24h re-alert window
+(mixed-case keys were found in the wild on 2026-09-30; the store now
+merges them on load).
 """
 
 from __future__ import annotations
@@ -53,7 +53,9 @@ def save(path: str, seen: dict[str, dict[str, Any]]) -> None:
 
 def should_alert(seen: dict[str, dict[str, Any]], address: str, now: float | None = None) -> bool:
     """True when the address was never alerted or the re-alert window expired."""
-    entry = seen.get(normalize(address), {})
+    entry = seen.get(normalize(address))
+    if not entry:
+        return True
     last_alerted = float(entry.get("last_alerted", 0))
     ts = time.time() if now is None else now
     return ts - last_alerted > REALERT_SECONDS

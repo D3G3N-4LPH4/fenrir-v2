@@ -15,6 +15,12 @@ def test_should_alert_fresh_address():
     assert seen.should_alert({}, "0xabc", now=100000.0) is True
 
 
+def test_should_alert_fresh_address_before_window_epoch():
+    # Never-alerted must alert regardless of `now` (regression: the old
+    # `last_alerted=0` default made small `now` values return False).
+    assert seen.should_alert({}, "0xabc", now=1000.0) is True
+
+
 def test_should_alert_respects_window_across_casing():
     store: dict[str, dict[str, Any]] = {}
     seen.record_alert(store, "0xABCdEf", symbol="T", score=70.0, now=1000.0)
