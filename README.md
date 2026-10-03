@@ -1,17 +1,20 @@
-# FENRIR v2 — Multi-Tier AI Solana Trading Bot
+# FENRIR v2 — Multi-Tier AI Trading & Discovery Platform
 
-Async Python trading bot for Solana with an autonomous AI decision engine that trades the **whole market**, not just launches:
+Async Python system for memecoin trading and research. Two halves share one codebase:
 
-- **Low cap** — fresh [Pump.fun](https://pump.fun) launches, bought directly on the bonding curve
-- **Mid cap** — migrated coins (graduated off the curve to PumpSwap/Raydium)
-- **Large cap** — established $1M+ coins surfaced by a market scanner
+1. **Trading bot** (Solana) — an autonomous AI decision engine that trades the **whole market**, not just launches:
+   - **Low cap** — fresh [Pump.fun](https://pump.fun) launches, bought directly on the bonding curve
+   - **Mid cap** — migrated coins (graduated off the curve to PumpSwap/Raydium)
+   - **Large cap** — established $1M+ coins surfaced by a market scanner
+2. **Discovery platform** (multi-chain) — a **scout** that sweeps Solana *and* EVM chains (Ethereum, BNB, Base, Robinhood), runs candidates through filters → scoring → read-only strategy playbooks → on-chain safety forensics, and pushes graded Telegram alerts. A drift-free backtester replays real signals to measure forward performance. This is the research loop; live positions are entered manually from its alerts.
 
-Mid/large caps are traded on AMMs via Jupiter; fresh launches via direct on-chain pump.fun execution. Real-time WebSocket launch monitoring, a Jupiter-trending market scanner, Jito MEV protection, a pluggable strategy system, Ouroboros dump-recovery detection, market-geometry pre-scoring, and a live React web dashboard with in-place settings + strategy switching.
+Mid/large caps are traded on AMMs via Jupiter; fresh launches via direct on-chain pump.fun execution. Real-time WebSocket launch + block-zero ignition monitoring, a multi-source discovery sweep, Jito MEV protection, a pluggable strategy system, Ouroboros dump-recovery detection, market-geometry pre-scoring, and a live React web dashboard with in-place settings + strategy switching.
 
 ```bash
 pip install -e ".[all]"
 cp config/.env.example .env   # fill in your keys
-python -m fenrir --mode simulation
+python -m fenrir --mode simulation     # the trading bot
+python tools/scout.py --chains solana robinhood   # the discovery scout
 ```
 
 > **Live-capable.** The pump.fun buy/sell path is verified against the current on-chain program (v2 buyback fees, per-token fee resolution, Token-2022), and the Jupiter path is verified for migrated/established tokens. Every real send is simulate-guarded. Trade only with a dedicated wallet and funds you can lose.
@@ -47,9 +50,19 @@ python -m fenrir --mode simulation
 - **Global daily SOL cap** — master safety valve on net live exposure across all strategies
 - Configurable AI confidence threshold
 
+### Discovery & Research (Scout)
+
+- **Multi-chain sweep** — one pipeline over Solana and EVM chains (Ethereum, BNB, Base, Robinhood). Sources: DexScreener (boosted + latest paid profiles), GeckoTerminal (new / trending pools), pump.fun bonding curves, and a Robinhood-chain on-chain new-pair monitor
+- **Filter → score → playbook tagging** — candidates pass tiered filters (low-cap alpha, mid-cap momentum, risk-on `degen_launch` / `volatility_breakout`), get a 0–100 score, and are run read-only through the signal strategies to tag which playbook(s) they fit, with cross-strategy confluence
+- **On-chain safety forensics** — GoPlus (EVM honeypot / tax / LP-lock / blacklist), RugCheck (Solana), 0xPerceptor (Robinhood-chain deep checks), Solana holder-distribution forensics, bundled-launch / deployer-cluster detection, and platform-vault LP-custody detection (StonkFun / LaunchLab). Fail-open by design
+- **Event-driven lanes** — block-zero curve-ignition watcher (websocket `logsSubscribe`, 10–50% of curve), graduation watch (50–85%), and a migration sniper — covering the pre-DexScreener window the poll path misses
+- **Feedback loop** — gate-clearance tracker records entry prices and reports forward 1h/4h/24h hit-rates per filter/pattern; chart-pattern recognition (dependency-free ZigZag, 11 patterns) adds confluence
+- **Drift-free backtester** — replays recorded samples through the *real* strategy `evaluate_token` + unified `Signal` + each strategy's own exits; win% / expectancy / profit-factor / Sharpe / max-drawdown, with confluence splits
+- **Telegram alerts** — graded cards (symbol/chain/source, score, playbooks, metrics, tap-to-copy contract), multi-chat, with case-normalized 24h dedup
+
 ### Infrastructure
 
-- Pluggable strategy system — 8 built-in strategies (sniper family, graduation, migration-snipe, reversal, volume-anomaly, narrative-tracker), easy to add more
+- Pluggable strategy system — 16 registered strategies (sniper family, graduation, migration-snipe, momentum, mean-reversion, reversal, volume-anomaly, volume-surge, narrative-tracker, range-rotation, flush-recovery, degen-ignition, volatility-breakout), easy to add more
 - Event bus — decoupled alerting (log, Telegram, audit, WebSocket, AI health monitor)
 - Merkle hash-chain audit trail — tamper-evident SQLite trade log
 - Budget tracker — per-strategy daily spend limits + global cap
@@ -87,14 +100,37 @@ fenrir/
 │   ├── bus.py               # Async pub/sub event bus
 │   ├── types.py             # TradeEvent definitions + factory helpers
 │   └── adapters/            # log, telegram, audit, health monitor
-├── strategies/
+├── strategies/              # 16 registered strategies (classic + market-data "playbook")
 │   ├── base.py              # TradingStrategy ABC + TradeParams
 │   ├── sniper.py            # Fast entry on new launches (+ conservative/degen)
 │   ├── graduation.py        # Targets tokens approaching Raydium migration
 │   ├── migration_snipe.py   # Snipes freshly-migrated (PumpSwap) tokens
-│   ├── reversal.py          # Market-data reversal signals
-│   ├── volume_anomaly.py    # Volume-spike signals
-│   └── narrative_tracker.py # Narrative/social momentum
+│   ├── momentum.py          # Momentum / mean_reversion / reversal (market-data)
+│   ├── volume_anomaly.py    # Volume-spike + volume_surge (higher-cap)
+│   ├── narrative.py         # Narrative / social momentum
+│   ├── range_rotation.py    # Community-coin rebalancing playbook
+│   ├── flush_recovery.py    # Post-flush second-leg entries
+│   ├── degen_ignition.py    # Risk-on earliness play
+│   └── volatility_breakout.py # Vertical-move breakout (hardened, fail-closed)
+├── discovery/               # Multi-chain scout: the research pipeline
+│   ├── models.py            # TokenSnapshot, Chain enum, SafetySignals
+│   ├── filters.py           # Tiered entry filters (+ risk-on tier)
+│   ├── scoring.py           # 0–100 candidate scoring
+│   ├── playbooks.py         # Read-only strategy tagging + confluence
+│   ├── scanner.py           # Discovery sweep orchestration
+│   ├── acceleration.py      # Momentum-transition accel tracker
+│   ├── chart_patterns.py    # ZigZag + 11 chart patterns
+│   ├── bundle_check.py      # Bundled-launch / deployer-cluster detection
+│   ├── lp_vault.py / lp_lock_v4.py  # Platform-vault + v4 LP-lock reads
+│   ├── solana_forensics.py  # Holder-distribution forensics
+│   ├── pool_deepcheck.py    # Per-pool Swap-event qualification
+│   ├── second_life.py       # SAPLING second-life gate
+│   ├── seen.py / alerts.py  # Dedup + Telegram alert formatting
+│   └── providers/           # dexscreener, geckoterminal, goplus, perceptor,
+│                            #   rh_onchain, pumpfun, pumpfun_events
+├── signals/                 # Unified Signal abstraction + noisy-OR aggregator
+├── backtest/                # Drift-free replay backtester (engine, metrics, report)
+├── evm/                     # EVM read path (adapters, evaluator, scanner, safety)
 ├── trading/
 │   ├── engine.py            # Buy/sell execution (pump curve + Jupiter)
 │   ├── monitor.py           # PumpFun WebSocket monitor (+ migration feed)
@@ -122,8 +158,8 @@ dashboard/                   # React web dashboard (Vite + TypeScript)
 │       └── StrategiesPanel.tsx # Strategies tab — switch strategies live
 └── package.json
 
-tools/                       # Backtesting framework
-tests/                       # 684 tests (pytest + pytest-asyncio)
+tools/                       # Scout + research CLIs (see "Discovery Tools" below)
+tests/                       # 1600+ tests (pytest + pytest-asyncio)
 config/                      # default.json, devnet.json, .env.example
 ```
 
@@ -131,7 +167,7 @@ config/                      # default.json, devnet.json, .env.example
 
 ## Installation
 
-**Requirements:** Python 3.12+, Node.js 18+ (for web dashboard)
+**Requirements:** Python 3.10+ (3.12 recommended/tested), Node.js 18+ (for web dashboard)
 
 ```bash
 # Clone
@@ -165,9 +201,10 @@ AI_LOCAL_MODEL_ENABLED=false
 AI_LOCAL_MODEL_URL=http://localhost:8000/v1/chat/completions
 AI_LOCAL_MODEL_NAME=fenrir-brain
 
-# Telegram alerts (optional)
+# Telegram alerts (optional; used by the bot and the scout)
 TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHAT_ID=...
+TELEGRAM_CHAT_IDS=-100111,-100222   # comma-separated, preferred (multi-chat)
+TELEGRAM_CHAT_ID=-100111            # legacy single-chat fallback
 
 # Market scanner (mid/large-cap discovery) — off by default
 MARKET_SCANNER_ENABLED=false
@@ -303,11 +340,43 @@ The brain performs a health check on startup and falls back to the cloud API if 
 | Conservative / Degen Sniper | `sniper_conservative` / `sniper_degen` | Sniper tuned tighter / looser |
 | Graduation | `graduation` | Targets tokens approaching Raydium migration (>70% bonding curve) |
 | Migration Snipe | `migration_snipe` | Snipes freshly-migrated (PumpSwap) tokens |
+| Momentum | `momentum` | Market-data momentum entries |
+| Mean Reversion | `mean_reversion` | Oversold-bounce entries |
 | Reversal | `reversal` | Market-data reversal signals |
 | Volume Anomaly | `volume_anomaly` | Volume-spike signals |
+| Volume Surge | `volume_surge` | Higher-cap volume-driven strategy |
 | Narrative Tracker | `narrative_tracker` | Narrative / social momentum |
+| Range Rotation | `range_rotation` | Community-coin rebalancing playbook |
+| Flush Recovery | `flush_recovery` | Post-flush second-leg entries |
+| Degen Ignition | `degen_ignition` | Risk-on earliness play (mcap $500–$30k, hot tape) |
+| Volatility Breakout | `volatility_breakout` | Vertical-move breakout; fail-closed on unknown holders |
 
-Each strategy has its own `budget_sol`, `max_concurrent_positions`, and can be paused/resumed — or **activated live on a running bot** — from the dashboard's Strategies tab or the API (market-data strategies build their data provider on demand).
+The **market-data (“playbook”) strategies** evaluate a `TokenSnapshot` and are what the scout tags candidates against read-only; they default to **disabled for live trading**. Each strategy has its own `budget_sol`, `max_concurrent_positions`, and can be paused/resumed — or **activated live on a running bot** — from the dashboard's Strategies tab or the API (market-data strategies build their data provider on demand).
+
+---
+
+## Discovery Tools
+
+The scout research layer runs as standalone CLIs (typically on a cron / systemd cadence, read-only — they surface candidates, they don't trade):
+
+| Tool | What it does |
+| --- | --- |
+| `tools/scout.py` | The core 10-min sweep: multi-chain sources → filters → scoring → playbook tags → safety → Telegram |
+| `tools/curve_events.py` | Block-zero curve-ignition watcher (websocket `logsSubscribe`, 10–50% of curve) |
+| `tools/grad_snipe.py` | pump.fun graduation/migration watcher (catches migrations within minutes) |
+| `tools/rh_pair_watch.py` | Robinhood-chain on-chain new-pair fast lane |
+| `tools/gate_tracker.py` | Gate-clearance tracker: `record` / `tick` / `report` forward hit-rates |
+| `tools/wallet_watch.py` | Tracked-wallet buys as scout candidates (`--wallets`, `--state`) |
+| `tools/hot_watch.py` | Acceleration fast-lane (needs `accel_history` seeded from live cycles) |
+| `tools/coin_watch.py` | Per-coin time-series tracker + PVP set view (side-by-side volume rotation) |
+| `tools/user_watch.py` / `tools/user_cases.py` | Track user-dropped contracts; turn shared coins into filter-tuning data |
+| `tools/perceptor.py` | 0xPerceptor on-chain forensics CLI (`investigate` / `status` / `sweep` / `deepcheck`) |
+| `tools/evaluate.py` | One-off evaluate a single address across the full pipeline |
+| `tools/channel_poll.py` | Poll Telegram channels for candidate contracts |
+| `tools/signal_backtest.py` / `tools/backtest.py` | Drift-free signal backtest + legacy backtest framework |
+| `tools/evm_collect.py` | Forward-price sample collector for EVM backtesting |
+
+> Several tools want your **private `SOLANA_RPC_URL`** for fast-polling (the public endpoint rate-limits). `.env` also needs `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_IDS` (comma-separated) for alerts.
 
 ---
 
@@ -363,14 +432,15 @@ Docs at `http://localhost:8000/docs` when the API server is running.
 
 ## Tech Stack
 
-- **Python 3.12+** — asyncio, aiohttp, websockets
-- **Solana** — solana, solders, base58
-- **AI** — Claude via Anthropic / OpenRouter; local via vLLM or llama.cpp (OBLITERATUS)
+- **Python 3.10+** (3.12 recommended) — asyncio, aiohttp, websockets
+- **Solana** — solana, solders, base58; **EVM** — keyless on-chain reads over JSON-RPC
+- **Discovery data** — DexScreener, GeckoTerminal, Jupiter; **safety** — GoPlus, RugCheck, 0xPerceptor; keccak via pycryptodome
+- **AI** — Claude via Anthropic / OpenRouter (with free-tier fallback); local via vLLM or llama.cpp (OBLITERATUS)
 - **API** — FastAPI + Uvicorn
-- **Storage** — SQLite (trades, audit chain, historical memory)
+- **Storage** — SQLite (trades, audit chain, historical memory); JSON state for scout dedup / tracking
 - **Frontend** — React 18 + TypeScript + Vite (JetBrains Mono, no chart libs)
 - **Terminal UI** — Rich
-- **Testing** — pytest + pytest-asyncio (684 tests); dashboard type-checked with `tsc`
+- **Testing** — pytest + pytest-asyncio (1600+ tests); dashboard type-checked with `tsc`
 - **Linting** — Ruff, Mypy, Pyright, pre-commit
 
 ---
