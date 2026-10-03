@@ -63,7 +63,9 @@ def test_no_playbooks_omits_playbook_line():
     assert "📖" not in msg
 
 
-def test_confluent_flag_appended():
+def test_confluent_flag_removed():
+    # 2026-10-03: confluence predicted nothing (17% hit vs 28% without), so
+    # the ⚡confluent conviction marker is gone — playbooks list without it.
     msg = format_scout_alert(
         _cand(
             playbooks={
@@ -72,7 +74,34 @@ def test_confluent_flag_appended():
             }
         )
     )
-    assert "⚡confluent" in msg
+    assert "⚡confluent" not in msg
+    assert "📖 Momentum (0.50)" in msg
+
+
+def test_exit_ladder_rendered():
+    msg = format_scout_alert(_cand(price_usd=0.0001174))
+    assert "🎯 Exits — +25% $0.000147 · +50% $0.000176 · +100% $0.000235" in msg
+    assert "move stop to entry at +25%" in msg
+
+
+def test_exit_ladder_missing_price():
+    msg = format_scout_alert(_cand())
+    assert "🎯 Exits" not in msg
+
+
+def test_ignition_tier_line():
+    msg = format_scout_alert(_cand(entry_tier="ignition"))
+    assert "early ignition" in msg
+
+
+def test_late_tier_line():
+    msg = format_scout_alert(_cand(entry_tier="late"))
+    assert "late entry" in msg
+
+
+def test_standard_tier_no_line():
+    msg = format_scout_alert(_cand(entry_tier="standard"))
+    assert "early ignition" not in msg and "late entry" not in msg
 
 
 def test_known_safety_omits_warning():

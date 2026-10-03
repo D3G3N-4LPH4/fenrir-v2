@@ -51,6 +51,48 @@ def _age_str(age_min: Any) -> str:
     return f"{m:.0f}m old"
 
 
+def _fmt_price_precise(v: Any) -> str:
+    """Compact price formatting that survives sub-cent memecoin prices."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return "?"
+    if v <= 0:
+        return "$0"
+    if v >= 1:
+        return f"${v:,.4f}".rstrip("0").rstrip(".")
+    # small prices: 3 significant figures
+    import math
+
+    digits = max(0, 3 - int(math.floor(math.log10(v))) - 1)
+    return f"${v:.{digits}f}"
+
+
+def build_exit_ladder(price_usd: Any) -> list[tuple[int, str]] | None:
+    """Take-profit ladder from the alert-time price.
+
+    Gate-tracker review (2026-10-03): 36% of alerts peaked >=+50% after
+    clearance but holding killed the basket (median -96%). Every alert
+    carries its exits so the manual trader has the ladder at entry time.
+    """
+    try:
+        p = float(price_usd)
+    except (TypeError, ValueError):
+        return None
+    if p <= 0:
+        return None
+    return [(pct, _fmt_price_precise(p * (1 + pct / 100.0))) for pct in (25, 50, 100)]
+
+
+def _tier_line(tier: Any) -> str | None:
+    t = str(tier or "")
+    if t == "ignition":
+        return "\u26a1 early ignition \u2014 pre-momentum entry"
+    if t == "late":
+        return "\u231b late entry \u2014 move mostly done, logged not alerted"
+    return None
+
+
 def format_scout_alert(cand: dict) -> str:
     """Render one candidate dict (as emitted by scout.py/channel_poll.py) as a
     Telegram Markdown alert."""
@@ -78,6 +120,9 @@ def format_scout_alert(cand: dict) -> str:
     if filters:
         score_line += f" \u00b7 {escape_md(filters)}"
     lines.append(score_line)
+    tier = _tier_line(cand.get("entry_tier"))
+    if tier:
+        lines.append(tier)
 
     pb = cand.get("playbooks") or {}
     entries = pb.get("playbooks") or []
@@ -87,10 +132,11 @@ def format_scout_alert(cand: dict) -> str:
             f"({float(e.get('strength', 0)):.2f})"
             for e in entries
         ]
-        pb_line = "\U0001f4d6 " + ", ".join(parts)
-        if pb.get("confluent"):
-            pb_line += " \u26a1confluent"
-        lines.append(pb_line)
+        # 2026-10-03: the ⚡confluent conviction marker is gone. Gate-tracker
+        # review showed confluent playbooks hit 17% vs 28% without confluence —
+        # it reads as conviction but predicts nothing. Playbooks still list
+        # for context; they no longer imply an edge.
+        lines.append("\U0001f4d6 " + ", ".join(parts))
     cc = cand.get("caller_confluence")
     if cc:
         lines.append("\U0001f465 caller confluence: " + " + ".join(escape_md(str(x)) for x in cc))
@@ -125,6 +171,11 @@ def format_scout_alert(cand: dict) -> str:
             pass
     lines.append(f"\U0001f4ca {flow}")
     lines.append(f"\u23f1\ufe0f {_age_str(cand.get('age_minutes'))}")
+    ladder = build_exit_ladder(cand.get("price_usd"))
+    if ladder:
+        targets = " \u00b7 ".join(f"+{pct}% {price}" for pct, price in ladder)
+        lines.append(f"\U0001f3af Exits \u2014 {targets}")
+        lines.append("move stop to entry at +25%")
     # Bonding-curve position for pre-graduation pump.fun tokens.
     bond = cand.get("bond_progress_pct")
     if bond is not None:

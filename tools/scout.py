@@ -7,7 +7,7 @@ Each run:
        - gecko_new:  GeckoTerminal newest pools (earliest post-launch listings)
        - gecko_trending: GeckoTerminal trending pools (momentum)
        - ds_profile: DexScreener latest paid token profiles (promotion signal)
-       - graduation: pump.fun tokens at 50-85% of the bonding curve (Solana)
+       - graduation: pump.fun tokens at 10-85% of the bonding curve (Solana)
        - rh_onchain: Uniswap v4 pools initialized on Robinhood Chain in the
          last 6h, seen at block zero via eth_getLogs (Robinhood)
   2. Build a TokenSnapshot for each (most-liquid pair), deduped across sources.
@@ -37,7 +37,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.evaluate import enrich_safety  # noqa: E402
 
 from fenrir.discovery.acceleration import AccelTracker  # noqa: E402
-from fenrir.discovery.filters import FilterEngine, FilterName  # noqa: E402
+from fenrir.discovery.entry_tier import classify_entry_tier  # noqa: E402
+from fenrir.discovery.filters import (  # noqa: E402
+    DISABLED_FILTERS,
+    FILTER_SCORE_FLOORS,
+    FilterEngine,
+    FilterName,
+)
 from fenrir.discovery.models import Chain  # noqa: E402
 from fenrir.discovery.playbooks import PlaybookTagger  # noqa: E402
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider  # noqa: E402
@@ -92,11 +98,16 @@ def hard_fail(snap) -> str | None:
 async def fetch_graduation_addresses(
     gt: GeckoTerminalProvider, chain: Chain, limit: int
 ) -> list[str]:
-    """Solana tokens sitting at 50-85% of the pump.fun bonding curve.
+    """Solana tokens sitting at 10-85% of the pump.fun bonding curve.
 
     The base universe is GeckoTerminal's fresh pools; each address gets one
     batched curve-state read and the reading is recorded for velocity. This
-    is the pre-DexScreener-momentum discovery the other sources can't see.
+    is the pre-DexScreener-momentum discovery the other sources can't see:
+    the 10-50% band feeds the curve_ignition filter (the earliest on-chain
+    entry), the 50-85% band feeds graduation_watch. Widened 2026-10-03 from
+    50-85%: the 2-minute fast lane's in-window rate was ~0 (its 0.5 SOL /
+    2-min inflow bar), so the 10-minute scout now covers ignition directly
+    with the curve_ignition filter's 1.0 SOL / 10-min inflow bar.
     """
     from fenrir.discovery.providers.pumpfun import PumpFunProvider
 
@@ -112,7 +123,7 @@ async def fetch_graduation_addresses(
             if state.complete:
                 continue
             progress = state.get_migration_progress()
-            if 50.0 <= progress <= 85.0:
+            if 10.0 <= progress <= 85.0:
                 provider.record_reading(mint, state, now)
                 out.append(mint)
         provider.prune_state()
@@ -329,7 +340,19 @@ async def evaluate_address(
     if fail or not passed or score.overall < min_score:
         return None
     ratio_1h = snap.buy_sell_ratio_1h
-    return {
+    # 2026-10-03 hardening: paused filters never count as a pass on the
+    # alert path (flush_recovery went 0/5), and mid_cap_momentum — the best
+    # lane in the gate-tracker review — gets a lower score floor.
+    passed = [f for f in passed if FilterName(f) not in DISABLED_FILTERS]
+    if not passed:
+        return None
+    floor = min(
+        (FILTER_SCORE_FLOORS.get(FilterName(f), min_score) for f in passed),
+        default=min_score,
+    )
+    if score.overall < floor:
+        return None
+    cand = {
         "address": snap.token_address,
         "chain": snap.chain.value,
         "symbol": snap.symbol,
@@ -367,6 +390,11 @@ async def evaluate_address(
         "perceptor": perceptor_info,
         "dexscreener": f"https://dexscreener.com/{snap.chain.value}/{snap.token_address}",
     }
+    # Entry tier (2026-10-03): late volatility_breakout entries — the move is
+    # already done — are logged but never alerted. The caller checks
+    # fenrir.discovery.entry_tier.tier_alerts before sending to Telegram.
+    cand["entry_tier"] = classify_entry_tier(cand)
+    return cand
 
 
 async def scout_chain(
