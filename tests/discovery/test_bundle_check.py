@@ -370,9 +370,11 @@ class TestBundleCacheTTL:
         import fenrir.discovery.bundle_check as bc
 
         monkeypatch.setattr(bc, "_CACHE_PATH", str(tmp_path / "bundle.json"))
-        bc.save_cached_bundle_report("0xabc", {"_inconclusive": True}, ttl_seconds=0.01)
+        # Margins kept wide enough to be deterministic on slow filesystems
+        # (a 10ms TTL raced the save->read round-trip on Windows).
+        bc.save_cached_bundle_report("0xabc", {"_inconclusive": True}, ttl_seconds=0.5)
         assert bc.get_cached_bundle_report("0xabc") == {"_inconclusive": True}
-        time.sleep(0.02)
+        time.sleep(0.6)
         assert bc.get_cached_bundle_report("0xabc") is None
 
     def test_default_ttl_stays_24h(self, tmp_path, monkeypatch) -> None:
