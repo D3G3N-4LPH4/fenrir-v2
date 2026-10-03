@@ -1337,11 +1337,26 @@ class FenrirBot:
                     if curve_open
                     else self.config.position_poll_amm_seconds
                 )
-                await asyncio.sleep(max(0.5, interval))
+                # Poll is the backstop. A curve event can wake this immediately.
+                wake = getattr(self, "_exit_wake", None)
+                if wake is None:
+                    self._exit_wake = asyncio.Event()
+                    wake = self._exit_wake
+                wake.clear()
+                try:
+                    await asyncio.wait_for(wake.wait(), timeout=max(0.4, interval))
+                except TimeoutError:
+                    pass
 
             except Exception as e:
                 self.logger.error("Position management error", e)
                 await asyncio.sleep(self.config.position_poll_curve_seconds)
+
+    def nudge_exits(self) -> None:
+        """Wake the position loop now. Safe to call from a curve callback."""
+        wake = getattr(self, "_exit_wake", None)
+        if wake is not None:
+            wake.set()
 
     async def _execute_exit(
         self,

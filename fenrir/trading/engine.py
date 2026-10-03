@@ -34,6 +34,45 @@ from fenrir.protocol.pumpfun import (
 )
 from fenrir.trading.tx_config import TxConfigManager
 
+_SYSTEM_PROGRAM = "11111111111111111111111111111111"
+_SYSTEM_TRANSFER = 2  # SystemInstruction::Transfer
+
+
+def unexpected_sol_transfer(message, wallet: Pubkey) -> str | None:
+    """Reject a Jupiter quote that moves SOL to anyone but the signing wallet.
+
+    Simulation catches a broken transaction. It does not catch a quote that
+    adds a SystemProgram.transfer to a third party. Unresolved address-lookup
+    destinations fail closed above the base fee: we cannot prove where the
+    lamports go.
+    """
+    static = list(message.account_keys)
+    wallet_s = str(wallet)
+    for ix in message.instructions:
+        prog_idx = ix.program_id_index
+        if prog_idx >= len(static):
+            continue
+        if str(static[prog_idx]) != _SYSTEM_PROGRAM:
+            continue
+        data = bytes(ix.data)
+        if len(data) < 12 or int.from_bytes(data[:4], "little") != _SYSTEM_TRANSFER:
+            continue
+        lamports = int.from_bytes(data[4:12], "little")
+        if lamports <= 5_000:
+            continue
+        if len(ix.accounts) < 2:
+            return f"system transfer of {lamports} lamports has no destination"
+        dest_idx = ix.accounts[1]
+        if dest_idx >= len(static):
+            return (
+                f"system transfer of {lamports} lamports to an unresolved " "address-lookup account"
+            )
+        dest = str(static[dest_idx])
+        if dest != wallet_s:
+            return f"system transfer of {lamports} lamports to {dest}"
+    return None
+
+
 LAMPORTS_PER_SOL = 1_000_000_000
 DEFAULT_COMPUTE_UNITS = 200_000
 # Base network fee per signature. Our txs carry one, so total tx cost is
@@ -1280,6 +1319,10 @@ class TradingEngine:
         """
         w = wallet or self.wallet
         unsigned = VersionedTransaction.from_bytes(base64.b64decode(swap_tx_b64))
+        drain = unexpected_sol_transfer(unsigned.message, w.pubkey)
+        if drain:
+            self.logger.warning(f"Jupiter quote rejected: {drain}")
+            return None
         signed = VersionedTransaction(unsigned.message, [w.keypair])
         raw = bytes(signed)
         sim_ok = await self.client.simulate_versioned_transaction(raw)
