@@ -150,13 +150,16 @@ def _aggregate_pairs(pairs: list[dict]) -> tuple[dict, int]:
     return agg, venues
 
 
-def fetch_snapshot(addr: str, timeout: int = 20) -> dict | None:
+def fetch_snapshot(addr: str, timeout: int = 20, pinned_pair: str | None = None) -> dict | None:
     """Full-venue snapshot from DexScreener.
 
-    Price/mcap/liquidity come from the deepest pool; rolling volume and
-    buy/sell flow are summed across all of the token's venues (deduped by
-    pair address). New points carry vol_agg=True so consumers know volume
-    is venue-aggregated rather than best-pair-only.
+    Price/mcap/liquidity come from the pinned pool when it is still listed
+    (pair identity is pinned per watched coin — re-selecting the deepest pool
+    every tick let stale duplicate listings flip the quote and print bogus
+    $45B mcaps). Rolling volume and buy/sell flow are summed across all of
+    the token's venues (deduped by pair address). New points carry
+    vol_agg=True so consumers know volume is venue-aggregated rather than
+    best-pair-only.
     """
     url = f"https://api.dexscreener.com/latest/dex/tokens/{urllib.parse.quote(addr)}"
     try:
@@ -172,7 +175,14 @@ def fetch_snapshot(addr: str, timeout: int = 20) -> dict | None:
     pairs = data.get("pairs") or []
     if not pairs:
         return None
-    best = max(pairs, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0)
+    best = None
+    if pinned_pair:
+        for p in pairs:
+            if p.get("pairAddress") == pinned_pair:
+                best = p
+                break
+    if best is None:
+        best = max(pairs, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0)
     try:
         price = float(best["priceUsd"])
     except (KeyError, TypeError, ValueError):
@@ -285,6 +295,8 @@ def cmd_add(args) -> int:
         }
         if snap:
             coins[addr]["series"].append({"ts": now, **snap})
+            if snap.get("pair"):
+                coins[addr]["pair_pinned"] = snap["pair"]
     print(
         f"watching {coins[addr]['label']} ({addr[:8]}…) "
         f"@ {_fmt_usd(snap['mcap']) if snap else '?'} mcap"
@@ -296,13 +308,15 @@ def cmd_add(args) -> int:
 
 def cmd_tick(args) -> int:
     with locked_state() as state:
-        addrs = list(state.get("coins", {}).keys())
+        coins = state.get("coins", {})
+        addrs = list(coins.keys())
+        pins = {a: coins[a].get("pair_pinned") for a in addrs}
     # Slow network fetches happen outside the state lock; the merge below
     # re-reads fresh state so a concurrent add/remove is never clobbered.
     now = time.time()
     snaps: dict[str, dict] = {}
     for addr in addrs:
-        snap = fetch_snapshot(addr)
+        snap = fetch_snapshot(addr, pinned_pair=pins.get(addr))
         if not snap:
             continue
         holders, top_pct = fetch_holders(addr)
@@ -315,8 +329,29 @@ def cmd_tick(args) -> int:
             coin = coins.get(addr)
             if coin is None:
                 continue  # removed while we were fetching
+            if not coin.get("pair_pinned") and snap.get("pair"):
+                coin["pair_pinned"] = snap["pair"]  # pin on first quote
             series = coin.setdefault("series", [])
             prev = series[-1] if series else None
+            if (
+                prev
+                and snap.get("pair")
+                and prev.get("pair")
+                and snap["pair"] != prev["pair"]
+                and prev.get("mcap")
+                and snap.get("mcap")
+            ):
+                # Pair flip coupled with a >20x mcap jump is a mis-resolved
+                # pool (stale duplicate listing), not price action — skip the
+                # point and keep the pin. Same-pair 20x moves are kept: real.
+                r = snap["mcap"] / prev["mcap"]
+                if r >= 20 or r <= 1 / 20:
+                    print(
+                        f"skip flip point for {coin.get('label')}: "
+                        f"{prev['pair'][:8]} -> {snap['pair'][:8]} "
+                        f"mcap {prev['mcap']:,.0f} -> {snap['mcap']:,.0f}"
+                    )
+                    continue
             series.append({"ts": now, **snap})
             del series[:-MAX_POINTS]
             # violent-move alert vs previous tick (skipped for data-only coins)
