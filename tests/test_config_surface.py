@@ -171,11 +171,11 @@ class TestDefaults:
         assert BotConfig.from_mode(TradingMode.DEGEN).buy_amount_sol == 0.5
 
     def test_ai_fallback_and_timeout_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        assert BotConfig().ai_fallback_to_rules is True  # default: auto-buy on timeout
-        monkeypatch.setenv("AI_FALLBACK_TO_RULES", "false")
+        assert BotConfig().ai_fallback_to_rules is False  # default: fail closed on timeout
+        monkeypatch.setenv("AI_FALLBACK_TO_RULES", "true")
         monkeypatch.setenv("AI_ENTRY_TIMEOUT_SECONDS", "20")
         cfg = BotConfig()
-        assert cfg.ai_fallback_to_rules is False
+        assert cfg.ai_fallback_to_rules is True
         assert cfg.ai_entry_timeout_seconds == 20.0
 
     def test_discovery_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:

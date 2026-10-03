@@ -231,12 +231,20 @@ class ClaudeBrain:
             - buy_amount_override: AI-suggested amount in SOL (None to use config default)
 
         Fallback behavior:
-            - AI disabled → (True, None, None) — auto-buy as before
-            - AI timeout → depends on ai_fallback_to_rules config
-            - AI error → depends on ai_fallback_to_rules config
+            - AI explicitly disabled → (True, None, None) — rule-only mode
+            - AI enabled but analyst missing, timed out, or errored →
+              (False, None, None) unless ai_fallback_to_rules is set.
+              A dead key must not degrade into an unattended sniper.
         """
-        if not self.enabled or not self.analyst:
+        if not self.config.ai_analysis_enabled:
             return (True, None, None)
+        if not self.enabled or not self.analyst:
+            self.logger.error(
+                "AI analysis is enabled but the analyst is unavailable "
+                "(missing API key or failed init) — failing closed, no buy"
+            )
+            self.stats["ai_errors"] += 1
+            return (False, None, None)
 
         self.stats["ai_entries_evaluated"] += 1
         entry_timeout = self.config.ai_entry_timeout_seconds

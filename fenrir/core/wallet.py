@@ -8,6 +8,7 @@ Your keys, your crypto. Handle with the reverence they deserve.
 from __future__ import annotations
 
 import asyncio
+import ctypes
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,6 +16,28 @@ import base58
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.transaction import Transaction
+
+
+def _keypair_from_locked(secret: bytearray) -> Keypair:
+    """Build a keypair, best-effort mlock the buffer, then wipe it.
+
+    The solders Keypair still holds the seed — that is required to sign. This
+    only stops the base58 input and the temporary buffer from sitting in a
+    scrapable page. mlock is a no-op where the platform refuses it.
+    """
+    try:
+        if secret:
+            libc = ctypes.CDLL(None)
+            # Lock the bytearray's own buffer, not a temporary copy:
+            # c_char_p(bytes(secret)) would mlock a throwaway copy.
+            buf = (ctypes.c_char * len(secret)).from_buffer(secret)
+            libc.mlock(buf, ctypes.c_size_t(len(secret)))
+    except Exception:
+        pass
+    keypair = Keypair.from_bytes(bytes(secret))
+    for i in range(len(secret)):
+        secret[i] = 0
+    return keypair
 
 
 class WalletManager:
@@ -35,8 +58,8 @@ class WalletManager:
                 raise ValueError("Private key required for live trading")
 
             try:
-                private_key_bytes = base58.b58decode(private_key_b58)
-                self.keypair = Keypair.from_bytes(private_key_bytes)
+                private_key_bytes = bytearray(base58.b58decode(private_key_b58))
+                self.keypair = _keypair_from_locked(private_key_bytes)
                 self.pubkey = self.keypair.pubkey()
             except Exception as e:
                 raise ValueError(f"Invalid private key format: {e}") from e

@@ -1272,11 +1272,21 @@ class TradingEngine:
     async def _sign_send_jupiter_swap(
         self, swap_tx_b64: str, wallet: WalletManager | None = None
     ) -> str | None:
-        """Sign a Jupiter base64 VersionedTransaction with our keypair and send it."""
+        """Sign a Jupiter VersionedTransaction, simulate, then send.
+
+        The curve path already aborts on a failed sim. The aggregator path used
+        to skip preflight and send blind — a bad quote or stale account list
+        would land as a failed (or worse, unexpectedly priced) swap.
+        """
         w = wallet or self.wallet
         unsigned = VersionedTransaction.from_bytes(base64.b64decode(swap_tx_b64))
         signed = VersionedTransaction(unsigned.message, [w.keypair])
-        return await self.client.send_raw_transaction(bytes(signed))
+        raw = bytes(signed)
+        sim_ok = await self.client.simulate_versioned_transaction(raw)
+        if not sim_ok:
+            self.logger.warning("Jupiter transaction simulation failed - aborting swap")
+            return None
+        return await self.client.send_raw_transaction(raw, skip_preflight=True)
 
     async def _confirm_transaction(
         self, signature: str, max_attempts: int = 20, interval: float = 2.0

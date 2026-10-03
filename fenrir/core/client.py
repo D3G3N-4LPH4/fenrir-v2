@@ -116,9 +116,34 @@ class SolanaClient:
         resp = await self._rpc(self.client.send_transaction(transaction, opts), "send_transaction")
         return str(resp.value) if resp else None
 
-    async def send_raw_transaction(self, raw_tx: bytes, skip_preflight: bool = True) -> str | None:
+    async def simulate_versioned_transaction(self, raw_tx: bytes) -> bool:
+        """Simulate a signed VersionedTransaction (Jupiter path) before send.
+
+        Same commitment rule as simulate_transaction: Confirmed, so the recent
+        blockhash Jupiter embedded is visible to the bank.
+        """
+        from solders.transaction import VersionedTransaction
+
+        try:
+            vtx = VersionedTransaction.from_bytes(raw_tx)
+        except Exception as e:
+            self.logger.warning(f"Could not decode versioned transaction for sim: {e}")
+            return False
+        resp = await self._rpc(
+            self.client.simulate_transaction(vtx, commitment=Confirmed),
+            "simulate_versioned_transaction",
+        )
+        if resp is None:
+            return False
+        if resp.value.err:
+            self.logger.warning(f"Versioned simulation failed: {resp.value.err}")
+            return False
+        return True
+
+    async def send_raw_transaction(self, raw_tx: bytes, skip_preflight: bool = False) -> str | None:
         """Broadcast a pre-serialized (already-signed) transaction — e.g. a
-        Jupiter VersionedTransaction for a migrated-token swap."""
+        Jupiter VersionedTransaction. Preflight stays on unless the caller
+        already simulated and opts out."""
         opts = TxOpts(skip_preflight=skip_preflight, preflight_commitment=Confirmed)
         resp = await self._rpc(
             self.client.send_raw_transaction(raw_tx, opts), "send_raw_transaction"
