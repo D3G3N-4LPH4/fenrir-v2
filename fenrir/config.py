@@ -270,7 +270,7 @@ class BotConfig:
     # Open-position poll. Curve positions reprice every 2s; AMM positions
     # stay on the slower cadence. Env: POSITION_POLL_CURVE_SECONDS /
     # POSITION_POLL_AMM_SECONDS.
-    position_poll_curve_seconds: float = 2.0
+    position_poll_curve_seconds: float = 1.0
     position_poll_amm_seconds: float = 10.0
     # Historical pump.fun graduation size. The curve `complete` flag is
     # authoritative; this is only the progress estimate. Env:
