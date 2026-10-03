@@ -22,11 +22,13 @@ Commands:
       "movers" — tokens newly crossing +100% (pump_100) or -50%
       (dump_50) since clearance. One-time keys, so each crossing
       surfaces exactly once.
-  report [--state <path>] [--days N] [--min-ticks N]
+  report [--state <path>] [--days N] [--min-ticks N] [--by-regime]
       Scorecard table sorted by % change since clearance: symbol, chain,
       clearance date, price then -> now, % change, peak %, trough %, days
-      tracked, score, filters, playbooks, source, entry tier, and the
-      take-profit levels (+25/+50/+100) each token crossed first.
+      tracked, score, filters, playbooks, source, entry tier, SOL regime at
+      alert time, and the take-profit levels (+25/+50/+100) each token
+      crossed first. --by-regime groups outcomes by SOL regime, then filter —
+      the regime overlay's measurement view.
 
 State file: JSON dict addr -> record. Default state path is the
 token-scout-watch goal's hidden_files/gate_tracker/tracked.json.
@@ -42,6 +44,20 @@ import sys
 import time
 import urllib.parse
 from typing import Any
+
+# Repo root on sys.path so tools can use the fenrir package when run as scripts.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+try:
+    from fenrir.discovery.regime import REGIMES, current_regime as _current_regime
+except Exception:  # noqa: BLE001 - regime is fail-open tagging; never break the tracker
+
+    def _current_regime() -> str:
+        return "unknown"
+
+    REGIMES = ("trend_up", "chop", "trend_down", "unknown")
 
 DEFAULT_STATE = os.path.expanduser(
     "~/workspace/goals/token-scout-watch/hidden_files/gate_tracker/tracked.json"
@@ -137,6 +153,7 @@ def _score_overall(c: dict) -> float | None:
 def record_candidates(cands: list[dict], state: dict, ts: float) -> list[str]:
     """Stamp gate clearance for new candidates. Returns addresses recorded."""
     recorded = []
+    regime_now: str | None = None  # lazy: one SOL-regime fetch per batch, fail-open
     for c in cands:
         addr = c.get("address")
         if not addr or addr in state:
@@ -145,6 +162,11 @@ def record_candidates(cands: list[dict], state: dict, ts: float) -> list[str]:
         mcap = c.get("market_cap_usd")
         if price is None:
             price, mcap = fetch_price(addr)
+        regime = c.get("regime")
+        if regime not in REGIMES:
+            if regime_now is None:
+                regime_now = _current_regime()
+            regime = regime_now
         state[addr] = {
             "address": addr,
             "symbol": c.get("symbol"),
@@ -162,6 +184,7 @@ def record_candidates(cands: list[dict], state: dict, ts: float) -> list[str]:
             "dexscreener": c.get("dexscreener"),
             "safety_unknown": bool(c.get("safety_unknown")),
             "entry_tier": c.get("entry_tier") or "standard",
+            "regime": regime,
             "ticks": [],
             "alerted_moves": [],
             "exit_crossings": {},
@@ -244,6 +267,7 @@ def summarize(rec: dict, now: float) -> dict:
         "playbooks": ",".join(rec.get("playbooks") or {}),
         "source": rec.get("source") or "?",
         "entry_tier": rec.get("entry_tier") or "standard",
+        "regime": rec.get("regime") or "unknown",
         "exit_crossings": dict(rec.get("exit_crossings") or {}),
         "dead": price_now is None and bool(rec.get("ticks")),
         "dexscreener": rec.get("dexscreener"),
@@ -290,6 +314,8 @@ def render_report(rows: list[dict]) -> str:
         tier = r.get("entry_tier") or "standard"
         if tier != "standard":
             ctx += f" · {tier}"
+        regime = r.get("regime") or "unknown"
+        ctx += f" · {regime}"
         exits = r.get("exit_crossings") or {}
         if exits:
             hit = "/".join(
@@ -303,6 +329,60 @@ def render_report(rows: list[dict]) -> str:
             f"{_fmt_pct(r['trough_pct']):>8} {r['days']:>4.1f} "
             f"{(r['score'] if r['score'] is not None else '?'):>5}  {ctx}"
         )
+    return "\n".join(lines)
+
+
+def render_by_regime(state: dict, now: float) -> str:
+    """Outcome table grouped by SOL regime at alert time, then filter.
+
+    The regime overlay's measurement view: does the same filter behave
+    differently in trend_up vs chop vs trend_down? Level 1 is tag-only —
+    this table is the evidence future suppression/scoring decisions work from.
+    """
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for rec in state.values():
+        regime = rec.get("regime") or "unknown"
+        filters = rec.get("filters") or ["(none)"]
+        row = summarize(rec, now)
+        for f in filters:
+            groups.setdefault((regime, f), []).append(row)
+
+    def stats(rows: list[dict]) -> tuple[int, str, str, str]:
+        priced = [r for r in rows if r["chg_pct"] is not None]
+        n = len(rows)
+        if not priced:
+            return n, "?", "?", "?"
+        green = sum(1 for r in priced if (r["chg_pct"] or 0) > 0)
+        chgs = sorted(r["chg_pct"] or 0 for r in priced)
+        median = chgs[len(chgs) // 2]
+        peak50 = sum(1 for r in priced if (r["peak_pct"] or 0) >= 50)
+        return (
+            n,
+            f"{100.0 * green / len(priced):.0f}%",
+            _fmt_pct(median),
+            f"{100.0 * peak50 / len(priced):.0f}%",
+        )
+
+    lines = []
+    lines.append("OUTCOMES BY SOL REGIME AT ALERT TIME (then filter)")
+    lines.append("")
+    lines.append(
+        f"{'regime':<11} {'filter':<20} {'n':>3} {'green':>5} {'median':>8} {'peak50%':>7}"
+    )
+    lines.append("-" * 60)
+    for regime in REGIMES:
+        reg_groups = sorted(
+            ((f, rows) for (rg, f), rows in groups.items() if rg == regime),
+            key=lambda kv: -len(kv[1]),
+        )
+        if not reg_groups:
+            continue
+        for f, rows in reg_groups:
+            n, green, median, peak50 = stats(rows)
+            lines.append(f"{regime:<11} {f[:20]:<20} {n:>3} {green:>5} {median:>8} {peak50:>7}")
+        lines.append("")
+    lines.append("green = % priced tokens green now · median = median move since clearance")
+    lines.append("peak50% = % that peaked >=+50% at some point (capturable)")
     return "\n".join(lines)
 
 
@@ -347,6 +427,10 @@ def cmd_report(args) -> int:
         rows.append(summarize(rec, now))
     # biggest winners first; unknowns/dead sink to the bottom
     rows.sort(key=lambda r: (r["chg_pct"] is None, -(r["chg_pct"] or 0)))
+    if args.by_regime:
+        print(render_by_regime(state, now))
+        print(f"\n{len(rows)} token(s) tracked")
+        return 0
     if args.json:
         print(json.dumps(rows, indent=1))
     else:
@@ -376,6 +460,11 @@ def main() -> int:
     )
     rep.add_argument("--min-ticks", type=int, default=0)
     rep.add_argument("--json", action="store_true")
+    rep.add_argument(
+        "--by-regime",
+        action="store_true",
+        help="outcomes grouped by SOL regime at alert time, then filter",
+    )
 
     args = ap.parse_args()
     if args.cmd == "record":
