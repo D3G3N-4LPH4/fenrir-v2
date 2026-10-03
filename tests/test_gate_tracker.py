@@ -194,3 +194,46 @@ def test_record_cli_end_to_end(tmp_path):
     assert proc.returncode == 0
     state = json.loads(open(state_file).read())
     assert state["0xcli"]["cleared_at"] == 1234.0
+
+
+@pytest.fixture(autouse=True)
+def _stub_regime(monkeypatch):
+    # Regime tagging must not hit the network in unit tests.
+    monkeypatch.setattr(gt, "_current_regime", lambda: "chop")
+
+
+def test_record_stamps_regime():
+    state: dict = {}
+    gt.record_candidates([_cand()], state, ts=1.0)
+    assert state["0xabc"]["regime"] == "chop"
+
+
+def test_record_preserves_prestamped_regime():
+    state: dict = {}
+    gt.record_candidates([_cand(regime="trend_up")], state, ts=1.0)
+    assert state["0xabc"]["regime"] == "trend_up"
+
+
+def test_record_replaces_invalid_regime():
+    state: dict = {}
+    gt.record_candidates([_cand(regime="bull_market")], state, ts=1.0)
+    assert state["0xabc"]["regime"] == "chop"
+
+
+def test_summarize_includes_regime():
+    state: dict = {}
+    gt.record_candidates([_cand(regime="trend_down")], state, ts=1000.0)
+    row = gt.summarize(state["0xabc"], now=2000.0)
+    assert row["regime"] == "trend_down"
+
+
+def test_render_by_regime_groups():
+    state: dict = {}
+    gt.record_candidates(
+        [_cand(addr="0xa", regime="chop"), _cand(addr="0xb", regime="trend_up")],
+        state,
+        ts=1.0,
+    )
+    out = gt.render_by_regime(state, now=2.0)
+    assert "chop" in out and "trend_up" in out
+    assert "degen_launch" in out
