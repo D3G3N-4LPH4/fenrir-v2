@@ -108,6 +108,43 @@ def test_tick_detects_dump_and_dead(monkeypatch):
     assert dead["chg_pct"] is None
 
 
+def test_record_stores_entry_tier():
+    state: dict = {}
+    gt.record_candidates([_cand(entry_tier="ignition")], state, ts=1.0)
+    assert state["0xabc"]["entry_tier"] == "ignition"
+    # missing tier defaults to standard
+    gt.record_candidates([_cand(addr="0xnope")], state, ts=1.0)
+    assert state["0xnope"]["entry_tier"] == "standard"
+
+
+def test_tick_records_exit_crossings_once(monkeypatch):
+    state: dict = {}
+    gt.record_candidates([_cand()], state, ts=1000.0)
+    # +60% -> tp_25 and tp_50 cross, tp_100 does not
+    monkeypatch.setattr(gt, "fetch_price", lambda addr, timeout=20: (0.0016, 16_000.0))
+    gt.tick_state(state, ts=2000.0)
+    exits = state["0xabc"]["exit_crossings"]
+    assert exits == {"tp_25": 2000.0, "tp_50": 2000.0}
+    # a later tick at the same level adds nothing new
+    gt.tick_state(state, ts=3000.0)
+    assert state["0xabc"]["exit_crossings"] == {"tp_25": 2000.0, "tp_50": 2000.0}
+    # +120% crosses tp_100 too
+    monkeypatch.setattr(gt, "fetch_price", lambda addr, timeout=20: (0.0022, 22_000.0))
+    gt.tick_state(state, ts=4000.0)
+    assert state["0xabc"]["exit_crossings"]["tp_100"] == 4000.0
+    assert state["0xabc"]["exit_crossings"]["tp_25"] == 2000.0  # first wins
+
+
+def test_summarize_includes_tier_and_exits(monkeypatch):
+    state: dict = {}
+    gt.record_candidates([_cand(entry_tier="late")], state, ts=1000.0)
+    monkeypatch.setattr(gt, "fetch_price", lambda addr, timeout=20: (0.0013, 13_000.0))
+    gt.tick_state(state, ts=2000.0)
+    row = gt.summarize(state["0xabc"], now=3000.0)
+    assert row["entry_tier"] == "late"
+    assert row["exit_crossings"] == {"tp_25": 2000.0}
+
+
 def test_report_sorts_winners_first():
     state: dict = {}
     gt.record_candidates([_cand(addr="0xup"), _cand(addr="0xdn")], state, ts=1.0)

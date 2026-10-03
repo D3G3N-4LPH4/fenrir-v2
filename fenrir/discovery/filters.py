@@ -486,6 +486,24 @@ DEFAULT_THRESHOLDS: dict[FilterName, FilterThresholds] = {
     FilterName.SECOND_LIFE: SECOND_LIFE,
 }
 
+# Filters paused on the alert path (2026-10-03 gate-tracker review, 42 alerts
+# since 10-01): flush_recovery went 0/5 with a -55% median move. The filter
+# stays defined (and keeps working in manual tools/evaluate.py) so the thesis
+# can be re-measured later; the scout simply never counts it as a pass.
+# Apply in the candidate builder (tools/scout.py), not in FilterEngine, so
+# one-shot evaluations keep their full diagnostic value.
+DISABLED_FILTERS: frozenset[FilterName] = frozenset({FilterName.FLUSH_RECOVERY})
+
+# Per-filter score floors for the alert path (2026-10-03 review):
+# mid_cap_momentum is the best-performing lane (33% hit, -29% median vs
+# volatility_breakout's 20% / -98%) but the global 60-point bar starves it.
+# A lower floor lets more mid-cap momentum through without lowering the bar
+# for the blowup lanes. Keyed by FilterName; filters absent here use the
+# run's --min-score.
+FILTER_SCORE_FLOORS: dict[FilterName, float] = {
+    FilterName.MID_CAP_MOMENTUM: 55.0,
+}
+
 
 @dataclass
 class UniversalSafety:

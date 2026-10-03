@@ -24,8 +24,9 @@ Commands:
       surfaces exactly once.
   report [--state <path>] [--days N] [--min-ticks N]
       Scorecard table sorted by % change since clearance: symbol, chain,
-      clearance date, price then -> now, % change, peak %, trough %,
-      days tracked, score, filters, playbooks, source.
+      clearance date, price then -> now, % change, peak %, trough %, days
+      tracked, score, filters, playbooks, source, entry tier, and the
+      take-profit levels (+25/+50/+100) each token crossed first.
 
 State file: JSON dict addr -> record. Default state path is the
 token-scout-watch goal's hidden_files/gate_tracker/tracked.json.
@@ -48,6 +49,12 @@ DEFAULT_STATE = os.path.expanduser(
 
 PUMP_THRESHOLD_PCT = 100.0  # newly crossed -> "movers" (one-time)
 DUMP_THRESHOLD_PCT = -50.0  # newly crossed -> "movers" (one-time)
+
+# Take-profit first-crossings (2026-10-03): the scout's alerts catch moves
+# but holding kills the basket (median -96% vs 36% peaking >=+50%). Each
+# token records the first tick it crossed +25/+50/+100% so reviews measure
+# what was actually exitable — capturable PnL, not hold-to-now.
+EXIT_LEVELS_PCT = (("tp_25", 25.0), ("tp_50", 50.0), ("tp_100", 100.0))
 
 
 # --------------------------------------------------------------------------
@@ -154,8 +161,10 @@ def record_candidates(cands: list[dict], state: dict, ts: float) -> list[str]:
             "source": c.get("source"),
             "dexscreener": c.get("dexscreener"),
             "safety_unknown": bool(c.get("safety_unknown")),
+            "entry_tier": c.get("entry_tier") or "standard",
             "ticks": [],
             "alerted_moves": [],
+            "exit_crossings": {},
         }
         recorded.append(addr)
     return recorded
@@ -180,7 +189,11 @@ def tick_state(state: dict, ts: float) -> dict:
         chg = pct_change(price, rec.get("clearance_price"))
         tick["chg_pct"] = round(chg, 2) if chg is not None else None
         alerted = rec.setdefault("alerted_moves", [])
+        exits = rec.setdefault("exit_crossings", {})
         if chg is not None:
+            for key, level in EXIT_LEVELS_PCT:
+                if chg >= level and key not in exits:
+                    exits[key] = ts
             if chg >= PUMP_THRESHOLD_PCT and "pump_100" not in alerted:
                 alerted.append("pump_100")
                 movers.append(
@@ -230,6 +243,8 @@ def summarize(rec: dict, now: float) -> dict:
         "filters": ",".join(rec.get("filters") or []),
         "playbooks": ",".join(rec.get("playbooks") or {}),
         "source": rec.get("source") or "?",
+        "entry_tier": rec.get("entry_tier") or "standard",
+        "exit_crossings": dict(rec.get("exit_crossings") or {}),
         "dead": price_now is None and bool(rec.get("ticks")),
         "dexscreener": rec.get("dexscreener"),
     }
@@ -272,6 +287,16 @@ def render_report(rows: list[dict]) -> str:
         if r["playbooks"]:
             ctx += f" [{r['playbooks']}]"
         ctx += f" · {r['source']}"
+        tier = r.get("entry_tier") or "standard"
+        if tier != "standard":
+            ctx += f" · {tier}"
+        exits = r.get("exit_crossings") or {}
+        if exits:
+            hit = "/".join(
+                k.replace("tp_", "+") for k in ("tp_25", "tp_50", "tp_100") if k in exits
+            )
+            if hit:
+                ctx += f" · TP {hit}"
         lines.append(
             f"{r['symbol'][:10]:<10} {r['chain'][:9]:<9} {r['cleared']:<11} "
             f"{move:<27} {_fmt_pct(r['chg_pct']):>8} {_fmt_pct(r['peak_pct']):>8} "
