@@ -43,11 +43,10 @@ from fenrir.discovery.playbooks import PlaybookTagger  # noqa: E402
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider  # noqa: E402
 from fenrir.discovery.providers.geckoterminal import GeckoTerminalProvider  # noqa: E402
 from fenrir.discovery.providers.goplus import GoPlusProvider  # noqa: E402
-from fenrir.discovery.providers.perceptor import (  # noqa: E402
-    ROBINHOOD_CHAIN_ID,
-    PerceptorProvider,
+from fenrir.discovery.providers.perceptor import PerceptorProvider  # noqa: E402
+from fenrir.discovery.providers.robinhood_safety import (  # noqa: E402
+    RobinhoodSafetyProvider,
     enrich_robinhood_safety,
-    snapshot_context,
 )
 from fenrir.discovery.scoring import ScoringEngine  # noqa: E402
 
@@ -241,6 +240,7 @@ async def evaluate_address(
     perceptor: PerceptorProvider | None = None,
     accel: AccelTracker | None = None,
     timings: list[dict] | None = None,
+    local_safety: RobinhoodSafetyProvider | None = None,
 ) -> dict | None:
     """Run one address through snapshot + safety + filters + scoring.
 
@@ -298,13 +298,19 @@ async def evaluate_address(
     # re-runs the hard-fail check and the score — the safety_unknown score
     # cap lifts when safety becomes verifiable.
     perceptor_info: dict | None = None
-    if perceptor is not None and snap.chain is Chain.ROBINHOOD and safety_unknown(snap):
+    if (
+        (local_safety is not None or perceptor is not None)
+        and snap.chain is Chain.ROBINHOOD
+        and safety_unknown(snap)
+    ):
         t0 = time.perf_counter()
         try:
             # Hard deadline on top of the provider's own request timeouts: a
-            # wedged Perceptor call must not eat this token's whole budget.
+            # wedged safety call must not eat this token's whole budget.
+            # Local on-chain reader first; Perceptor's stale cache as fallback
+            # (its API is auth-walled — no new investigations are attempted).
             report = await asyncio.wait_for(
-                enrich_robinhood_safety(snap, perceptor),
+                enrich_robinhood_safety(snap, local_safety, perceptor),
                 timeout=PERCEPTOR_TIMEOUT_SECONDS,
             )
         except Exception:  # noqa: BLE001 - fail-open (includes TimeoutError)
@@ -320,12 +326,6 @@ async def evaluate_address(
                 "headline": report.headline,
                 "investigation_id": report.investigation_id,
             }
-        else:
-            inv_id = await perceptor.ensure_investigation(
-                ROBINHOOD_CHAIN_ID, snap.token_address, snapshot_context(snap)
-            )
-            if inv_id:
-                perceptor_info = {"status": "pending", "investigation_id": inv_id}
     if fail or not passed or score.overall < min_score:
         return None
     ratio_1h = snap.buy_sell_ratio_1h
@@ -384,6 +384,7 @@ async def scout_chain(
     perceptor: PerceptorProvider | None = None,
     accel: AccelTracker | None = None,
     timings: list[dict] | None = None,
+    local_safety: RobinhoodSafetyProvider | None = None,
 ) -> tuple[list[dict], dict[str, int]]:
     candidates: list[dict] = []
     by_source: dict[str, int] = {}
@@ -417,6 +418,7 @@ async def scout_chain(
                         perceptor,
                         accel,
                         timings,
+                        local_safety=local_safety,
                     ),
                     timeout=TOKEN_TIMEOUT_SECONDS,
                 )
@@ -504,6 +506,7 @@ async def amain() -> int:
     gt = GeckoTerminalProvider(timeout_seconds=15)
     gp = GoPlusProvider(timeout_seconds=10)
     perceptor = PerceptorProvider()
+    local_safety = RobinhoodSafetyProvider()
     accel = AccelTracker(AccelTracker.default_state_path())
     engine = FilterEngine()
     scorer = ScoringEngine()
@@ -532,6 +535,7 @@ async def amain() -> int:
                     perceptor,
                     accel,
                     timings,
+                    local_safety=local_safety,
                 )
                 all_cands.extend(cands)
                 for k, v in bs.items():

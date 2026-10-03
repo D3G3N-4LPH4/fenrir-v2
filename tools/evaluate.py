@@ -50,10 +50,10 @@ from fenrir.discovery.solana_forensics import (  # noqa: E402
 from fenrir.discovery.playbooks import PLAYBOOK_STRATEGY_IDS, PlaybookTagger
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider
 from fenrir.discovery.providers.goplus import GoPlusProvider, distribution_metrics
-from fenrir.discovery.providers.perceptor import (
-    ROBINHOOD_CHAIN_ID,
-    PerceptorProvider,
-    snapshot_context,
+from fenrir.discovery.providers.perceptor import PerceptorProvider
+from fenrir.discovery.providers.robinhood_safety import (
+    RobinhoodSafetyProvider,
+    enrich_robinhood_safety,
 )
 from fenrir.discovery.scoring import ScoringEngine
 import os
@@ -546,37 +546,36 @@ async def amain() -> int:
         except Exception:  # noqa: BLE001 - fail-open
             pass
 
-    # Robinhood safety net: when GoPlus has nothing, Perceptor's on-chain
-    # forensics scan can still verify safety. Manual tool => wait for it.
+    # Robinhood safety net: when GoPlus has nothing, the local on-chain
+    # safety reader can still verify safety. Manual tool => wait for it.
+    # (Perceptor's API is auth-walled since 2026-10-02; only its stale disk
+    # cache remains as a fallback.)
     perceptor_info: dict | None = None
     if not args.no_perceptor and snap.chain is Chain.ROBINHOOD and snap.safety.is_empty:
+        local = RobinhoodSafetyProvider()
         pp = PerceptorProvider()
         try:
             if not args.json:
                 print(
-                    "Perceptor: scanning on-chain history (up to "
-                    f"{args.perceptor_timeout:.0f}s)…",
+                    "Robinhood safety: reading on-chain (up to " f"{args.perceptor_timeout:.0f}s)…",
                     flush=True,
                 )
-            report = await pp.investigate(
-                ROBINHOOD_CHAIN_ID,
-                snap.token_address,
-                timeout_seconds=args.perceptor_timeout,
-                context=snapshot_context(snap),
+            report = await asyncio.wait_for(
+                enrich_robinhood_safety(snap, local, pp),
+                timeout=args.perceptor_timeout,
             )
-        finally:
-            await pp.close()
+        except Exception:  # noqa: BLE001 - fail-open (includes TimeoutError)
+            report = None
         if report is not None:
-            snap.safety = report.safety
             perceptor_info = {
                 "band": report.band,
                 "band_label": report.band_label,
                 "headline": report.headline,
                 "investigation_id": report.investigation_id,
             }
-            notes.append(f"Perceptor verdict: {report.band_label} — {report.headline}")
+            notes.append(f"Safety verdict: {report.band_label} — {report.headline}")
         else:
-            notes.append("Perceptor scan did not complete in time — safety unknown")
+            notes.append("On-chain safety read did not complete — safety unknown")
 
     engine = FilterEngine()
     results = {fn.value: engine.evaluate(snap, fn) for fn in FilterName}
