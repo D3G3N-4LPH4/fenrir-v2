@@ -60,9 +60,12 @@ from fenrir.protocol.jito import JitoMEVProtection
 from fenrir.strategies import STRATEGY_REGISTRY, SniperStrategy
 from fenrir.strategies.base import TradingStrategy
 from fenrir.strategies.sniper import AIScoutStrategy
+from fenrir.trading.curve_exits import CurveExitWatcher
 from fenrir.trading.engine import TradingEngine
+from fenrir.trading.ignition_lane import evaluate_ignition
 from fenrir.trading.monitor import PumpFunMonitor
 from fenrir.trading.scanner import MarketScanner
+from fenrir.trading.slot_book import SlotBook
 from fenrir.trading.smart_money import SmartMoneyTracker
 
 
@@ -116,11 +119,12 @@ class FenrirBot:
         self.jito: JitoMEVProtection | None = None
         if config.use_jito or config.tx_profiles_enabled:
             self.jito = JitoMEVProtection(
-                region="mainnet",
+                region=os.getenv("JITO_REGION", "ny"),
                 tip_lamports=config.jito_tip_lamports,
             )
 
         self.price_feed = PriceFeedManager()
+        self.slot_book = SlotBook()
 
         # Trading engine
         self.trading_engine = TradingEngine(
@@ -137,6 +141,15 @@ class FenrirBot:
 
         # Monitor
         self.monitor = PumpFunMonitor(config, self.solana_client, self.logger)
+
+        # Curve-account exit watcher: mechanical stop-loss on open curve
+        # positions via accountSubscribe. The poll loop is the backstop.
+        self.curve_exits = CurveExitWatcher(
+            client=self.solana_client,
+            positions=self.positions,
+            on_stop=self._on_curve_stop,
+            nudge=self.nudge_exits,
+        )
 
         # Market scanner (multi-tier discovery; started only when enabled)
         self.scanner = MarketScanner(config, self.jupiter, self.logger)
@@ -559,6 +572,50 @@ class FenrirBot:
         recent = list(self._recent_tokens)
         return list(dict.fromkeys(held + recent))
 
+    async def on_token_launch(self, token_data: dict) -> None:
+        """Block-zero rules lane for fresh creates.
+
+        Hard filters only — no AI, no ensemble. Migrated tokens and scanner
+        candidates keep the strategy/AI path in _on_token_launch.
+        """
+        create_slot = token_data.get("slot")
+        decision = evaluate_ignition(
+            token_data,
+            min_liquidity_sol=self.config.min_initial_liquidity_sol,
+            amount_sol=min(self.config.buy_amount_sol, 0.05),
+        )
+        if not decision.buy:
+            self.logger.info(f"ignition skip: {decision.reason}")
+            return
+
+        filled = await self.trading_engine.execute_buy(
+            token_data,
+            amount_sol=decision.amount_sol,
+            strategy_id="sniper",
+        )
+        self.slot_book.record(
+            mint=token_data["token_address"],
+            create_slot=create_slot,
+            landed_slot=getattr(self.trading_engine, "last_landed_slot", None),
+            filled=bool(filled),
+            amount_sol=decision.amount_sol,
+            tip_lamports=self.jito.tip_lamports if self.jito else 0,
+        )
+        if filled:
+            self.curve_exits.watch(
+                token_data["token_address"],
+                token_data["bonding_curve"],
+                stop_loss_pct=self.config.stop_loss_pct,
+            )
+
+    async def _on_curve_stop(self, token_address: str, reason: str) -> None:
+        """Mechanical stop from the curve-account watcher."""
+        position = self.positions.positions.get(token_address)
+        if position is None:
+            return
+        self.curve_exits.unwatch(token_address)
+        await self._execute_exit(token_address, position, reason)
+
     async def _on_token_launch(self, token_data: dict):
         """
         Callback when new token is detected.
@@ -587,6 +644,13 @@ class FenrirBot:
         )
         # Feed the read-only arbitrage monitor's sampling ring (no-op when disabled).
         self._recent_tokens.append(token_addr)
+
+        # Block-zero fast lane: fresh creates carry a bonding curve address and
+        # take the rules-only ignition gate — no AI, no ensemble. Migrated
+        # tokens and scanner candidates fall through to the strategy path.
+        if token_data.get("bonding_curve"):
+            await self.on_token_launch(token_data)
+            return
 
         # Enrich + route. When the multi-agent pipeline is enabled, hand the fully
         # populated token_data to the ScannerAgent (queue-backed) and return
@@ -1469,6 +1533,7 @@ class FenrirBot:
             await _safe("agent pipeline", self.agent_pipeline.stop())
         await _safe("monitor", self.monitor.stop())
         await _safe("scanner", self.scanner.stop())
+        _safe_sync("curve exits", self.curve_exits.stop)
         if self._scanner_task is not None:
             self._scanner_task.cancel()
             self._scanner_task = None

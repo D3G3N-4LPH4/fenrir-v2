@@ -233,6 +233,73 @@ class SolanaClient:
         resp = await self._rpc(self.client.get_signature_statuses(sigs), "get_signature_statuses")
         return resp.value if resp and resp.value else None
 
+    async def account_subscribe(self, pubkey: Pubkey, commitment: str = "confirmed"):
+        """Yield decoded BondingCurveState on each account update via websocket.
+
+        Async generator: reconnects with backoff on failure, exits on
+        cancellation. Skips notifications that fail to decode.
+        """
+        from fenrir.protocol.pumpfun import PumpFunProgram
+
+        pumpfun = PumpFunProgram()
+        rpc_url = self.config.rpc_url
+        if rpc_url.startswith("https://"):
+            ws_url = "wss://" + rpc_url[len("https://") :]
+        elif rpc_url.startswith("http://"):
+            ws_url = "ws://" + rpc_url[len("http://") :]
+        else:
+            ws_url = rpc_url
+
+        backoff = 1.0
+        request_id = 1
+        while True:
+            try:
+                async with aiohttp.ClientSession(trust_env=True) as session:
+                    async with session.ws_connect(ws_url) as ws:
+                        await ws.send_json(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": request_id,
+                                "method": "accountSubscribe",
+                                "params": [
+                                    str(pubkey),
+                                    {
+                                        "encoding": "base64",
+                                        "commitment": commitment,
+                                    },
+                                ],
+                            }
+                        )
+                        # Consume the subscription confirmation.
+                        async for msg in ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                data = msg.json()
+                                if "result" in data:
+                                    break
+                        backoff = 1.0
+                        async for msg in ws:
+                            if msg.type != aiohttp.WSMsgType.TEXT:
+                                continue
+                            data = msg.json()
+                            try:
+                                value = data["params"]["result"]["value"]
+                                raw = value["data"][0]
+                                import base64
+
+                                account_data = base64.b64decode(raw)
+                            except (KeyError, IndexError, TypeError, ValueError):
+                                continue
+                            state = pumpfun.decode_bonding_curve(account_data)
+                            if state is not None:
+                                yield state
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.logger.warning(f"accountSubscribe reconnect in {backoff:.0f}s: {e}")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+                request_id += 1
+
     async def close(self):
         """Graceful shutdown."""
         await self.client.close()
