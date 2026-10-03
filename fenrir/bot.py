@@ -1226,6 +1226,8 @@ class FenrirBot:
             try:
                 # Phase 1: Update prices
                 open_addrs = list(self.positions.positions.keys())
+                # Bound unconditionally — read again below at the poll-interval calc.
+                feed_addrs: list[str] = []
                 if open_addrs:
                     # Pre-migration, the pump.fun bonding curve is the
                     # authoritative price (and the only source for freshly
@@ -1235,7 +1237,6 @@ class FenrirBot:
                     # migrated/uncurved tokens (external feeds return wrong-scale
                     # or no data for fresh launches, which produced absurd PnL).
                     prices: dict[str, float] = {}
-                    feed_addrs: list[str] = []
                     for addr in open_addrs:
                         curve = await self.trading_engine.fetch_curve_state(addr)
                         if curve and not curve.complete:

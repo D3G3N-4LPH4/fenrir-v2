@@ -32,7 +32,7 @@ def _keypair_from_locked(secret: bytearray) -> Keypair:
             # c_char_p(bytes(secret)) would mlock a throwaway copy.
             buf = (ctypes.c_char * len(secret)).from_buffer(secret)
             libc.mlock(buf, ctypes.c_size_t(len(secret)))
-    except Exception:
+    except Exception:  # noqa: S110 - mlock is best-effort hardening; failure is non-fatal
         pass
     keypair = Keypair.from_bytes(bytes(secret))
     for i in range(len(secret)):
