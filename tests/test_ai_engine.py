@@ -705,6 +705,24 @@ class TestClaudeBrainEvaluateEntry:
         assert amount is None
 
     @pytest.mark.asyncio
+    async def test_ai_enabled_without_analyst_fails_closed(
+        self, ai_enabled_config, mock_logger, sample_token_data
+    ):
+        """Enabled AI with no analyst must not degrade into a rule auto-buy."""
+        ai_enabled_config.ai_analysis_enabled = True
+        ai_enabled_config.ai_api_key = ""
+        brain = ClaudeBrain(ai_enabled_config, mock_logger)
+        brain.enabled = False
+        brain.analyst = None
+
+        should_buy, analysis, amount = await brain.evaluate_entry(sample_token_data, {})
+
+        assert should_buy is False
+        assert analysis is None
+        assert amount is None
+        assert brain.stats["ai_errors"] == 1
+
+    @pytest.mark.asyncio
     async def test_timeout_with_fallback_returns_true(
         self, ai_enabled_config, mock_logger, sample_token_data
     ):

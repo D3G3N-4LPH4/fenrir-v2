@@ -1328,11 +1328,19 @@ class FenrirBot:
                         f"({summary['total_pnl_sol']:+.4f} SOL)"
                     )
 
-                await asyncio.sleep(10)
+                curve_open = (
+                    any(addr not in feed_addrs for addr in open_addrs) if open_addrs else False
+                )
+                interval = (
+                    self.config.position_poll_curve_seconds
+                    if curve_open
+                    else self.config.position_poll_amm_seconds
+                )
+                await asyncio.sleep(max(0.5, interval))
 
             except Exception as e:
                 self.logger.error("Position management error", e)
-                await asyncio.sleep(10)
+                await asyncio.sleep(self.config.position_poll_curve_seconds)
 
     async def _execute_exit(
         self,
@@ -1411,76 +1419,90 @@ class FenrirBot:
         )
 
     async def stop(self):
-        """Graceful shutdown."""
+        """Graceful shutdown. Idempotent: a failed start can call this twice."""
+        if getattr(self, "_stopped", False):
+            return
+        self._stopped = True
         self.running = False
 
-        # Record bot stop
-        self.audit.record(
-            AuditEventType.BOT_STOPPED,
-            payload={
-                "budget_status": self.budget_tracker.get_global_status(),
-                "strategies": [s.get_status() for s in self.strategies],
-            },
-        )
-        await self.event_bus.emit(bot_lifecycle_event("stopped"))
+        async def _safe(name: str, awaitable) -> None:
+            try:
+                await awaitable
+            except Exception as e:
+                self.logger.warning(f"Shutdown step {name} failed: {e}")
 
-        # Shutdown all components
+        def _safe_sync(name: str, fn) -> None:
+            try:
+                fn()
+            except Exception as e:
+                self.logger.warning(f"Shutdown step {name} failed: {e}")
+
+        try:
+            self.audit.record(
+                AuditEventType.BOT_STOPPED,
+                payload={
+                    "budget_status": self.budget_tracker.get_global_status(),
+                    "strategies": [s.get_status() for s in self.strategies],
+                },
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not record BOT_STOPPED: {e}")
+        await _safe("lifecycle event", self.event_bus.emit(bot_lifecycle_event("stopped")))
+
         if self.agent_pipeline is not None:
-            await self.agent_pipeline.stop()
-        await self.monitor.stop()
-        await self.scanner.stop()
+            await _safe("agent pipeline", self.agent_pipeline.stop())
+        await _safe("monitor", self.monitor.stop())
+        await _safe("scanner", self.scanner.stop())
         if self._scanner_task is not None:
             self._scanner_task.cancel()
             self._scanner_task = None
-        await self.smart_money.stop()
+        await _safe("smart money", self.smart_money.stop())
         if self._smart_money_task is not None:
             self._smart_money_task.cancel()
             self._smart_money_task = None
         if self.discovery_scanner is not None:
-            await self.discovery_scanner.stop()
+            await _safe("discovery scanner", self.discovery_scanner.stop())
         if self._discovery_task is not None:
             self._discovery_task.cancel()
             self._discovery_task = None
         if self._discovery_dex is not None:
-            await self._discovery_dex.close()
+            await _safe("discovery dex", self._discovery_dex.close())
             self._discovery_dex = None
-        # Cancel any in-flight forward-price collection tasks.
         for task in list(self._collect_tasks):
             task.cancel()
         self._collect_tasks.clear()
         self._collecting.clear()
         if self.arbitrage_scanner is not None:
-            await self.arbitrage_scanner.stop()
+            await _safe("arbitrage scanner", self.arbitrage_scanner.stop())
         if self._arbitrage_task is not None:
             self._arbitrage_task.cancel()
             self._arbitrage_task = None
         if self._arb_dex is not None:
-            await self._arb_dex.close()
+            await _safe("arb dex", self._arb_dex.close())
             self._arb_dex = None
         if self.evm_scanner is not None:
-            await self.evm_scanner.stop()
+            await _safe("evm scanner", self.evm_scanner.stop())
         if self._evm_task is not None:
             self._evm_task.cancel()
             self._evm_task = None
         if self._evm_dex is not None:
-            await self._evm_dex.close()
+            await _safe("evm dex", self._evm_dex.close())
             self._evm_dex = None
-        await self.trading_engine.close()
-        await self.claude_brain.close()
-        await self.solana_client.close()
-        await self.jupiter.close()
-        await self.price_feed.close()
+        await _safe("trading engine", self.trading_engine.close())
+        await _safe("claude brain", self.claude_brain.close())
+        await _safe("solana client", self.solana_client.close())
+        await _safe("jupiter", self.jupiter.close())
+        await _safe("price feed", self.price_feed.close())
         if self.jito:
-            await self.jito.close()
+            await _safe("jito", self.jito.close())
         if self.security_filter is not None:
-            await self.security_filter.close()
+            await _safe("security filter", self.security_filter.close())
         if self.market_filter is not None:
-            await self.market_filter.close()
+            await _safe("market filter", self.market_filter.close())
 
-        # Shutdown new systems
-        await self.event_bus.shutdown()
-        self.historical_memory.close()
-        self.audit.close()
+        await _safe("event bus", self.event_bus.shutdown())
+        _safe_sync("historical memory", self.historical_memory.close)
+        _safe_sync("audit", self.audit.close)
 
         self.logger.info("FENRIR rests. Until next time.")
 

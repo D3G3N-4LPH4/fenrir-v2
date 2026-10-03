@@ -267,6 +267,15 @@ class BotConfig:
     # Monitoring
     websocket_enabled: bool = True  # Real-time vs polling
     poll_interval_seconds: float = 2.0  # If WebSocket fails
+    # Open-position poll. Curve positions reprice every 2s; AMM positions
+    # stay on the slower cadence. Env: POSITION_POLL_CURVE_SECONDS /
+    # POSITION_POLL_AMM_SECONDS.
+    position_poll_curve_seconds: float = 2.0
+    position_poll_amm_seconds: float = 10.0
+    # Historical pump.fun graduation size. The curve `complete` flag is
+    # authoritative; this is only the progress estimate. Env:
+    # MIGRATION_THRESHOLD_LAMPORTS.
+    migration_threshold_lamports: int = 85_000_000_000
     # Yellowstone gRPC (Geyser) low-latency transport. When geyser_grpc_endpoint is
     # set, the monitor streams pump.fun transactions over gRPC instead of the public
     # WebSocket logsSubscribe (lower latency, no dropped notifications under load).
@@ -460,7 +469,7 @@ class BotConfig:
     ai_memory_size: int = 15  # Rolling decision history size
     ai_memory_resume: bool = False  # Rebuild session memory from the audit chain on startup
     ai_temperature: float = 0.3  # LLM temperature (lower = more conservative)
-    ai_fallback_to_rules: bool = True  # Auto-buy on AI failure/timeout?
+    ai_fallback_to_rules: bool = False  # Fail closed on AI timeout/error
     ai_dynamic_position_sizing: bool = False  # Let AI set buy amount?
     # When on, every fresh launch that passes the pre-trade gates but is NOT
     # claimed by any active strategy is still evaluated by the AI, via an
@@ -584,6 +593,15 @@ class BotConfig:
         # When False, an AI timeout/failure SKIPs instead of a rule-based auto-buy —
         # so a slow AI call can't buy a token the AI/panel never actually approved.
         self.ai_fallback_to_rules = _env_bool("AI_FALLBACK_TO_RULES", self.ai_fallback_to_rules)
+        self.position_poll_curve_seconds = float(
+            os.getenv("POSITION_POLL_CURVE_SECONDS", self.position_poll_curve_seconds)
+        )
+        self.position_poll_amm_seconds = float(
+            os.getenv("POSITION_POLL_AMM_SECONDS", self.position_poll_amm_seconds)
+        )
+        self.migration_threshold_lamports = int(
+            os.getenv("MIGRATION_THRESHOLD_LAMPORTS", self.migration_threshold_lamports)
+        )
         self.ai_entry_timeout_seconds = _env_float(
             "AI_ENTRY_TIMEOUT_SECONDS", self.ai_entry_timeout_seconds
         )

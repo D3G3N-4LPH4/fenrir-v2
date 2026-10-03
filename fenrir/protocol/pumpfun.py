@@ -78,7 +78,19 @@ SELL_DISCRIMINATOR = hashlib.sha256(b"global:sell").digest()[:8]
 INITIAL_VIRTUAL_TOKEN_RESERVES = 1_073_000_000  # 1.073B tokens
 INITIAL_VIRTUAL_SOL_RESERVES = 30_000_000_000  # 30 SOL (in lamports)
 INITIAL_REAL_TOKEN_RESERVES = 793_100_000  # 793.1M real tokens
-MIGRATION_THRESHOLD_SOL = 85_000_000_000  # 85 SOL triggers Raydium migration
+MIGRATION_THRESHOLD_SOL = 85_000_000_000  # historical fallback; complete flag wins
+
+
+def migration_threshold_lamports(override: int | None = None) -> int:
+    """Progress-bar threshold only. Graduation itself is curve.complete.
+
+    Pump has moved the SOL size of a full curve before and does not publish a
+    stable threshold field. Callers must treat `complete` as authoritative and
+    pass MIGRATION_THRESHOLD_LAMPORTS when the operator has measured a new one.
+    """
+    if override and override > 0:
+        return override
+    return MIGRATION_THRESHOLD_SOL
 
 
 @dataclass
@@ -109,12 +121,14 @@ class BondingCurveState:
         """Calculate market cap in SOL."""
         return self.get_price() * self.token_total_supply
 
-    def get_migration_progress(self) -> float:
-        """
-        Calculate how close to Raydium migration (0-100%).
-        Migration happens at ~85 SOL raised.
-        """
-        return min(100.0, (self.real_sol_reserves / MIGRATION_THRESHOLD_SOL) * 100)
+    def get_migration_progress(self, threshold_lamports: int | None = None) -> float:
+        """How close to graduation (0-100%). `complete` is 100, not the SOL guess."""
+        if self.complete:
+            return 100.0
+        threshold = migration_threshold_lamports(threshold_lamports)
+        if threshold <= 0:
+            return 0.0
+        return min(100.0, (self.real_sol_reserves / threshold) * 100)
 
     def calculate_buy_price(self, sol_amount: float) -> tuple[int, float]:
         """
