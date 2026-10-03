@@ -16,6 +16,9 @@ Backend is an open FastAPI with no auth:
 Investigations are heavy server-side (full chain scan), so be polite:
   - only investigate tokens that cleared FENRIR's entry filters (a few/day),
   - POST once per address ever (investigation id cached on disk),
+  - the POST endpoint rate-limits (observed as intermittent HTTP 403s): the
+    provider backs off with jitter, cools down throttled addresses, and
+    always fails open,
   - rely on server-side caching (fresh=false default); verdicts are pinned to
     a block, so a completed report never goes stale.
 
@@ -24,9 +27,11 @@ The pure ``parse_perceptor`` mapper is unit-testable without network.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import random
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -167,6 +172,12 @@ class PerceptorProvider:
         self.timeout = timeout_seconds
         self._session: Any = None
         self._cache: dict[str, Any] | None = None
+        # Throttle memory: the POST endpoint is heavy server-side and rate
+        # limits (observed as intermittent HTTP 403s). A throttled/failed
+        # address cools down per-address so retries don't hammer the server;
+        # a global backoff calms bursts across addresses. Fail-open always.
+        self._post_cooldown: dict[str, float] = {}
+        self._post_throttled_until: float = 0.0
 
     async def _get_session(self) -> Any:
         if self._session is None or self._session.closed:
@@ -229,34 +240,58 @@ class PerceptorProvider:
                 )
                 self._save_cache()
             return str(entry["investigation_id"])
+        now = time.time()
+        if now < self._post_cooldown.get(addr, 0.0):
+            logger.debug("Perceptor POST cooling down for %s…", addr[:10])
+            return None
+        if now < self._post_throttled_until:
+            logger.debug("Perceptor POST globally throttled, skipping %s…", addr[:10])
+            return None
         try:
             session = await self._get_session()
-            async with session.post(
-                f"{PERCEPTOR_API}/investigations",
-                json={"chain_id": chain_id, "address": address},
-                timeout=self.timeout,
-            ) as resp:
-                if resp.status != 200:
+            for attempt in range(2):  # one retry with backoff
+                async with session.post(
+                    f"{PERCEPTOR_API}/investigations",
+                    json={"chain_id": chain_id, "address": address},
+                    timeout=self.timeout,
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        inv_id = (
+                            data.get("investigation_id") or data.get("public_id") or data.get("id")
+                        )
+                        if not inv_id:
+                            return None
+                        self._load_cache()[addr] = {
+                            "investigation_id": inv_id,
+                            "status": "pending",
+                            "report": None,
+                            "checked_at": time.time(),
+                            "followup_sent": False,
+                            "context": {k: v for k, v in (context or {}).items() if v is not None},
+                        }
+                        self._save_cache()
+                        return str(inv_id)
+                    if resp.status in (403, 429):
+                        body = (await resp.text())[:200]
+                        logger.warning(
+                            "Perceptor POST throttled HTTP %d for %s…: %s",
+                            resp.status,
+                            addr[:10],
+                            body,
+                        )
+                        backoff = 30.0 if attempt == 0 else 120.0
+                        self._post_throttled_until = time.time() + backoff
+                        self._post_cooldown[addr] = time.time() + 600.0
+                        await asyncio.sleep(2**attempt + random.uniform(0, 1))
+                        continue
                     logger.warning("Perceptor POST HTTP %d for %s…", resp.status, addr[:10])
+                    self._post_cooldown[addr] = time.time() + 600.0
                     return None
-                data = await resp.json()
-            inv_id: str | None = (
-                data.get("investigation_id") or data.get("public_id") or data.get("id")
-            )
-            if not inv_id:
-                return None
-            self._load_cache()[addr] = {
-                "investigation_id": inv_id,
-                "status": "pending",
-                "report": None,
-                "checked_at": time.time(),
-                "followup_sent": False,
-                "context": {k: v for k, v in (context or {}).items() if v is not None},
-            }
-            self._save_cache()
-            return inv_id
+            return None
         except Exception as e:  # noqa: BLE001 - fail-open
             logger.warning("Perceptor POST failed for %s…: %s", addr[:10], e)
+            self._post_cooldown[addr] = time.time() + 600.0
             return None
 
     async def refresh_report(self, address: str) -> PerceptorReport | None:

@@ -440,3 +440,86 @@ async def test_sweep_revisits_completed_unsent_not_sent(tmp_path, monkeypatch, c
     assert {c["address"] for c in out["completed"]} == {"0xaaa", "0xbbb"}
     assert out["notified"] == []  # no --notify: nothing marked sent
     await p.close()
+
+
+@pytest.mark.asyncio
+async def test_ensure_investigation_403_cools_down_no_double_post(tmp_path) -> None:
+    """A throttled POST must not be retried immediately (no double-POST)."""
+    posts: list[dict | None] = []
+
+    class FakeResp:
+        status = 403
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def text(self):
+            return "rate limit exceeded"
+
+    class FakeSession:
+        closed = False
+
+        def post(self, url, json: dict | None = None, timeout=None):
+            posts.append(json)
+            return FakeResp()
+
+        async def close(self):
+            pass
+
+    p = PerceptorProvider(cache_path=str(tmp_path / "c.json"))
+
+    async def fake_session():
+        return FakeSession()
+
+    p._get_session = fake_session  # type: ignore[method-assign]
+    assert await p.ensure_investigation(4663, "0xAAA") is None
+    # immediate second call (the old scout else-branch double-POST) must not
+    # hit the network again: 1 initial + 1 backoff retry, then cooldown.
+    assert await p.ensure_investigation(4663, "0xaaa") is None
+    assert len(posts) == 2
+    await p.close()
+
+
+@pytest.mark.asyncio
+async def test_ensure_investigation_retries_403_then_succeeds(tmp_path) -> None:
+    """One retry with backoff: 403 followed by 200 returns the id."""
+    calls = {"n": 0}
+
+    class FakeResp:
+        def __init__(self, status):
+            self.status = status
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def text(self):
+            return "slow down"
+
+        async def json(self):
+            return {"investigation_id": "retry-ok"}
+
+    class FakeSession:
+        closed = False
+
+        def post(self, url, json=None, timeout=None):
+            calls["n"] += 1
+            return FakeResp(403 if calls["n"] == 1 else 200)
+
+        async def close(self):
+            pass
+
+    p = PerceptorProvider(cache_path=str(tmp_path / "c.json"))
+
+    async def fake_session():
+        return FakeSession()
+
+    p._get_session = fake_session  # type: ignore[method-assign]
+    assert await p.ensure_investigation(4663, "0xBBB") == "retry-ok"
+    assert calls["n"] == 2
+    await p.close()
