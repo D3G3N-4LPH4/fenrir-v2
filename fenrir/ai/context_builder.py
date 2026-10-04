@@ -143,7 +143,8 @@ def build_batched_exit_context(
         session_memory_block: AISessionMemory.build_context_block() output.
         triggered_exits:      Dict of token_address → mechanical trigger string
                               for positions where a rule-based exit has fired.
-                              The AI can choose to OVERRIDE_HOLD these.
+                              (Informational only — fired triggers execute
+                              without AI involvement.)
 
     Returns:
         (context_json_str, active_addresses)
@@ -235,8 +236,8 @@ def build_batched_exit_context(
                         "For each, write an exit_plan that encodes your hold conditions and "
                         "any self-imposed cooldown using the format: "
                         "'cooldown_until: <ISO timestamp UTC>'. "
-                        "If a mechanical_trigger_fired is present, you may OVERRIDE_HOLD to "
-                        "keep the position open — explain clearly why the trigger is premature. "
+                        "A mechanical_trigger_fired means the rules have already exited "
+                        "the position — it is informational only, not a decision for you. "
                         "Respect prior_ai_exit_plan unless its conditions have been invalidated."
                     ),
                 },

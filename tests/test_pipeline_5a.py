@@ -100,11 +100,12 @@ class TestAbcHook:
 
 
 class TestLoaderAndFilters:
-    def test_default_loads_sniper_only_no_filters(self, tmp_path: Path) -> None:
+    def test_default_loads_sniper_only_security_filter_on(self, tmp_path: Path) -> None:
+        # 0056: the pre-trade security filter is fail-closed and on by default.
         bot = _make_bot(tmp_path)
         assert [s.strategy_id for s in bot.strategies] == ["sniper"]
         assert bot.market_filter is None
-        assert bot.security_filter is None
+        assert bot.security_filter is not None
         assert bot._needs_market_data is False
 
     def test_enabled_strategies_from_config(self, tmp_path: Path) -> None:
@@ -337,21 +338,21 @@ class TestSmartMoneySell:
         bot = _make_bot(tmp_path)
         pos = SimpleNamespace(token_symbol="X", strategy_id="smart_money")
         bot.positions.positions = {"MintHeld": pos}  # type: ignore[dict-item]
-        bot.claude_brain.evaluate_exit = AsyncMock(return_value=("EXIT", "follow out"))  # type: ignore[method-assign]
         bot._execute_exit = AsyncMock()  # type: ignore[method-assign]
         await bot._on_smart_money_sell("MintHeld", "WalletY")
-        bot.claude_brain.evaluate_exit.assert_awaited_once()
         bot._execute_exit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_held_override_hold_keeps_position(self, tmp_path: Path) -> None:
+    async def test_held_smart_money_sell_exits_without_ai(self, tmp_path: Path) -> None:
+        # Rules gate: a smart-money sell is a rules-layer exit signal — the exit
+        # executes, the LLM gets no say.
         bot = _make_bot(tmp_path)
         pos = SimpleNamespace(token_symbol="X", strategy_id="smart_money")
         bot.positions.positions = {"MintHeld": pos}  # type: ignore[dict-item]
-        bot.claude_brain.evaluate_exit = AsyncMock(return_value=("OVERRIDE_HOLD", "momentum"))  # type: ignore[method-assign]
         bot._execute_exit = AsyncMock()  # type: ignore[method-assign]
         await bot._on_smart_money_sell("MintHeld", "WalletY")
-        bot._execute_exit.assert_not_awaited()
+        bot._execute_exit.assert_awaited_once()
+        assert "smart-money exit" in bot._execute_exit.call_args[0][2]
 
 
 # ---------------------------------------------------------------------------

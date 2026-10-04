@@ -108,9 +108,11 @@ class TestDefaults:
     def test_strategy_default(self) -> None:
         assert BotConfig().enabled_strategies == ["sniper"]
 
-    def test_filters_off_by_default(self) -> None:
+    def test_security_filter_on_by_default(self) -> None:
+        # Fail-closed safety: the pre-trade security hard-gate is on unless
+        # explicitly disabled. Market filter stays opt-in.
         cfg = BotConfig()
-        assert cfg.security_filter_enabled is False
+        assert cfg.security_filter_enabled is True
         assert cfg.market_filter_enabled is False
         # Per-strategy execution profiles are ON by default (Phase 1.2): the sniper
         # defaults to an atomic Jito bundle. TX_PROFILES_ENABLED=false reverts.
@@ -130,7 +132,7 @@ class TestDefaults:
     def test_from_mode_keeps_surface_defaults(self) -> None:
         cfg = BotConfig.from_mode(TradingMode.DEGEN)
         assert cfg.enabled_strategies == ["sniper"]
-        assert cfg.security_filter_enabled is False
+        assert cfg.security_filter_enabled is True
 
     def test_established_buy_threshold_default_and_env(
         self, monkeypatch: pytest.MonkeyPatch
@@ -272,13 +274,20 @@ class TestEnvParsing:
         ]
 
     def test_global_daily_sol_limit_default_and_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        assert BotConfig().global_daily_sol_limit == 0.0  # disabled by default
+        assert BotConfig().global_daily_sol_limit == 2.0  # small non-zero default
         monkeypatch.setenv("GLOBAL_DAILY_SOL_LIMIT", "0.5")
         assert BotConfig().global_daily_sol_limit == 0.5
 
     def test_global_daily_sol_limit_ignores_garbage(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("GLOBAL_DAILY_SOL_LIMIT", "not-a-number")
-        assert BotConfig().global_daily_sol_limit == 0.0
+        assert BotConfig().global_daily_sol_limit == 2.0
+
+    def test_refuses_live_start_with_zero_sol_cap(self) -> None:
+        cfg = BotConfig(mode=TradingMode.CONSERVATIVE, global_daily_sol_limit=0.0)
+        errors = cfg.validate()
+        assert any("master valve" in e for e in errors)
+        cfg_ok = BotConfig(mode=TradingMode.CONSERVATIVE, global_daily_sol_limit=2.0)
+        assert not any("master valve" in e for e in cfg_ok.validate())
 
     def test_market_scanner_defaults(self) -> None:
         cfg = BotConfig()

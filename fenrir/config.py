@@ -292,8 +292,10 @@ class BotConfig:
     enabled_strategies: list[str] = field(default_factory=lambda: ["sniper"])
     sniper_daily_budget_sol: float = 0.0  # 0 = auto (10 × buy_amount_sol)
     # Absolute cap on net live SOL exposure across ALL strategies — the master
-    # safety valve above per-strategy budgets. 0 = disabled. Env: GLOBAL_DAILY_SOL_LIMIT.
-    global_daily_sol_limit: float = 0.0
+    # safety valve above per-strategy budgets. Defaults to a small non-zero
+    # value; 0 disables the valve, and the bot REFUSES to start in any
+    # non-simulation mode with it at 0. Env: GLOBAL_DAILY_SOL_LIMIT.
+    global_daily_sol_limit: float = 2.0
 
     # Dynamic priority fee: when on, size the compute-unit price from recent
     # on-chain prioritization fees (percentile) for competitive inclusion,
@@ -345,7 +347,9 @@ class BotConfig:
 
     # ── Pre-trade filters (fenrir.filters) ─────────────────────────────
     # Security hard-gate: mint/freeze authority, LP burn, holder concentration.
-    security_filter_enabled: bool = False
+    # Fail-closed — on by default. A token no provider could evaluate is
+    # rejected rather than waved through.
+    security_filter_enabled: bool = True
     security_require_mint_revoked: bool = True
     security_require_freeze_revoked: bool = True
     security_min_lp_burned_pct: float = 90.0
@@ -1050,6 +1054,13 @@ class BotConfig:
 
         if self.mode != TradingMode.SIMULATION and not self.private_key:
             errors.append("Private key required for live trading (set WALLET_PRIVATE_KEY)")
+
+        # Master safety valve: refuse to start live with the cap at 0.
+        if self.mode != TradingMode.SIMULATION and self.global_daily_sol_limit <= 0:
+            errors.append(
+                "Global daily SOL cap must be positive for live trading "
+                "(GLOBAL_DAILY_SOL_LIMIT) — refusing to start with the master valve off"
+            )
 
         if self.buy_amount_sol <= 0:
             errors.append("Buy amount must be positive")

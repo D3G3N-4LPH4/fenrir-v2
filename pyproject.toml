@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fenrir"
-version = "1.0.0"
-description = "FENRIR - Pump.fun Trading Bot for Solana"
-readme = "docs/README.md"
+version = "2.0.0"
+description = "FENRIR v2 — multi-chain token discovery scout and automated trading stack (Solana + Robinhood chain)"
+readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 
 dependencies = [
     "solana>=0.30.0",
