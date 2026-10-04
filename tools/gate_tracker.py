@@ -533,7 +533,7 @@ def main() -> int:
     t.add_argument(
         "--notify",
         action="store_true",
-        help="send Telegram nudges for newly crossed +25/+50/+100% levels",
+        help="send Telegram nudges for newly crossed +25/+50/+100%% levels",
     )
 
     rep = sub.add_parser("report", help="scorecard: move since gate clearance")
