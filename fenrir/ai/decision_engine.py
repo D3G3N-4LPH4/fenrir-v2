@@ -725,9 +725,8 @@ Respond with JSON:
         fallback. Includes exit_plan in the schema so Claude can encode its own
         continuation contract (Nocturne cooldown pattern).
 
-        If a mechanical trigger has fired, Claude may choose OVERRIDE_HOLD to
-        keep the position open with an explanation. Hard stop-loss floor is
-        enforced by ClaudeBrain.evaluate_exit(), not here.
+        A mechanical trigger means the rules have already exited the position;
+        it is passed as informational context only. The model cannot cancel it.
         """
         if not self._caller:
             await self.initialize()
@@ -738,12 +737,10 @@ Respond with JSON:
         trigger_section = ""
         if mechanical_trigger:
             trigger_section = f"""
-# MECHANICAL TRIGGER FIRED
+# MECHANICAL TRIGGER FIRED (INFORMATIONAL)
 A rule-based exit trigger has activated: {mechanical_trigger}
-You may OVERRIDE this trigger and recommend HOLD if you believe the token
-has strong momentum or the trigger is premature. Set action to OVERRIDE_HOLD.
-If you override, explain clearly in exit_plan why the position should stay open
-and include a cooldown_until timestamp if appropriate.
+The position is being exited by the rules engine — this is not a decision
+for you. Do not recommend holding through it.
 """
 
         prompt = f"""You are evaluating an open memecoin position.
@@ -760,7 +757,7 @@ Current P&L: {current_pnl_pct:+.1f}%
 {memory_context}
 
 # YOUR TASK
-Recommend one of: HOLD | TAKE_PROFIT | EXIT | OVERRIDE_HOLD
+Recommend one of: HOLD | TAKE_PROFIT | EXIT
 
 exit_plan MUST encode:
   1. Your hold conditions (what would make you exit on the next cycle)
@@ -836,7 +833,7 @@ exit_plan MUST encode:
                 "exit_decisions": [
                     {
                         "token_address": "...",
-                        "action": "HOLD|EXIT|TAKE_PROFIT|OVERRIDE_HOLD",
+                        "action": "HOLD|EXIT|TAKE_PROFIT",
                         "reasoning": "...",
                         "urgency": 0.0-1.0,
                         "exit_plan": "<continuation contract, may include cooldown_until>",

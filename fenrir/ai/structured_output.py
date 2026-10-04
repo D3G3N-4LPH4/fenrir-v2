@@ -36,7 +36,9 @@ ENTRY_ANALYSIS_SCHEMA: dict = {
         "reasoning": {"type": "string"},
         "red_flags": {"type": "array", "items": {"type": "string"}},
         "green_flags": {"type": "array", "items": {"type": "string"}},
-        "suggested_buy_amount_sol": {"type": ["number", "null"]},
+        "suggested_buy_amount_sol": {
+            "type": ["number", "null"]
+        },  # clamp: never above configured buy_amount_sol
         "suggested_stop_loss_pct": {"type": ["number", "null"]},
         "suggested_take_profit_pct": {"type": ["number", "null"]},
         "social_score": {"type": ["number", "null"]},
@@ -58,7 +60,7 @@ ENTRY_ANALYSIS_SCHEMA: dict = {
 EXIT_ANALYSIS_SCHEMA: dict = {
     "type": "object",
     "properties": {
-        "action": {"type": "string", "enum": ["HOLD", "TAKE_PROFIT", "EXIT", "OVERRIDE_HOLD"]},
+        "action": {"type": "string", "enum": ["HOLD", "TAKE_PROFIT", "EXIT"]},
         "reasoning": {"type": "string"},
         "urgency": {"type": "number"},
         # Nocturne pattern: AI encodes hold conditions + optional cooldown_until timestamp.
@@ -82,7 +84,7 @@ BATCHED_EXIT_SCHEMA: dict = {
                     "token_address": {"type": "string"},
                     "action": {
                         "type": "string",
-                        "enum": ["HOLD", "TAKE_PROFIT", "EXIT", "OVERRIDE_HOLD"],
+                        "enum": ["HOLD", "TAKE_PROFIT", "EXIT"],
                     },
                     "reasoning": {"type": "string"},
                     "urgency": {"type": "number"},

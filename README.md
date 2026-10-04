@@ -38,8 +38,8 @@ python tools/scout.py --chains solana robinhood   # the discovery scout
 - Supports cloud API (Anthropic / OpenRouter) or a **local abliterated model** via vLLM / llama.cpp
 - Session memory: rolling decision history informs future decisions
 - Historical memory: cross-session pattern learning (creator fingerprinting, liquidity profiles)
-- Dynamic position sizing — AI can override the configured buy amount
-- AI exit override — brain can hold through mechanical triggers with a hard-floor safety net
+- Dynamic position sizing is rules-set — the brain can veto or shrink an entry, never size above the configured buy amount
+- Mechanical exits (stop loss, take profit, trailing stop, max hold) execute without an LLM call — the brain cannot cancel a triggered exit
 
 ### Risk Management
 
@@ -47,7 +47,8 @@ python tools/scout.py --chains solana robinhood   # the discovery scout
 - **Ouroboros detector** — identifies dump → fake recovery → second dump patterns and auto-tightens trailing stops per position
 - **Market geometry analyzer** — pre-entry scoring across four axes (creator imprint, momentum geometry, liquidity depth, defense robustness) with auto-derived TradeParams
 - Per-strategy SOL budget + max-position limits
-- **Global daily SOL cap** — master safety valve on net live exposure across all strategies
+- **Global daily SOL cap** — master safety valve on net live exposure across all strategies (defaults to 2.0 SOL/day; the bot refuses to start in any non-simulation mode with it at 0)
+- **Pre-trade security filter** — mint/freeze authority, LP burn, holder concentration; fail-closed and on by default
 - Configurable AI confidence threshold
 
 ### Discovery & Research (Scout)
@@ -213,7 +214,7 @@ LARGE_CAP_MIN_USD=1000000
 SCANNER_MIN_LIQUIDITY_USD=50000
 
 # Risk / execution
-GLOBAL_DAILY_SOL_LIMIT=0        # 0 = disabled; master cap across all strategies
+GLOBAL_DAILY_SOL_LIMIT=2.0      # master cap across all strategies; bot refuses non-sim start at 0
 DYNAMIC_PRIORITY_FEE_ENABLED=false
 
 # Web API
@@ -239,7 +240,7 @@ Key `BotConfig` fields (can also be set in `config/default.json`):
 | `ai_local_model_enabled` | false | Route AI to local model instead of cloud |
 | `market_scanner_enabled` | false | Scan Jupiter trending for mid/large-cap candidates |
 | `mid_cap_min_usd` / `large_cap_min_usd` | 200k / 1M | Market-cap tier thresholds (USD) |
-| `global_daily_sol_limit` | 0.0 | Net-exposure cap across all strategies (0 = off) |
+| `global_daily_sol_limit` | 2.0 | Net-exposure cap across all strategies (bot refuses non-sim start at 0) |
 | `dynamic_priority_fee_enabled` | false | Size priority fee from recent on-chain fees |
 
 ---

@@ -784,6 +784,41 @@ class TestClaudeBrainEvaluateEntry:
         assert brain.stats["ai_entries_bought"] == 1
 
     @pytest.mark.asyncio
+    async def test_dynamic_sizing_never_exceeds_configured_amount(
+        self, ai_enabled_config, mock_logger, sample_token_data
+    ):
+        """The LLM sits behind the rules gate: it may size down, never up."""
+        ai_enabled_config.ai_dynamic_position_sizing = True
+        ai_enabled_config.buy_amount_sol = 0.1
+        brain = ClaudeBrain(ai_enabled_config, mock_logger)
+        brain.analyst = MagicMock(spec=AITradingAnalyst)
+        brain.enabled = True
+
+        # Model suggests 10x the configured size — must be clamped.
+        mock_analysis = TokenAnalysis(
+            decision=AIDecision.BUY,
+            confidence=0.99,
+            reasoning="Moon",
+            risk_score=1.0,
+            red_flags=[],
+            green_flags=["Everything"],
+            suggested_buy_amount_sol=1.0,
+        )
+        brain.analyst.analyze_token_launch_with_context = AsyncMock(return_value=mock_analysis)
+
+        should_buy, _, amount = await brain.evaluate_entry(sample_token_data, {})
+
+        assert should_buy is True
+        assert amount == pytest.approx(0.1)
+
+        # Sizing down (veto direction) is allowed.
+        mock_analysis.suggested_buy_amount_sol = 0.03
+        should_buy, _, amount = await brain.evaluate_entry(sample_token_data, {})
+
+        assert should_buy is True
+        assert amount == pytest.approx(0.03)
+
+    @pytest.mark.asyncio
     async def test_ai_skip_decision(self, ai_enabled_config, mock_logger, sample_token_data):
         """AI returning SKIP should result in should_buy=False."""
         brain = ClaudeBrain(ai_enabled_config, mock_logger)
@@ -877,39 +912,32 @@ class TestClaudeBrainEvaluateExit:
         brain.analyst.evaluate_exit_strategy_with_context.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_cadence_check_does_not_skip_when_trigger_fires(
+    async def test_trigger_fires_exit_without_llm(
         self, ai_enabled_config, mock_logger, mock_position
     ):
-        """When a mechanical trigger fires, cadence check should be bypassed."""
+        """A mechanical trigger exits immediately — the LLM gets no override chance."""
         brain = ClaudeBrain(ai_enabled_config, mock_logger)
         brain.analyst = MagicMock(spec=AITradingAnalyst)
         brain.enabled = True
 
-        # Set last eval to "just now"
+        # Set last eval to "just now" — irrelevant, triggers bypass everything
         brain._last_exit_eval["TOKEN1"] = datetime.now()
-
-        # AI says EXIT
-        brain.analyst.evaluate_exit_strategy_with_context = AsyncMock(
-            return_value={"action": "EXIT", "reasoning": "Momentum lost", "urgency": 0.8}
-        )
 
         action, reason = await brain.evaluate_exit(
             "TOKEN1", mock_position, mechanical_trigger="Stop Loss: -25%"
         )
 
         assert action == "EXIT"
-        # The analyst SHOULD have been called despite recent eval
-        brain.analyst.evaluate_exit_strategy_with_context.assert_awaited_once()
+        assert reason == "Stop Loss: -25%"
+        # The analyst must NOT have been called: no latency between stop and exit
+        brain.analyst.evaluate_exit_strategy_with_context.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_ai_override_hold_on_trigger(self, ai_enabled_config, mock_logger, mock_position):
-        """AI returning HOLD when a trigger fired should produce OVERRIDE_HOLD."""
+    async def test_no_override_hold_on_trigger(self, ai_enabled_config, mock_logger, mock_position):
+        """The model can no longer cancel a mechanical trigger — EXIT always wins."""
         brain = ClaudeBrain(ai_enabled_config, mock_logger)
         brain.analyst = MagicMock(spec=AITradingAnalyst)
         brain.enabled = True
-
-        # PnL is positive and above hard floor, so override is allowed
-        mock_position.get_pnl_percent.return_value = 50.0
 
         brain.analyst.evaluate_exit_strategy_with_context = AsyncMock(
             return_value={"action": "HOLD", "reasoning": "Momentum is strong", "urgency": 0.3}
@@ -919,10 +947,9 @@ class TestClaudeBrainEvaluateExit:
             "TOKEN1", mock_position, mechanical_trigger="Trailing Stop"
         )
 
-        assert action == "OVERRIDE_HOLD"
-        assert reason is not None
-        assert "AI override" in reason
-        assert brain.stats["ai_exits_overridden"] == 1
+        assert action == "EXIT"
+        assert reason == "Trailing Stop"
+        brain.analyst.evaluate_exit_strategy_with_context.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_exit_timeout_with_trigger_exits(
@@ -1114,22 +1141,21 @@ class TestClaudeBrainRecordTradeOutcome:
 
 
 class TestClaudeBrainHardFloor:
-    """Tests for ClaudeBrain safety floor in evaluate_exit."""
+    """Tests for the rules gate in evaluate_exit: triggers always exit."""
 
     @pytest.mark.asyncio
     async def test_hard_floor_forces_exit_despite_ai_hold(
         self, ai_enabled_config, mock_logger, mock_position
     ):
         """
-        When PnL is below the hard floor (stop_loss * 1.5) and AI says HOLD,
-        the brain should force EXIT.
+        When PnL is below the old hard floor (stop_loss * 1.5) and AI says HOLD,
+        the brain still forces EXIT — now via the rules gate, no LLM call.
         """
         brain = ClaudeBrain(ai_enabled_config, mock_logger)
         brain.analyst = MagicMock(spec=AITradingAnalyst)
         brain.enabled = True
 
-        # Hard floor = 25.0 * 1.5 = 37.5% loss
-        # Position is down 40%, which is below the floor
+        # Position is down 40%
         mock_position.get_pnl_percent.return_value = -40.0
 
         brain.analyst.evaluate_exit_strategy_with_context = AsyncMock(
@@ -1141,8 +1167,8 @@ class TestClaudeBrainHardFloor:
         )
 
         assert action == "EXIT"
-        assert reason is not None
-        assert "hard floor" in reason.lower()
+        assert reason == "Stop Loss: -40%"
+        brain.analyst.evaluate_exit_strategy_with_context.assert_not_called()
 
 
 class TestEnsembleContextTier:

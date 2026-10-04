@@ -44,7 +44,6 @@ from fenrir.events.adapters.telegram import TelegramAdapter
 from fenrir.events.bus import EventBus
 from fenrir.events.types import (
     ai_decision_event,
-    ai_override_event,
     bot_lifecycle_event,
     budget_exhausted_event,
     buy_executed_event,
@@ -1254,28 +1253,17 @@ class FenrirBot:
             )
 
     async def _on_smart_money_sell(self, mint: str, wallet: str) -> None:
-        """A tracked wallet SOLD a token — if we hold it, route to the AI exit evaluator.
+        """A tracked wallet SOLD a token — if we hold it, exit.
 
-        We don't blindly dump: the sell is fed to the AI as a strong exit trigger,
-        and the AI can still OVERRIDE_HOLD (e.g. strong momentum, other holders in).
+        The wallet-sell is a rules-layer exit signal: the exit executes.
+        The LLM sits behind the rules gate — it may tag and initiate exits,
+        never cancel one.
         """
         position = self.positions.positions.get(mint)
         if not position:
             return  # we don't hold it — nothing to do
-        self.logger.warning(
-            f"Smart money {wallet[:6]}… SOLD {mint[:8]}… which we hold → AI exit check"
-        )
-        trigger = (
-            f"A tracked smart-money wallet ({wallet[:6]}…) just SOLD/reduced this token — "
-            f"a strong exit signal; decide whether to follow it out."
-        )
-        action, ai_reason = await self.claude_brain.evaluate_exit(
-            mint, position, mechanical_trigger=trigger
-        )
-        if action == "OVERRIDE_HOLD":
-            self.logger.info(f"AI holds {mint[:8]}… despite smart-money exit: {ai_reason}")
-            return
-        await self._execute_exit(mint, position, ai_reason or f"smart-money exit ({wallet[:6]}…)")
+        self.logger.warning(f"Smart money {wallet[:6]}… SOLD {mint[:8]}… which we hold → exiting")
+        await self._execute_exit(mint, position, f"smart-money exit ({wallet[:6]}…)")
 
     async def _position_management_loop(self):
         """
@@ -1341,7 +1329,10 @@ class FenrirBot:
                                 )
                             )
 
-                # Phase 2: Mechanical exit conditions
+                # Phase 2: Mechanical exit conditions — the rules gate. A fired
+                # trigger executes immediately; the LLM gets no override
+                # chance (it sits behind the gate: veto entries, initiate
+                # exits, never cancel a stop).
                 mechanical_exits = self.positions.check_exit_conditions()
                 triggered_tokens = set()
 
@@ -1351,23 +1342,7 @@ class FenrirBot:
                     if not position:
                         continue
 
-                    action, ai_reason = await self.claude_brain.evaluate_exit(
-                        token_address, position, mechanical_trigger=reason
-                    )
-
-                    if action == "OVERRIDE_HOLD":
-                        await self.event_bus.emit(
-                            ai_override_event(
-                                token_address=token_address,
-                                symbol=position.token_symbol,
-                                mechanical_trigger=reason,
-                                reasoning=ai_reason or "",
-                                strategy_id=position.strategy_id,
-                            )
-                        )
-                        continue
-
-                    await self._execute_exit(token_address, position, ai_reason or reason)
+                    await self._execute_exit(token_address, position, reason)
 
                 # Phase 3: Proactive AI exits
                 for token_address in list(self.positions.positions.keys()):

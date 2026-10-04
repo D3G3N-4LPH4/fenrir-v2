@@ -6,8 +6,9 @@ The autonomous Claude Brain that sits between token detection and trade executio
 Claude evaluates every token with full context — recent decisions, portfolio state,
 session performance — and outputs BUY/SKIP decisions with reasoning.
 
-Also evaluates exit timing, with the ability to override mechanical triggers
-when it detects momentum or risk patterns the rules can't capture.
+Also evaluates exit timing proactively. It sits behind the rules gate:
+it may veto entries and initiate exits, but it can never raise position
+size above the configured amount nor cancel a mechanical exit trigger.
 
 Usage:
     brain = ClaudeBrain(config, logger)
@@ -63,7 +64,7 @@ class ClaudeBrain:
     - Session memory (conversation context across decisions)
     - Timeout fallback (graceful degradation to rule-based)
     - Performance comparison tracking (AI vs rules)
-    - Dynamic exit evaluation with override capability
+    - Proactive exit evaluation (initiate exits; never override mechanical triggers)
     """
 
     def __init__(self, config, logger, breaker=None, db_path: str = "fenrir_trades.db", audit=None):
@@ -94,7 +95,6 @@ class ClaudeBrain:
             "ai_errors": 0,
             "rule_fallbacks": 0,
             "ai_exits_evaluated": 0,
-            "ai_exits_overridden": 0,
             "ai_avg_response_ms": 0.0,
         }
         # Bounded rolling window of response times (O(1) appends) for averaging.
@@ -386,7 +386,12 @@ class ClaudeBrain:
             if should_buy:
                 self.stats["ai_entries_bought"] += 1
                 if dynamic_sizing and analysis.suggested_buy_amount_sol and buy_amount is None:
-                    buy_amount = analysis.suggested_buy_amount_sol
+                    # The LLM sits behind the rules gate: it may size DOWN
+                    # (veto direction) but never above the configured buy
+                    # amount. An uncalibrated confidence score is not a
+                    # license to size up.
+                    suggested = max(analysis.suggested_buy_amount_sol, 0.0)
+                    buy_amount = min(suggested, self.config.buy_amount_sol)
                 return (True, analysis, buy_amount)
             else:
                 self.stats["ai_entries_skipped"] += 1
@@ -432,15 +437,23 @@ class ClaudeBrain:
             (action, reason) where action is one of:
             - "HOLD" — keep the position open
             - "EXIT" — close the position
-            - "OVERRIDE_HOLD" — AI overrides a mechanical trigger to keep holding
+
+            The LLM sits behind the rules gate: when a mechanical trigger is
+            set (stop loss, take profit, trailing stop, max hold, wallet-sell
+            signal), the exit executes — the model may tag it with reasoning
+            but can never cancel it. There is no override path.
 
         Cadence:
-            - When mechanical_trigger is set: always evaluates (gives AI override chance)
+            - When mechanical_trigger is set: exit executes immediately (no LLM call)
             - When no trigger: only evaluates if ai_exit_eval_interval_seconds has passed
         """
+        # Rules gate: a fired mechanical trigger is never debated. The LLM
+        # does not get an override chance — its latency and uncalibrated
+        # confidence have no place between a stop and its execution.
+        if mechanical_trigger:
+            return ("EXIT", mechanical_trigger)
+
         if not self.enabled or not self.analyst:
-            if mechanical_trigger:
-                return ("EXIT", mechanical_trigger)
             return ("HOLD", None)
 
         # Cadence check: skip if evaluated too recently (unless trigger fired)
@@ -491,26 +504,8 @@ class ClaudeBrain:
                 action = "EXIT"
                 reasoning = f"Take profit: {reasoning}"
 
-            # Safety floor: never override stop-loss if drawdown is extreme
-            stop_loss_pct = self.config.stop_loss_pct
-            hard_floor = stop_loss_pct * 1.5
-            if mechanical_trigger and action == "HOLD" and pnl_pct <= -hard_floor:
-                self.logger.warning(
-                    f"🧠 AI wanted to OVERRIDE but hard floor hit "
-                    f"(pnl={pnl_pct:.1f}% <= -{hard_floor:.0f}%). Forcing EXIT."
-                )
-                return ("EXIT", f"{mechanical_trigger} (hard floor override)")
-
             # Log the decision
             addr_short = token_address[:8] + "..."
-            if mechanical_trigger and action == "HOLD":
-                self.stats["ai_exits_overridden"] += 1
-                self.logger.info(
-                    f"🧠 AI EXIT OVERRIDE: Holding {addr_short} "
-                    f"despite '{mechanical_trigger}' — {reasoning[:80]}"
-                )
-                return ("OVERRIDE_HOLD", f"AI override: {reasoning}")
-
             if action == "EXIT":
                 self.logger.info(f"🧠 AI EXIT: {addr_short} — {reasoning[:80]}")
                 return ("EXIT", reasoning)
@@ -521,14 +516,10 @@ class ClaudeBrain:
             self.logger.warning(
                 f"🧠 AI exit eval TIMEOUT ({exit_timeout}s) for {token_address[:8]}..."
             )
-            if mechanical_trigger:
-                return ("EXIT", mechanical_trigger)
             return ("HOLD", None)
 
         except Exception as e:
             self.logger.error("AI Brain exit evaluation", e)
-            if mechanical_trigger:
-                return ("EXIT", mechanical_trigger)
             return ("HOLD", None)
 
     # ──────────────────────────────────────────────────────────────
