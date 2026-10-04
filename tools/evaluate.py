@@ -70,25 +70,27 @@ BUNDLE_CHECK_TIMEOUT_SECONDS = 60.0
 SOLANA_FORENSICS_TIMEOUT_SECONDS = 25.0
 
 
-async def _solana_forensics_notes(snap) -> list[str]:
+async def _solana_forensics_notes(snap) -> tuple[list[str], SolanaForensicsReport | None]:
     """Direct-RPC holder distribution for a Solana snapshot.
 
     Jupiter's holder enrichment misses many young tokens (the 2026-10-01
     volatility_breakout blowups all cleared with "Top-10 holders %
     unavailable"). This fills snap.top_holder_pct / snap.top10_holder_pct
     from chain data so the concentration caps can bite. Cached 24h per
-    token; inconclusive results back off 1h. Mutates snap holders.
+    token; inconclusive results back off 1h. Does not mutate snap holders
+    itself — the caller applies the report AFTER the concurrent provider
+    legs finish, so a slow provider write can't clobber the on-chain read.
     """
     notes: list[str] = []
     if snap.chain is not Chain.SOLANA:
-        return notes
+        return notes, None
     try:
         report: SolanaForensicsReport | None
         cached = get_cached_forensics(snap.token_address)
         if cached is not None:
             if cached.get("_inconclusive"):
                 notes.append("holder forensics: recently inconclusive — skipping re-check")
-                return notes
+                return notes, None
             report = SolanaForensicsReport.from_dict(cached)
             notes.append(f"holder forensics: cached — {report.detail}")
         else:
@@ -110,15 +112,37 @@ async def _solana_forensics_notes(snap) -> list[str]:
                     ttl_seconds=SOLANA_FORENSICS_INCONCLUSIVE_TTL_S,
                 )
                 notes.append("holder forensics inconclusive — distribution unknown")
-        if report is not None:
-            # Fill what Jupiter missed; never override provider data we have.
-            if snap.top_holder_pct is None:
-                snap.top_holder_pct = report.top_holder_pct
-            if snap.top10_holder_pct is None:
-                snap.top10_holder_pct = report.top10_holder_pct
     except Exception:  # noqa: BLE001 - fail-open
         notes.append("holder forensics failed — distribution unknown")
-    return notes
+        report = None
+    return notes, report
+
+
+def _apply_forensics_override(snap, report: SolanaForensicsReport | None, notes: list[str]) -> None:
+    """Prefer the on-chain forensics read over provider holder figures.
+
+    The forensics read aggregates by owner wallet and excludes
+    vault/infrastructure accounts (pump curve PDA, PumpSwap vaults) that
+    providers count as "top holders". darwin case 2026-10-04: provider said
+    top holder 23.0% (every concentration cap failed); on-chain was 2.5%.
+    Must run after all concurrent enrichment legs so no provider write can
+    land after the override.
+    """
+    if report is None:
+        return
+    if report.top_holder_pct is not None:
+        if (
+            snap.top_holder_pct is not None
+            and abs(snap.top_holder_pct - report.top_holder_pct) > 1.0
+        ):
+            notes.append(
+                "top holder provider "
+                f"{snap.top_holder_pct:.1f}% → on-chain "
+                f"{report.top_holder_pct:.1f}% (vaults excluded)"
+            )
+        snap.top_holder_pct = report.top_holder_pct
+    if report.top10_holder_pct is not None:
+        snap.top10_holder_pct = report.top10_holder_pct
 
 
 async def _v4_lock_notes(snap) -> list[str]:
@@ -291,8 +315,12 @@ async def enrich_safety(snap, goplus: GoPlusProvider | None) -> list[str]:
         forensics_task = asyncio.create_task(_solana_forensics_notes(snap))
         notes.extend(await rug_task)
         notes.extend(await jup_task)
-        notes.extend(await forensics_task)
+        forensics_notes, forensics_report = await forensics_task
+        notes.extend(forensics_notes)
         vault_check = await vault_task
+        # Apply the on-chain holder read last: provider legs run concurrently
+        # and must not clobber it (darwin 2026-10-04 race).
+        _apply_forensics_override(snap, forensics_report, notes)
         if snap.safety.lp_locked_or_burned is False and vault_check is not None:
             if vault_check.burned:
                 snap.safety.lp_locked_or_burned = True
