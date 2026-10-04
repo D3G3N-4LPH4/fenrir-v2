@@ -205,101 +205,12 @@ def format_scout_alert(cand: dict) -> str:
         lines.append("")
         lines.append("\u26a0\ufe0f safety not verifiable on this chain")
 
-    perc = cand.get("perceptor") or {}
-    if perc.get("status") == "complete" and perc.get("band_label"):
+    safety = cand.get("safety") or {}
+    if safety.get("status") == "complete" and safety.get("band_label"):
         lines.append("")
-        pline = f"\U0001f50d Perceptor: *{escape_md(str(perc['band_label']))}*"
-        if perc.get("headline"):
-            pline += f" \u2014 {escape_md(str(perc['headline']))}"
+        pline = f"\U0001f50d Safety: *{escape_md(str(safety['band_label']))}*"
+        if safety.get("headline"):
+            pline += f" \u2014 {escape_md(str(safety['headline']))}"
         lines.append(pline)
-    elif perc.get("investigation_id"):
-        lines.append("")
-        lines.append("\U0001f50d Perceptor on-chain scan running\u2026")
 
-    return "\n".join(lines).strip() + "\n"
-
-
-_BAND_EMOJI = {"low": "\U0001f7e2", "medium": "\U0001f7e1", "high": "\U0001f534"}
-
-
-def format_perceptor_verdict(address: str, context: dict | None, report) -> str:
-    """Render a landed Perceptor verdict as a Telegram Markdown follow-up.
-
-    ``context`` is the token dict stored with the investigation
-    (symbol/name/chain/dexscreener); ``report`` is a PerceptorReport.
-    """
-    ctx = context or {}
-    symbol = escape_md(ctx.get("symbol") or "?")
-    name = escape_md(ctx.get("name") or "")
-    chain = str(ctx.get("chain") or "robinhood").title()
-    dexscreener = ctx.get("dexscreener") or (f"https://dexscreener.com/robinhood/{address}")
-    band = str(report.band or "").lower()
-    emoji = _BAND_EMOJI.get(band, "\U0001f52c")  # microscope fallback
-    band_label = escape_md(report.band_label or report.band or "unknown")
-
-    lines = []
-    header = f"{emoji} *{symbol}*"
-    if name and name.lower() != symbol.lower().replace("\\", ""):
-        header += f" \u2014 {name}"
-    lines.append(header)
-    lines.append(f"Perceptor verdict \u00b7 {escape_md(chain)}")
-    lines.append("")
-
-    verdict_line = f"*{band_label}*"
-    if report.headline:
-        verdict_line += f" \u2014 {escape_md(report.headline)}"
-    lines.append(verdict_line)
-    lines.append("")
-
-    s = report.safety
-    facts = []
-    if s.lp_locked_or_burned:
-        facts.append(
-            "\U0001f512 LP locked"
-            + (f" ({s.lp_locked_pct:.0f}%)" if s.lp_locked_pct is not None else "")
-        )
-    elif s.lp_locked_pct is not None:
-        facts.append(f"\U0001f512 LP locked {s.lp_locked_pct:.0f}%")
-    if s.buy_tax_pct is not None or s.sell_tax_pct is not None:
-        facts.append(f"tax {s.buy_tax_pct or 0:.0f}%/{s.sell_tax_pct or 0:.0f}% buy/sell")
-    if s.honeypot is False:
-        facts.append("\u2705 selling works \u2014 not a honeypot")
-    elif s.honeypot is True:
-        facts.append("\U0001f6d1 honeypot \u2014 selling fails")
-    if s.mint_disabled is True:
-        facts.append("mint disabled")
-    elif s.mint_disabled is False:
-        facts.append("\u26a0\ufe0f mint live")
-    if s.blacklist_present:
-        facts.append("\u26a0\ufe0f blacklist enabled")
-    if s.ownership_renounced is True:
-        facts.append("ownership renounced")
-    if facts:
-        lines.append(" \u00b7 ".join(facts))
-        lines.append("")
-
-    if s.risk_flags:
-        seen = {str(report.headline or "").strip().lower()}
-        flags: list[str] = []
-        for f in s.risk_flags:
-            key = str(f).strip().lower()
-            if key not in seen:
-                seen.add(key)
-                flags.append(f)
-            if len(flags) == 4:
-                break
-        if flags:
-            lines.append("\u26a0\ufe0f " + escape_md("; ".join(flags)))
-            lines.append("")
-
-    lines.append("\U0001f4cb Contract \u2014 tap to copy:")
-    lines.append(f"`{address}`")
-    lines.append("")
-    links = f"\U0001f517 [DexScreener]({dexscreener})"
-    if report.investigation_id:
-        links += (
-            " \u00b7 [Perceptor report]"
-            f"(https://www.perceptor.info/?investigation={report.investigation_id})"
-        )
-    lines.append(links)
     return "\n".join(lines).strip() + "\n"

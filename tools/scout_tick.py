@@ -2,7 +2,7 @@
 """FENRIR scout pipeline — one 10-minute tick for machine-side runs.
 
 Replicates the sandbox cron: scout -> dedup (seen.json, 24h, lowercase) ->
-Telegram alerts -> gate-tracker record -> perceptor sweep --notify.
+Telegram alerts -> gate-tracker record.
 
 Usage:
     python tools/scout_tick.py [--state-dir ~/.fenrir-scout] [--min-score 60]
@@ -144,19 +144,6 @@ def main() -> int:
         )
         if r3.returncode != 0:
             print(f"scout_tick: gate_tracker record failed: {r3.stderr[-300:]}", file=sys.stderr)
-
-    # 5. perceptor sweep with notify (GET-based; unaffected by the investigations auth wall)
-    r4 = run([py, "tools/perceptor.py", "sweep", "--notify"], cwd=REPO_ROOT)
-    try:
-        sweep = json.loads(r4.stdout.strip().splitlines()[-1])
-        print(
-            f"scout_tick: perceptor checked={sweep.get('checked')} "
-            f"completed={len(sweep.get('completed', []))} "
-            f"notified={len(sweep.get('notified', []))}",
-            file=sys.stderr,
-        )
-    except Exception:  # noqa: BLE001
-        print("scout_tick: perceptor sweep output unparseable", file=sys.stderr)
 
     print(f"scout_tick: done. alerts={len(alertable)} late_suppressed={n_late}")
     return 0

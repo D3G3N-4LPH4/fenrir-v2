@@ -41,7 +41,7 @@ from fenrir.discovery.playbooks import PlaybookTagger  # noqa: E402
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider  # noqa: E402
 from fenrir.discovery.providers.geckoterminal import GeckoTerminalProvider  # noqa: E402
 from fenrir.discovery.providers.goplus import GoPlusProvider  # noqa: E402
-from fenrir.discovery.providers.perceptor import PerceptorProvider  # noqa: E402
+from fenrir.discovery.providers.robinhood_safety import RobinhoodSafetyProvider  # noqa: E402
 from fenrir.discovery.scoring import ScoringEngine  # noqa: E402
 from fenrir.discovery.seen import load as load_seen  # noqa: E402
 from fenrir.discovery.seen import record_alert, save as save_seen  # noqa: E402
@@ -123,7 +123,7 @@ async def amain() -> int:
     ds = DexScreenerProvider(timeout_seconds=15)
     gt = GeckoTerminalProvider(timeout_seconds=15)
     gp = GoPlusProvider(timeout_seconds=10)
-    perceptor = PerceptorProvider()
+    local_safety = RobinhoodSafetyProvider()
     engine = FilterEngine()
     scorer = ScoringEngine()
     tagger = PlaybookTagger()
@@ -143,8 +143,8 @@ async def amain() -> int:
                     scorer,
                     tagger,
                     args.min_score,
-                    perceptor,
                     accel,
+                    local_safety=local_safety,
                 )
             except Exception:
                 cand = None
@@ -176,7 +176,6 @@ async def amain() -> int:
         await ds.close()
         await gt.close()
         await gp.close()
-        await perceptor.close()
         accel.save()
 
     save_seen(args.seen, seen)
