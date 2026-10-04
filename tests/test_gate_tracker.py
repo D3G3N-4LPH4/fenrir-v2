@@ -237,3 +237,89 @@ def test_render_by_regime_groups():
     out = gt.render_by_regime(state, now=2.0)
     assert "chop" in out and "trend_up" in out
     assert "degen_launch" in out
+
+
+def test_tick_emits_nudges_once(monkeypatch):
+    state: dict = {}
+    gt.record_candidates([_cand()], state, ts=1000.0)
+    monkeypatch.setattr(gt, "fetch_price", lambda addr, timeout=20: (0.0013, 13_000.0))
+    res = gt.tick_state(state, ts=2000.0)
+    assert len(res["nudges"]) == 1
+    n = res["nudges"][0]
+    assert n["level"] == "tp_25" and n["symbol"] == "FOO"
+    assert state["0xabc"]["exit_crossings"]["tp_25"] == 2000.0
+    # Second tick at a higher price: tp_25 must NOT re-fire; tp_50 is new.
+    monkeypatch.setattr(gt, "fetch_price", lambda addr, timeout=20: (0.0016, 16_000.0))
+    res2 = gt.tick_state(state, ts=3000.0)
+    assert [x["level"] for x in res2["nudges"]] == ["tp_50"]
+
+
+def test_tick_nudges_skip_late_tier(monkeypatch):
+    state: dict = {}
+    gt.record_candidates([_cand(addr="0xlate", entry_tier="late")], state, ts=1000.0)
+    monkeypatch.setattr(gt, "fetch_price", lambda addr, timeout=20: (0.0016, 16_000.0))
+    res = gt.tick_state(state, ts=2000.0)
+    assert res["nudges"] == []
+    # ...but the crossing is still measured for the tracker.
+    assert state["0xlate"]["exit_crossings"]["tp_50"] == 2000.0
+
+
+def test_format_nudge():
+    text = gt.format_nudge(
+        {
+            "symbol": "BYTE",
+            "level": "tp_25",
+            "level_pct": 25.0,
+            "chg_pct": 31.2,
+            "dexscreener": "https://dexscreener.com/solana/0xabc",
+        }
+    )
+    assert "BYTE" in text and "+25%" in text and "stop" in text
+    assert "https://dexscreener.com/solana/0xabc" in text
+
+
+def test_send_nudges(monkeypatch):
+    sent = []
+
+    class FakeTG:
+        @staticmethod
+        def load_env(path):
+            return {
+                "TELEGRAM_BOT_TOKEN": "tok",
+                "TELEGRAM_CHAT_IDS": "-1001,-1002",
+            }
+
+        @staticmethod
+        def send_message(token, chat_id, text, parse_mode="", reply_to_message_id=None):
+            sent.append((chat_id, text))
+            return {"ok": True}
+
+    monkeypatch.setitem(sys.modules, "telegram_notify", FakeTG)
+    nudges = [
+        {
+            "address": "0xabc",
+            "symbol": "FOO",
+            "level": "tp_50",
+            "level_pct": 50.0,
+            "chg_pct": 55.0,
+            "dexscreener": None,
+        }
+    ]
+    assert gt.send_nudges(nudges) == {"sent": 1, "failed": 0}
+    assert len(sent) == 2  # fanned out to both chats
+    assert "take half" in sent[0][1]
+
+
+def test_send_nudges_fail_open(monkeypatch):
+    class FakeTG:
+        @staticmethod
+        def load_env(path):
+            return {}
+
+        @staticmethod
+        def send_message(*a, **k):
+            raise AssertionError("must not be called without a token")
+
+    monkeypatch.setitem(sys.modules, "telegram_notify", FakeTG)
+    assert gt.send_nudges([{"symbol": "FOO"}]) == {"sent": 0, "failed": 0}
+    assert gt.send_nudges([]) == {"sent": 0, "failed": 0}

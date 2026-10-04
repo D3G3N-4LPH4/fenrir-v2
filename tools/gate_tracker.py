@@ -16,12 +16,15 @@ Commands:
       candidate schema, or a plain list of candidate dicts). Candidates
       already tracked are left alone (first clearance wins). Missing
       prices are fetched once from DexScreener.
-  tick [--state <path>]
+  tick [--state <path>] [--notify]
       Re-price every tracked token via DexScreener (highest-liquidity
       pair), append a tick, and print JSON: per-token status plus
       "movers" — tokens newly crossing +100% (pump_100) or -50%
-      (dump_50) since clearance. One-time keys, so each crossing
-      surfaces exactly once.
+      (dump_50) since clearance — and "nudges": newly crossed +25/+50/+100%
+      take-profit levels eligible for a Telegram follow-up. One-time keys,
+      so each crossing surfaces exactly once. With --notify, the nudges are
+      sent straight to Telegram (late-tier candidates, never alerted in the
+      first place, are excluded).
   report [--state <path>] [--days N] [--min-ticks N] [--by-regime]
       Scorecard table sorted by % change since clearance: symbol, chain,
       clearance date, price then -> now, % change, peak %, trough %, days
@@ -52,12 +55,17 @@ if _REPO_ROOT not in sys.path:
 
 try:
     from fenrir.discovery.regime import REGIMES, current_regime as _current_regime
-except Exception:  # noqa: BLE001 - regime is fail-open tagging; never break the tracker
+    from fenrir.discovery.entry_tier import tier_alerts as _tier_alerts
+except Exception:  # noqa: BLE001 - regime/tier are fail-open tagging; never break the tracker
 
     def _current_regime() -> str:
         return "unknown"
 
     REGIMES = ("trend_up", "chop", "trend_down", "unknown")
+
+    def _tier_alerts(tier: str) -> bool:
+        return tier != "late"
+
 
 DEFAULT_STATE = os.path.expanduser(
     "~/workspace/goals/token-scout-watch/hidden_files/gate_tracker/tracked.json"
@@ -71,6 +79,15 @@ DUMP_THRESHOLD_PCT = -50.0  # newly crossed -> "movers" (one-time)
 # token records the first tick it crossed +25/+50/+100% so reviews measure
 # what was actually exitable — capturable PnL, not hold-to-now.
 EXIT_LEVELS_PCT = (("tp_25", 25.0), ("tp_50", 50.0), ("tp_100", 100.0))
+
+# Exit follow-up nudges (2026-10-03): when a tracked alert crosses a TP
+# level, Telegram gets an actionable nudge. Late-tier candidates were never
+# alerted, so they never get nudges either (tier_alerts gate).
+NUDGE_COPY = {
+    "tp_25": ("🛡️", "move stop to entry — ride free from here"),
+    "tp_50": ("⚔️", "take half, let the rest ride"),
+    "tp_100": ("🐺", "take the rest or trail tight — don't give it back"),
+}
 
 
 # --------------------------------------------------------------------------
@@ -202,6 +219,7 @@ def pct_change(now: float | None, then: float | None) -> float | None:
 def tick_state(state: dict, ts: float) -> dict:
     """Re-price every tracked token; append ticks; detect new big movers."""
     movers = []
+    nudges = []
     for addr, rec in state.items():
         price, mcap = fetch_price(addr)
         tick: dict[str, Any] = {"ts": ts, "price": price, "mcap": mcap}
@@ -217,6 +235,17 @@ def tick_state(state: dict, ts: float) -> dict:
             for key, level in EXIT_LEVELS_PCT:
                 if chg >= level and key not in exits:
                     exits[key] = ts
+                    if _tier_alerts(rec.get("entry_tier") or "standard"):
+                        nudges.append(
+                            {
+                                "address": addr,
+                                "symbol": rec.get("symbol") or "?",
+                                "level": key,
+                                "level_pct": level,
+                                "chg_pct": round(chg, 1),
+                                "dexscreener": rec.get("dexscreener"),
+                            }
+                        )
             if chg >= PUMP_THRESHOLD_PCT and "pump_100" not in alerted:
                 alerted.append("pump_100")
                 movers.append(
@@ -237,7 +266,53 @@ def tick_state(state: dict, ts: float) -> dict:
                         "chg_pct": round(chg, 1),
                     }
                 )
-    return {"ticked": len(state), "movers": movers, "ts": ts}
+    return {"ticked": len(state), "movers": movers, "nudges": nudges, "ts": ts}
+
+
+def format_nudge(n: dict) -> str:
+    """One actionable Telegram line for a TP crossing. Bot-facing copy."""
+    emoji, guidance = NUDGE_COPY[n["level"]]
+    sym = n.get("symbol") or "?"
+    text = (
+        f"{emoji} {sym} +{n['level_pct']:.0f}% from the alert "
+        f"(now {n['chg_pct']:+.1f}%) — {guidance}."
+    )
+    if n.get("dexscreener"):
+        text += f"\n{n['dexscreener']}"
+    return text
+
+
+def send_nudges(nudges: list[dict]) -> dict:
+    """Send TP nudge messages to every Telegram chat. Fail-open; returns counts.
+
+    telegram_notify fans out to TELEGRAM_CHAT_IDS itself. Late-tier
+    candidates never reach here (tick_state gates on tier_alerts).
+    """
+    result = {"sent": 0, "failed": 0}
+    if not nudges:
+        return result
+    try:
+        import telegram_notify
+
+        env = telegram_notify.load_env(".env")
+        token = env.get("TELEGRAM_BOT_TOKEN", "")
+        raw_ids = env.get("TELEGRAM_CHAT_IDS", "") or env.get("TELEGRAM_CHAT_ID", "")
+        chat_ids = [c.strip() for c in raw_ids.split(",") if c.strip()]
+    except Exception:  # noqa: BLE001 - fail-open; the tick must survive
+        return result
+    if not token or not chat_ids:
+        return result
+    for n in nudges:
+        text = format_nudge(n)
+        ok = True
+        for cid in chat_ids:
+            try:
+                resp = telegram_notify.send_message(token, cid, text)
+                ok = ok and bool(resp.get("ok"))
+            except Exception:  # noqa: BLE001 - per-chat fail-open
+                ok = False
+        result["sent" if ok else "failed"] += 1
+    return result
 
 
 def _last_price(rec: dict) -> tuple[float | None, float | None]:
@@ -409,6 +484,8 @@ def cmd_record(args) -> int:
 def cmd_tick(args) -> int:
     state = load_state(args.state)
     result = tick_state(state, time.time())
+    if args.notify:
+        result["notify"] = send_nudges(result.get("nudges") or [])
     save_state(args.state, state)
     print(json.dumps(result))
     return 0
@@ -453,6 +530,11 @@ def main() -> int:
     r.add_argument("--ts", type=float, default=None)
 
     t = sub.add_parser("tick", help="re-price all tracked tokens")
+    t.add_argument(
+        "--notify",
+        action="store_true",
+        help="send Telegram nudges for newly crossed +25/+50/+100% levels",
+    )
 
     rep = sub.add_parser("report", help="scorecard: move since gate clearance")
     rep.add_argument(
