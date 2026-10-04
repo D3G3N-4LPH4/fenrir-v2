@@ -46,7 +46,7 @@ from fenrir.discovery.filters import FilterEngine  # noqa: E402
 from fenrir.discovery.playbooks import PlaybookTagger  # noqa: E402
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider  # noqa: E402
 from fenrir.discovery.providers.goplus import GoPlusProvider  # noqa: E402
-from fenrir.discovery.providers.perceptor import PerceptorProvider  # noqa: E402
+from fenrir.discovery.providers.robinhood_safety import RobinhoodSafetyProvider  # noqa: E402
 from fenrir.discovery.scoring import ScoringEngine  # noqa: E402
 from fenrir.discovery.models import Chain  # noqa: E402
 from fenrir.trading.token_filters import is_tradeable_mint  # noqa: E402
@@ -239,7 +239,7 @@ async def amain() -> int:
 
     ds = DexScreenerProvider(timeout_seconds=15)
     gp = GoPlusProvider(timeout_seconds=10)
-    perceptor = PerceptorProvider()
+    local_safety = RobinhoodSafetyProvider()
     accel = AccelTracker(AccelTracker.default_state_path())
     engine = FilterEngine()
     scorer = ScoringEngine()
@@ -324,7 +324,7 @@ async def amain() -> int:
                 scorer,
                 tagger,
                 args.min_score,
-                perceptor=perceptor,
+                local_safety=local_safety,
                 accel=accel,
             )
             if cand is None:
@@ -335,7 +335,6 @@ async def amain() -> int:
     finally:
         await ds.close()
         await gp.close()
-        await perceptor.close()
         accel.save()
 
     candidates.sort(key=lambda c: -c["score"]["overall"])

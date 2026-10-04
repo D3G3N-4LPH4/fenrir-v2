@@ -49,7 +49,6 @@ from fenrir.discovery.playbooks import PlaybookTagger  # noqa: E402
 from fenrir.discovery.providers.dexscreener import DexScreenerProvider  # noqa: E402
 from fenrir.discovery.providers.geckoterminal import GeckoTerminalProvider  # noqa: E402
 from fenrir.discovery.providers.goplus import GoPlusProvider  # noqa: E402
-from fenrir.discovery.providers.perceptor import PerceptorProvider  # noqa: E402
 from fenrir.discovery.providers.robinhood_safety import (  # noqa: E402
     RobinhoodSafetyProvider,
     enrich_robinhood_safety,
@@ -70,7 +69,7 @@ SOURCE_GROUPS = ("boosted", "gecko", "ds_profile", "graduation", "onchain")
 # single wedged coroutine (or a provider whose timeout never fires) must not
 # be able to stall the batch — the scout runs on a 10-minute cadence.
 TOKEN_TIMEOUT_SECONDS = 90.0  # one address, snapshot -> verdict
-PERCEPTOR_TIMEOUT_SECONDS = 45.0  # the Perceptor enrichment leg of one token
+SAFETY_TIMEOUT_SECONDS = 45.0  # the on-chain safety leg of one token
 SOURCE_TIMEOUT_SECONDS = 60.0  # one discovery source fetch
 RUN_TIMEOUT_SECONDS = 420.0  # the whole run; emits partial results on breach
 
@@ -248,7 +247,6 @@ async def evaluate_address(
     scorer: ScoringEngine,
     tagger: PlaybookTagger,
     min_score: float,
-    perceptor: PerceptorProvider | None = None,
     accel: AccelTracker | None = None,
     timings: list[dict] | None = None,
     local_safety: RobinhoodSafetyProvider | None = None,
@@ -304,33 +302,27 @@ async def evaluate_address(
     passed = [k for k, r in results.items() if r.passed]
     score = scorer.score(snap)
     _phase("score", t0)
-    # Robinhood safety net: when GoPlus has nothing, Perceptor's on-chain
-    # forensics can still clear (or kill) the candidate. A landed verdict
+    # Robinhood safety net: when GoPlus has nothing, the on-chain safety
+    # reader can still clear (or kill) the candidate. A landed verdict
     # re-runs the hard-fail check and the score — the safety_unknown score
     # cap lifts when safety becomes verifiable.
-    perceptor_info: dict | None = None
-    if (
-        (local_safety is not None or perceptor is not None)
-        and snap.chain is Chain.ROBINHOOD
-        and safety_unknown(snap)
-    ):
+    safety_info: dict | None = None
+    if local_safety is not None and snap.chain is Chain.ROBINHOOD and safety_unknown(snap):
         t0 = time.perf_counter()
         try:
             # Hard deadline on top of the provider's own request timeouts: a
             # wedged safety call must not eat this token's whole budget.
-            # Local on-chain reader first; Perceptor's stale cache as fallback
-            # (its API is auth-walled — no new investigations are attempted).
             report = await asyncio.wait_for(
-                enrich_robinhood_safety(snap, local_safety, perceptor),
-                timeout=PERCEPTOR_TIMEOUT_SECONDS,
+                enrich_robinhood_safety(snap, local_safety),
+                timeout=SAFETY_TIMEOUT_SECONDS,
             )
         except Exception:  # noqa: BLE001 - fail-open (includes TimeoutError)
             report = None
-        _phase("perceptor", t0)
+        _phase("safety", t0)
         if report is not None:
             fail = hard_fail(snap)
             score = scorer.score(snap)
-            perceptor_info = {
+            safety_info = {
                 "status": "complete",
                 "band": report.band,
                 "band_label": report.band_label,
@@ -387,7 +379,7 @@ async def evaluate_address(
         "playbooks": tagger.tag(snap).as_dict(),
         "score": score.as_dict(),
         "safety_unknown": safety_unknown(snap),
-        "perceptor": perceptor_info,
+        "safety": safety_info,
         "dexscreener": f"https://dexscreener.com/{snap.chain.value}/{snap.token_address}",
     }
     # Entry tier (2026-10-03): late volatility_breakout entries — the move is
@@ -409,7 +401,6 @@ async def scout_chain(
     limit: int,
     extra_limit: int,
     min_score: float,
-    perceptor: PerceptorProvider | None = None,
     accel: AccelTracker | None = None,
     timings: list[dict] | None = None,
     local_safety: RobinhoodSafetyProvider | None = None,
@@ -443,7 +434,6 @@ async def scout_chain(
                         scorer,
                         tagger,
                         min_score,
-                        perceptor,
                         accel,
                         timings,
                         local_safety=local_safety,
@@ -533,7 +523,6 @@ async def amain() -> int:
     ds = DexScreenerProvider(timeout_seconds=15)
     gt = GeckoTerminalProvider(timeout_seconds=15)
     gp = GoPlusProvider(timeout_seconds=10)
-    perceptor = PerceptorProvider()
     local_safety = RobinhoodSafetyProvider()
     accel = AccelTracker(AccelTracker.default_state_path())
     engine = FilterEngine()
@@ -560,7 +549,6 @@ async def amain() -> int:
                     args.limit,
                     args.extra_limit,
                     args.min_score,
-                    perceptor,
                     accel,
                     timings,
                     local_safety=local_safety,
@@ -574,7 +562,6 @@ async def amain() -> int:
         await ds.close()
         await gt.close()
         await gp.close()
-        await perceptor.close()
         accel.save()
 
     all_cands.sort(key=lambda c: -c["score"]["overall"])

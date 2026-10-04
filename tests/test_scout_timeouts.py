@@ -66,8 +66,8 @@ def test_stuck_token_cannot_stall_batch(monkeypatch) -> None:
             12,
             60.0,
             None,
-            None,
             timings,
+            None,
         )
     )
     elapsed = time.perf_counter() - t0

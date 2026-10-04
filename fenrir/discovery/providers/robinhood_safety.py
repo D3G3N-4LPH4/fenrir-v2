@@ -34,18 +34,35 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass, field
 
 import aiohttp
 
 from fenrir.discovery.lp_lock_v4 import ROBINHOOD_RPC_URL_DEFAULT
 from fenrir.discovery.models import SafetySignals
 from fenrir.discovery.pool_deepcheck import deepcheck_pools
-from fenrir.discovery.providers.perceptor import PerceptorReport
 
 logger = logging.getLogger(__name__)
 
 CACHE_PATH = os.path.expanduser("~/.cache/fenrir/robinhood_safety.json")
 CACHE_TTL_SECONDS = 24 * 3600
+
+
+@dataclass
+class SafetyReport:
+    """On-chain safety verdict: safety signals + human summary."""
+
+    safety: SafetySignals = field(default_factory=SafetySignals)
+    band: str | None = None  # low | medium | high
+    band_label: str | None = None  # e.g. "Caution"
+    headline: str | None = None
+    checks: list[tuple[str, str]] = field(default_factory=list)
+    signals: list[tuple[str, str]] = field(default_factory=list)  # (label, tone)
+    investigation_id: str | None = None
+
+
+# Backwards-compatible alias (was the Perceptor verdict class).
+PerceptorReport = SafetyReport
 
 # ── Contract-power selectors ─────────────────────────────────────────
 _SEL_OWNER = "8da5cb5b"  # owner()
@@ -357,11 +374,11 @@ async def read_robinhood_safety(
     rpc_url: str | None = None,
     pair_address: str | None = None,
     timeout_seconds: float = 40.0,
-) -> PerceptorReport | None:
+) -> SafetyReport | None:
     """Full on-chain safety read for a Robinhood-chain token.
 
-    Returns a PerceptorReport-shaped verdict (same dataclass the pipeline
-    already consumes) or None when nothing usable came back. Never raises.
+    Returns a SafetyReport verdict or None when nothing usable came back.
+    Never raises.
     """
     token = (token_address or "").lower()
     if not token.startswith("0x") or len(token) != 42:
@@ -434,7 +451,7 @@ async def read_robinhood_safety(
             return None
         band, label = _band_for(safety)
         headline = "; ".join(safety.risk_flags) if safety.risk_flags else None
-        return PerceptorReport(
+        return SafetyReport(
             safety=safety,
             band=band,
             band_label=label,
@@ -457,13 +474,14 @@ async def read_robinhood_safety(
 # ── Orchestration ────────────────────────────────────────────────────
 
 
-async def enrich_robinhood_safety(snap, local_provider=None, perceptor_provider=None):
+async def enrich_robinhood_safety(snap, local_provider=None):
     """Fill empty Robinhood-chain safety, best-effort. Never raises.
 
-    Tries the local on-chain reader first (fresh, authoritative); falls back
-    to Perceptor's stale disk cache only (its API is auth-walled since
-    2026-10-02 — no new investigations are attempted). Merges a usable
-    verdict into ``snap.safety``. Returns the report, or None.
+    Uses the local on-chain reader only (fresh, authoritative). Perceptor
+    was retired 2026-10-03 (API auth-walled since 2026-10-02; its sweep
+    returned zero completions) — the on-chain reader is the sole safety
+    source now. Merges a usable verdict into ``snap.safety``.
+    Returns the report, or None.
     """
     from fenrir.discovery.models import Chain
 
@@ -474,11 +492,6 @@ async def enrich_robinhood_safety(snap, local_provider=None, perceptor_provider=
             hit = local_provider.cached_report(snap.token_address)
             if hit is not None:
                 return hit
-        if perceptor_provider is not None:
-            try:
-                return perceptor_provider.cached_report(snap.token_address)
-            except Exception:  # noqa: BLE001
-                return None
         return None
     if local_provider is not None:
         try:
@@ -492,11 +505,6 @@ async def enrich_robinhood_safety(snap, local_provider=None, perceptor_provider=
         if report is not None:
             snap.safety = report.safety
             return report
-    if perceptor_provider is not None:
-        try:
-            return perceptor_provider.cached_report(snap.token_address)
-        except Exception:  # noqa: BLE001
-            return None
     return None
 
 
@@ -504,7 +512,7 @@ async def enrich_robinhood_safety(snap, local_provider=None, perceptor_provider=
 
 
 class RobinhoodSafetyProvider:
-    """Drop-in replacement for PerceptorProvider: disk cache + on-chain reads."""
+    """On-chain Robinhood safety reader: disk cache + live chain reads."""
 
     def __init__(self, cache_path: str | None = None, rpc_url: str | None = None) -> None:
         self.cache_path = cache_path or CACHE_PATH
@@ -541,7 +549,7 @@ class RobinhoodSafetyProvider:
                 if k in SafetySignals.__dataclass_fields__
             }
         )
-        return PerceptorReport(
+        return SafetyReport(
             safety=s,
             band=entry.get("band"),
             band_label=entry.get("band_label"),
