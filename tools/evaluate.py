@@ -620,6 +620,11 @@ async def amain() -> int:
                     "market_cap_usd": snap.market_cap_usd,
                     "liquidity_usd": snap.liquidity_usd,
                     "volume_24h_usd": snap.volume_24h_usd,
+                    "turnover_24h": snap.turnover_24h,
+                    "fee_mcap_24h_pct": (
+                        snap.fee_mcap_24h * 100 if snap.fee_mcap_24h is not None else None
+                    ),
+                    "wash_volume": bool(snap.wash_volume),
                     "bond_progress_pct": snap.bond_progress_pct,
                     "bond_inflow_sol": snap.bond_inflow_sol,
                     "bond_sol_remaining": snap.bond_sol_remaining,

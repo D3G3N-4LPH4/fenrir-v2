@@ -254,6 +254,37 @@ class TokenSnapshot:
         return self.volume_24h_usd / self.market_cap_usd if self.market_cap_usd > 0 else None
 
     @property
+    def fee_mcap_24h(self) -> float | None:
+        """Estimated 24h trading fees / market cap. None when turnover unknown.
+
+        Fees ~= 24h volume x the chain's standard AMM take (0.25% Solana
+        PumpSwap/Raydium, 0.30% Robinhood/EVM Uniswap v4). Measured 2026-10-04
+        on 31 safe/successful coins: median 0.61%; only collapsed or
+        farm-shaped coins clear 10% on a 24h window (denominator effect), so
+        this is a history/wash signal, never a buy gate.
+        """
+        t = self.turnover_24h
+        if t is None:
+            return None
+        rate = 0.003 if self.chain is Chain.ROBINHOOD else 0.0025
+        return t * rate
+
+    @property
+    def wash_volume(self) -> bool:
+        """Farm-shaped volume: extreme 24h turnover after a collapse.
+
+        >50x daily turnover with price down >50% on the day is the JOEkin
+        archetype (909x turnover on a -97% mcap) — residual wash/farm flow
+        on a dead coin, not organic demand. Healthy vertical runners show
+        high turnover *with* a positive 24h move, so the drawdown leg keeps
+        them out.
+        """
+        t = self.turnover_24h
+        if t is None or t < 50.0:
+            return False
+        return (self.price_change_24h_pct or 0.0) <= -50.0
+
+    @property
     def volume_1h_share(self) -> float | None:
         """Share of 24h volume that happened in the last hour. None when 24h vol is zero."""
         return self.volume_1h_usd / self.volume_24h_usd if self.volume_24h_usd > 0 else None
