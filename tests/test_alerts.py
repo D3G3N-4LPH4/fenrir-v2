@@ -134,3 +134,49 @@ def test_fmt_usd():
 
 def test_escape_md_backslash_first():
     assert escape_md("a\\b_c") == "a\\\\b\\_c"
+
+
+def test_card_security_block_and_socials():
+    card = format_scout_alert(
+        _cand(
+            holder_count=3900,
+            top10_holder_pct=21.0,
+            largest_cluster_pct=7.5,
+            twitter="https://x.com/hallowinu",
+            telegram="https://t.me/hallowinu",
+        )
+    )
+    assert "🔒 Top 10 21%" in card
+    assert "3,900 holders" in card
+    assert "insider clust 7.5%" in card
+    assert "[X](https://x.com/hallowinu)" in card
+    assert "[TG](https://t.me/hallowinu)" in card
+
+
+def test_card_ath_line():
+    card = format_scout_alert(
+        _cand(ath={"ath_price": 0.00123, "drop_pct": -48.1, "hours_ago": 22.0})
+    )
+    assert "📉 ATH $0.00123 (-48% / 22h ago)" in card
+
+
+def test_card_ath_absent_when_no_data():
+    card = format_scout_alert(_cand())
+    assert "ATH" not in card
+
+
+def test_card_dex_paid_badge():
+    card = format_scout_alert(_cand(source="boosted", dex_paid=True))
+    assert "💰 DEX paid" in card
+
+
+def test_card_misfit_no_exit_ladder():
+    card = format_scout_alert(_cand(misfit=True, price_usd=0.0006387))
+    assert "gate-rejected, tracked" in card
+    assert "Exits" not in card
+
+
+def test_card_regular_keeps_exit_ladder():
+    card = format_scout_alert(_cand(price_usd=0.0006387))
+    assert "Exits" in card
+    assert "gate-rejected" not in card

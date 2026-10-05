@@ -14,8 +14,10 @@ Each run:
   3. Enrich safety: GoPlus for covered EVM chains, RugCheck for Solana.
   4. Run FilterEngine (low_cap_alpha / mid_cap_momentum / high_cap) + ScoringEngine.
   5. Emit candidates: passes >= 1 filter, score >= MIN_SCORE, no hard safety fail.
+     Misfits (score >= MISFIT_MIN_SCORE, no filter fit, no hard fail) are
+     emitted separately for the misfit watcher — tracked, not alerted.
 
-Stdout: JSON {"ts": ..., "scanned": N, "by_source": {...}, "candidates": [...]}.
+Stdout: JSON {"ts": ..., "scanned": N, "by_source": {...}, "candidates": [...], "misfits": [...]}.
 Dedup / alerting is the caller's job (the cron worker keeps a seen-list).
 
 Usage:
@@ -72,6 +74,11 @@ TOKEN_TIMEOUT_SECONDS = 90.0  # one address, snapshot -> verdict
 SAFETY_TIMEOUT_SECONDS = 45.0  # the on-chain safety leg of one token
 SOURCE_TIMEOUT_SECONDS = 60.0  # one discovery source fetch
 RUN_TIMEOUT_SECONDS = 420.0  # the whole run; emits partial results on breach
+
+# Misfit watch (2026-10-03, the TERMINAL lesson): a candidate that scores at
+# least this but fits no entry filter is tracked, not dropped. Matches the
+# "WORTH A LOOK" band in tools/evaluate.py's verdict().
+MISFIT_MIN_SCORE = 65.0
 
 
 def safety_unknown(snap) -> bool:
@@ -237,6 +244,63 @@ def dedupe_sources(source_addrs: list[tuple[str, list[str]]]) -> list[tuple[str,
     return out
 
 
+async def _fetch_ath_for_card(snap) -> dict | None:
+    """ATH distance for the scout card. Fail-open None. One candle fetch."""
+    try:
+        from fenrir.discovery.ath import fetch_ath
+
+        return await asyncio.wait_for(
+            fetch_ath(snap.chain, snap.pair_address, snap.price_usd),
+            timeout=15.0,
+        )
+    except Exception:  # noqa: BLE001 - ATH is card context; never break emission
+        return None
+
+
+async def _misfit_candidate(
+    snap, source: str, score, results: dict, safety_info: dict | None
+) -> dict:
+    """Build the misfit-watch record for a strong scorer with no filter fit.
+
+    Same shape as the alert candidate dict (minus entry tier), plus
+    ``"misfit": True``. The misfit watcher records first-seen price/mcap and
+    tracks the move from there.
+    """
+    misfit = {
+        "address": snap.token_address,
+        "chain": snap.chain.value,
+        "symbol": snap.symbol,
+        "name": snap.name,
+        "source": source,
+        "price_usd": snap.price_usd,
+        "market_cap_usd": round(snap.market_cap_usd, 2),
+        "liquidity_usd": round(snap.liquidity_usd, 2),
+        "volume_24h_usd": round(snap.volume_24h_usd, 2),
+        "age_minutes": round(snap.age_minutes or 0),
+        "buys_1h": snap.txns_1h_buys,
+        "sells_1h": snap.txns_1h_sells,
+        "score": score.as_dict(),
+        "safety_unknown": safety_unknown(snap),
+        "safety": safety_info,
+        "filter_warnings": [w for r in results.values() for w in r.warnings],
+        "passed_filters": [],
+        "holder_count": snap.holder_count,
+        "top_holder_pct": snap.top_holder_pct,
+        "top10_holder_pct": snap.top10_holder_pct,
+        "bundled_supply_pct": snap.safety.bundled_supply_pct,
+        "largest_cluster_pct": snap.safety.largest_cluster_pct,
+        "cluster_count": snap.safety.cluster_count,
+        "twitter": snap.twitter,
+        "telegram": snap.telegram,
+        "website": snap.website,
+        "dex_paid": source in ("boosted", "ds_profile"),
+        "dexscreener": f"https://dexscreener.com/{snap.chain.value}/{snap.token_address}",
+        "misfit": True,
+    }
+    misfit["ath"] = await _fetch_ath_for_card(snap)
+    return misfit
+
+
 async def evaluate_address(
     source: str,
     addr: str,
@@ -329,7 +393,7 @@ async def evaluate_address(
                 "headline": report.headline,
                 "investigation_id": report.investigation_id,
             }
-    if fail or not passed or score.overall < min_score:
+    if fail or score.overall < min_score:
         return None
     ratio_1h = snap.buy_sell_ratio_1h
     # 2026-10-03 hardening: paused filters never count as a pass on the
@@ -337,6 +401,10 @@ async def evaluate_address(
     # lane in the gate-tracker review — gets a lower score floor.
     passed = [f for f in passed if FilterName(f) not in DISABLED_FILTERS]
     if not passed:
+        # Misfit watch (2026-10-03, the TERMINAL lesson): a strong score
+        # with no entry-filter fit is tracked, not dropped.
+        if score.overall >= MISFIT_MIN_SCORE:
+            return await _misfit_candidate(snap, source, score, results, safety_info)
         return None
     floor = min(
         (FILTER_SCORE_FLOORS.get(FilterName(f), min_score) for f in passed),
@@ -371,6 +439,15 @@ async def evaluate_address(
         "holder_count": snap.holder_count,
         "top_holder_pct": snap.top_holder_pct,
         "top10_holder_pct": snap.top10_holder_pct,
+        "bundled_supply_pct": snap.safety.bundled_supply_pct,
+        "largest_cluster_pct": snap.safety.largest_cluster_pct,
+        "cluster_count": snap.safety.cluster_count,
+        "twitter": snap.twitter,
+        "telegram": snap.telegram,
+        "website": snap.website,
+        # DEX-paid promotion: boosted feed and paid-profile sources are teams
+        # that paid DexScreener for promotion.
+        "dex_paid": source in ("boosted", "ds_profile"),
         "passed_filters": passed,
         "filter_warnings": [w for r in results.values() for w in r.warnings],
         "bond_progress_pct": snap.bond_progress_pct,
@@ -386,6 +463,9 @@ async def evaluate_address(
     # already done — are logged but never alerted. The caller checks
     # fenrir.discovery.entry_tier.tier_alerts before sending to Telegram.
     cand["entry_tier"] = classify_entry_tier(cand)
+    # ATH distance for the card (2026-10-04): one candle fetch, only for
+    # emitted candidates — never per scanned token.
+    cand["ath"] = await _fetch_ath_for_card(snap)
     return cand
 
 
@@ -404,8 +484,9 @@ async def scout_chain(
     accel: AccelTracker | None = None,
     timings: list[dict] | None = None,
     local_safety: RobinhoodSafetyProvider | None = None,
-) -> tuple[list[dict], dict[str, int]]:
+) -> tuple[list[dict], list[dict], dict[str, int]]:
     candidates: list[dict] = []
+    misfits: list[dict] = []
     by_source: dict[str, int] = {}
     source_addrs = await fetch_source_addresses(chain, ds, gt, sources, limit, extra_limit)
     addrs = list(dedupe_sources(source_addrs))
@@ -464,8 +545,8 @@ async def scout_chain(
     for source, addr, cand in results:
         by_source[source] = by_source.get(source, 0) + 1
         if cand is not None:
-            candidates.append(cand)
-    return candidates, by_source
+            (misfits if cand.get("misfit") else candidates).append(cand)
+    return candidates, misfits, by_source
 
 
 def summarize_timings(timings: list[dict]) -> dict:
@@ -529,6 +610,7 @@ async def amain() -> int:
     scorer = ScoringEngine()
     tagger = PlaybookTagger()
     all_cands: list[dict] = []
+    all_misfits: list[dict] = []
     by_source: dict[str, int] = {}
     timings: list[dict] = []
     degraded: str | None = None
@@ -537,7 +619,7 @@ async def amain() -> int:
         # must emit partial results instead of hanging until it gets killed.
         async with asyncio.timeout(RUN_TIMEOUT_SECONDS):
             for c in args.chains:
-                cands, bs = await scout_chain(
+                cands, misf, bs = await scout_chain(
                     Chain(c),
                     ds,
                     gt,
@@ -554,6 +636,7 @@ async def amain() -> int:
                     local_safety=local_safety,
                 )
                 all_cands.extend(cands)
+                all_misfits.extend(misf)
                 for k, v in bs.items():
                     by_source[k] = by_source.get(k, 0) + v
     except TimeoutError:
@@ -565,6 +648,7 @@ async def amain() -> int:
         accel.save()
 
     all_cands.sort(key=lambda c: -c["score"]["overall"])
+    all_misfits.sort(key=lambda c: -c["score"]["overall"])
     timing = summarize_timings(timings)
     print(
         f"scout timing: scanned={sum(by_source.values())} "
@@ -578,6 +662,7 @@ async def amain() -> int:
         "scanned": sum(by_source.values()),
         "by_source": by_source,
         "candidates": all_cands,
+        "misfits": all_misfits,
         "timing": timing,
     }
     if degraded:
