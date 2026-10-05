@@ -212,4 +212,9 @@ class ScoringEngine:
             risk += 25.0
         if snap.safety.risk_score is not None:
             risk += _scale(snap.safety.risk_score, 0.0, 100.0) * 0.5
+        # Farm-shaped volume (2026-10-04 fee/mcap study): >50x daily turnover
+        # after a >50% drawdown is residual wash on a dead coin (JOEkin did
+        # 909x turnover at -97%), not demand. Warning-level: +20 risk.
+        if snap.wash_volume:
+            risk += 20.0
         return _clamp(risk)

@@ -277,6 +277,11 @@ async def _misfit_candidate(
         "liquidity_usd": round(snap.liquidity_usd, 2),
         "volume_24h_usd": round(snap.volume_24h_usd, 2),
         "age_minutes": round(snap.age_minutes or 0),
+        "turnover_24h": (round(snap.turnover_24h, 2) if snap.turnover_24h is not None else None),
+        "fee_mcap_24h_pct": (
+            round(snap.fee_mcap_24h * 100, 2) if snap.fee_mcap_24h is not None else None
+        ),
+        "wash_volume": bool(snap.wash_volume),
         "buys_1h": snap.txns_1h_buys,
         "sells_1h": snap.txns_1h_sells,
         "score": score.as_dict(),
@@ -434,6 +439,12 @@ async def evaluate_address(
             round(snap.volume_1h_share * 100, 1) if snap.volume_1h_share is not None else None
         ),
         "turnover_24h": round(snap.turnover_24h, 2) if snap.turnover_24h else None,
+        # Fee footprint (2026-10-04 study): est. 24h trading fees / mcap.
+        # Median 0.61% on safe/successful coins; extreme values flag wash.
+        "fee_mcap_24h_pct": (
+            round(snap.fee_mcap_24h * 100, 2) if snap.fee_mcap_24h is not None else None
+        ),
+        "wash_volume": bool(snap.wash_volume),
         "price_change_1h_pct": snap.price_change_1h_pct,
         "price_change_24h_pct": snap.price_change_24h_pct,
         "holder_count": snap.holder_count,
