@@ -52,7 +52,7 @@ def test_stuck_token_cannot_stall_batch(monkeypatch) -> None:
     engine, scorer, tagger = _engines()
     timings: list = []
     t0 = time.perf_counter()
-    cands, by_source = asyncio.run(
+    cands, misfits, by_source = asyncio.run(
         scout_chain(
             Chain.SOLANA,
             ds,  # type: ignore[arg-type]

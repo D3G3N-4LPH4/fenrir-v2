@@ -105,14 +105,19 @@ def format_scout_alert(cand: dict) -> str:
     filters = ", ".join(cand.get("passed_filters") or [])
 
     lines = []
+    is_misfit = bool(cand.get("misfit"))
     header = f"\U0001f3af *{symbol}*"
     if name and name.lower() != symbol.lower().replace("\\", ""):
         header += f" \u2014 {name}"
+    if is_misfit:
+        header += " \u2014 gate-rejected, tracked"
     lines.append(header)
 
     subtitle = chain
     if source and not source.startswith("boosted"):
         subtitle += f" \u00b7 via {escape_md(source)}"
+    if cand.get("dex_paid"):
+        subtitle += " \u00b7 \U0001f4b0 DEX paid"
     lines.append(subtitle)
     lines.append("")
 
@@ -171,11 +176,55 @@ def format_scout_alert(cand: dict) -> str:
             pass
     lines.append(f"\U0001f4ca {flow}")
     lines.append(f"\u23f1\ufe0f {_age_str(cand.get('age_minutes'))}")
-    ladder = build_exit_ladder(cand.get("price_usd"))
-    if ladder:
-        targets = " \u00b7 ".join(f"+{pct}% {price}" for pct, price in ladder)
-        lines.append(f"\U0001f3af Exits \u2014 {targets}")
-        lines.append("move stop to entry at +25%")
+    # ATH distance (2026-10-04): the best context for whether a runner is
+    # extended or basing. Fail-open — absent when candles were unavailable.
+    ath = cand.get("ath") or {}
+    if ath.get("ath_price"):
+        try:
+            drop = float(ath["drop_pct"])
+            hrs = float(ath.get("hours_ago", 0))
+            age_s = f"{hrs:.0f}h" if hrs < 48 else f"{hrs / 24:.1f}d"
+            lines.append(
+                f"\U0001f4c9 ATH ${float(ath['ath_price']):.6g} " f"({drop:+.0f}% / {age_s} ago)"
+            )
+        except (TypeError, ValueError):
+            pass
+    # Security block (2026-10-04, Phanes-style): concentration + bundle
+    # exposure inline instead of buried in the score.
+    sec_bits = []
+    top10 = cand.get("top10_holder_pct")
+    if top10 is not None:
+        try:
+            sec_bits.append(f"Top 10 {float(top10):.0f}%")
+        except (TypeError, ValueError):
+            pass
+    holders = cand.get("holder_count")
+    if holders is not None:
+        sec_bits.append(f"{int(holders):,} holders")
+    bundle = cand.get("largest_cluster_pct")
+    if bundle is not None:
+        try:
+            sec_bits.append(f"insider clust {float(bundle):.1f}%")
+        except (TypeError, ValueError):
+            pass
+    if sec_bits:
+        lines.append("\U0001f512 " + " \u00b7 ".join(sec_bits))
+    # Socials row (2026-10-04): X / TG / web from DexScreener's info object.
+    socials = []
+    if cand.get("twitter"):
+        socials.append(f"[X]({cand['twitter']})")
+    if cand.get("telegram"):
+        socials.append(f"[TG]({cand['telegram']})")
+    if cand.get("website"):
+        socials.append(f"[Web]({cand['website']})")
+    if socials:
+        lines.append("\U0001f517 " + " \u00b7 ".join(socials))
+    if not is_misfit:
+        ladder = build_exit_ladder(cand.get("price_usd"))
+        if ladder:
+            targets = " \u00b7 ".join(f"+{pct}% {price}" for pct, price in ladder)
+            lines.append(f"\U0001f3af Exits \u2014 {targets}")
+            lines.append("move stop to entry at +25%")
     # Bonding-curve position for pre-graduation pump.fun tokens.
     bond = cand.get("bond_progress_pct")
     if bond is not None:
